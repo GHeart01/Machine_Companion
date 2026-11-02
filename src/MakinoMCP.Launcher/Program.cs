@@ -57,6 +57,7 @@ namespace MakinoMCP.Launcher
             try
             {
                 string version = File.ReadAllText(currentTxt).Trim();
+                if (!IsValidVersion(version)) throw new InvalidDataException("current.txt does not hold a valid version");
                 string target = Path.Combine(local, version);
                 if (Directory.Exists(target)) return Path.Combine(target, "MakinoMCP.exe");
 
@@ -75,48 +76,67 @@ namespace MakinoMCP.Launcher
             }
         }
 
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern IntPtr GetStdHandle(int nStdHandle);
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct STARTUPINFO
+        {
+            public int cb;
+            public string lpReserved, lpDesktop, lpTitle;
+            public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+            public short wShowWindow, cbReserved2;
+            public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct PROCESS_INFORMATION
+        {
+            public IntPtr hProcess, hThread;
+            public int dwProcessId, dwThreadId;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool CreateProcessW(string applicationName, StringBuilder commandLine, IntPtr processAttributes,
+            IntPtr threadAttributes, bool inheritHandles, int creationFlags, IntPtr environment, string currentDirectory,
+            ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
 
         [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern bool SetHandleInformation(IntPtr hObject, int dwMask, int dwFlags);
+        private static extern bool CloseHandle(IntPtr handle);
 
-        // Starts "MakinoMCP.exe --prefetch <version>" detached. Best effort: the session works without it.
+        private const int CreateNoWindow = 0x08000000;
+
+        // Starts "MakinoMCP.exe --prefetch <version>" detached. bInheritHandles is FALSE and no std handles are
+        // passed, so the child cannot hold the MCP client's stdio pipes open. Best effort: the session works without it.
         private static void StartPrefetch(string version)
         {
             try
             {
-                // CreateProcess inherits every inheritable handle, including the client's stdio pipes, which would
-                // then stay open after the session ends. Make our own std handles non-inheritable first.
-                foreach (int std in new[] { -10, -11, -12 })
+                string self = Process.GetCurrentProcess().MainModule.FileName;
+                var cmd = new StringBuilder(Quote(self) + " --prefetch " + Quote(version));
+                var si = new STARTUPINFO();
+                si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+                PROCESS_INFORMATION pi;
+                if (!CreateProcessW(null, cmd, IntPtr.Zero, IntPtr.Zero, false, CreateNoWindow, IntPtr.Zero,
+                        Path.GetTempPath(), ref si, out pi))
                 {
-                    IntPtr h = GetStdHandle(std);
-                    if (h != IntPtr.Zero && h != new IntPtr(-1)) SetHandleInformation(h, 1, 0);
+                    Console.Error.WriteLine("MakinoMCP: could not start the background copy (Win32 error " + Marshal.GetLastWin32Error() + ").");
+                    return;
                 }
-
-                var psi = new ProcessStartInfo(Process.GetCurrentProcess().MainModule.FileName)
-                {
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    // Redirected so the child gets fresh pipes instead of our (now non-inheritable) std handles;
-                    // closed straight away because the prefetch never reads or writes them.
-                    RedirectStandardInput = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    WorkingDirectory = Path.GetTempPath(),
-                    Arguments = "--prefetch " + Quote(version),
-                };
-                using (var child = Process.Start(psi))
-                {
-                    child.StandardInput.Close();
-                    child.StandardOutput.Close();
-                    child.StandardError.Close();
-                }
+                CloseHandle(pi.hThread);
+                CloseHandle(pi.hProcess);
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine("MakinoMCP: could not start the background copy (" + ex.Message + ").");
             }
+        }
+
+        // A version names a folder: refuse anything that could leave the app\ or versions\ folders.
+        private static bool IsValidVersion(string v)
+        {
+            return !string.IsNullOrWhiteSpace(v)
+                && v == v.Trim()
+                && v != "." && !v.Contains("..")
+                && v.IndexOfAny(Path.GetInvalidFileNameChars()) < 0
+                && !Path.IsPathRooted(v);
         }
 
         // Copies versions\<version> from the share to a unique temp folder, then renames it into place.
@@ -125,6 +145,7 @@ namespace MakinoMCP.Launcher
             string tmp = null;
             try
             {
+                if (!IsValidVersion(version)) return 1;
                 string local = LocalApp();
                 Directory.CreateDirectory(local);
                 CleanStale(local);

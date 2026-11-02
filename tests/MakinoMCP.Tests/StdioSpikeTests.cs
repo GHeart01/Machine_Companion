@@ -52,7 +52,7 @@ public class StdioSpikeTests
         }
         finally
         {
-            try { Directory.Delete(root, true); } catch (IOException) { }
+            await CleanUp(root);
         }
     }
 
@@ -83,7 +83,7 @@ public class StdioSpikeTests
         }
         finally
         {
-            try { Directory.Delete(root, true); } catch (IOException) { }
+            await CleanUp(root);
         }
     }
 
@@ -151,6 +151,81 @@ public class StdioSpikeTests
         }
     }
 
+    [Fact]
+    public async Task Prefetch_does_not_hold_the_clients_stdout_open()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var share = Path.Combine(root, "share");
+            var localAppData = Path.Combine(root, "localappdata");
+            Directory.CreateDirectory(localAppData);
+
+            var (launcherOut, mainOut) = BuildOutputs();
+            CopyDir(launcherOut, share);
+            File.WriteAllText(Path.Combine(share, "current.txt"), "0.0.0-test");
+            var version = Path.Combine(share, "versions", "0.0.0-test");
+            CopyDir(mainOut, version);
+            var pad = Directory.CreateDirectory(Path.Combine(version, "pad")).FullName;
+            for (var i = 0; i < 12000; i++) File.WriteAllText(Path.Combine(pad, $"f{i}.txt"), "x");
+
+            var psi = new System.Diagnostics.ProcessStartInfo(Path.Combine(share, "MakinoMCP.exe"), "serve")
+            {
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            psi.Environment["LOCALAPPDATA"] = localAppData;
+            using var launcher = System.Diagnostics.Process.Start(psi)!;
+            var stderr = launcher.StandardError.ReadToEndAsync();
+            await Task.Delay(1500);
+            launcher.StandardInput.Close();
+            Assert.True(launcher.WaitForExit(20000), "launcher did not exit after stdin closed");
+
+            var eof = launcher.StandardOutput.ReadToEndAsync();
+            var finished = await Task.WhenAny(eof, Task.Delay(5000));
+            var prefetchStillCopying = Directory.GetDirectories(Path.Combine(localAppData, "MakinoMCP", "app"), "*.tmp*").Length > 0;
+            Assert.True(finished == eof, "stdout stayed open after the launcher exited (the prefetch inherited the pipe)");
+            Assert.True(prefetchStillCopying, "the copy finished too early for this test to prove anything; add more files");
+        }
+        finally
+        {
+            await CleanUp(root);
+        }
+    }
+
+    [Fact]
+    public async Task Invalid_version_in_current_txt_falls_back_to_newest_local()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var share = Path.Combine(root, "share");
+            var localAppData = Path.Combine(root, "localappdata");
+
+            var (launcherOut, mainOut) = BuildOutputs();
+            CopyDir(launcherOut, share);
+            File.WriteAllText(Path.Combine(share, "current.txt"), @"..\..\escape");
+            CopyDir(mainOut, Path.Combine(root, "escape")); // what a traversal would reach
+            CopyDir(mainOut, Path.Combine(localAppData, "MakinoMCP", "app", "0.0.0-local"));
+
+            await using (var client = await McpClient.CreateAsync(NewTransport(share, localAppData)))
+            {
+                var tools = await client.ListToolsAsync();
+                Assert.Equal(ToolNames.Order(), tools.Select(t => t.Name).Order());
+            }
+
+            Assert.False(Directory.Exists(Path.Combine(localAppData, "escape")) || Directory.Exists(Path.Combine(localAppData, "escape.tmp")));
+            Assert.Equal(["0.0.0-local"], Directory.GetDirectories(Path.Combine(localAppData, "MakinoMCP", "app")).Select(Path.GetFileName));
+        }
+        finally
+        {
+            await CleanUp(root);
+        }
+    }
+
     private static StdioClientTransport NewTransport(string share, string localAppData) => new(new StdioClientTransportOptions
     {
         Name = "makino-spike",
@@ -159,13 +234,35 @@ public class StdioSpikeTests
         EnvironmentVariables = new Dictionary<string, string?> { ["LOCALAPPDATA"] = localAppData },
     });
 
+    // A detached prefetch may still be copying and holds files in the layout: wait for it (kill after a timeout),
+    // then delete, retrying while Windows releases the executables.
     private static async Task CleanUp(string root)
     {
-        for (var i = 0; i < 20; i++)
+        var deadline = DateTime.UtcNow.AddSeconds(90);
+        while (DateTime.UtcNow < deadline && ProcessesUnder(root).Any()) await Task.Delay(200);
+        foreach (var p in ProcessesUnder(root))
+        {
+            try { p.Kill(true); p.WaitForExit(5000); } catch { }
+        }
+        for (var i = 0; i < 40; i++)
         {
             try { Directory.Delete(root, true); return; }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { await Task.Delay(250); }
         }
+    }
+
+    private static List<System.Diagnostics.Process> ProcessesUnder(string root)
+    {
+        var found = new List<System.Diagnostics.Process>();
+        foreach (var p in System.Diagnostics.Process.GetProcessesByName("MakinoMCP"))
+        {
+            try
+            {
+                if (p.MainModule?.FileName.StartsWith(root, StringComparison.OrdinalIgnoreCase) == true) found.Add(p);
+            }
+            catch { }
+        }
+        return found;
     }
 
     private static (string launcher, string main) BuildOutputs()
