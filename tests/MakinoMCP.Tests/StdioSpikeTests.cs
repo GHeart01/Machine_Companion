@@ -6,6 +6,12 @@ namespace MakinoMCP.Tests;
 
 public class StdioSpikeTests
 {
+    private static readonly string[] ToolNames =
+    [
+        "get_alarm_summary", "get_alarms", "get_cell_overview", "get_orders", "get_pallets", "get_recent_activity",
+        "get_utilization", "list_files", "list_shared_folders", "read_file", "search_files",
+    ];
+
     [Fact]
     public async Task Launcher_serves_tools_over_stdio()
     {
@@ -31,11 +37,18 @@ public class StdioSpikeTests
 
             await using var client = await McpClient.CreateAsync(transport);
             var tools = await client.ListToolsAsync();
-            Assert.Contains(tools, t => t.Name == "ping");
+            Assert.Equal(ToolNames.Order(), tools.Select(t => t.Name).Order());
+            Assert.Contains("get_cell_overview", client.ServerInstructions);
+            // The ToolContext and CancellationToken parameters come from the server, not from Claude.
+            var alarms = tools.Single(t => t.Name == "get_alarms").JsonSchema.GetRawText();
+            Assert.Contains("\"openOnly\"", alarms);
+            Assert.DoesNotContain("context", alarms, StringComparison.OrdinalIgnoreCase);
 
-            var result = await client.CallToolAsync("ping");
+            // No settings file on the share: every tool still answers, with what to do.
+            var result = await client.CallToolAsync("get_cell_overview");
             var text = Assert.IsType<TextContentBlock>(Assert.Single(result.Content));
-            Assert.Equal("pong", text.Text);
+            Assert.Contains("run MakinoMCP.exe", text.Text);
+            Assert.Contains("\"error\"", text.Text);
         }
         finally
         {
@@ -66,7 +79,7 @@ public class StdioSpikeTests
 
             await using var client = await McpClient.CreateAsync(transport);
             var tools = await client.ListToolsAsync();
-            Assert.Contains(tools, t => t.Name == "ping");
+            Assert.Equal(ToolNames.Order(), tools.Select(t => t.Name).Order());
         }
         finally
         {

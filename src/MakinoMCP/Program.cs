@@ -1,3 +1,6 @@
+using MakinoMCP.Core.Settings;
+using MakinoMCP.Logging;
+using MakinoMCP.Tools;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -23,10 +26,16 @@ internal static class Program
     private static async Task<int> Serve(string[] args)
     {
         var builder = Host.CreateApplicationBuilder(args);
-        // stdout carries only MCP messages: every log line goes to stderr.
+        // stdout carries only MCP messages: every log line goes to stderr (and the tools' own log to a file).
         builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
+
+        // Settings are read once, here; a change takes effect when Claude restarts the server.
+        var log = new FileLog(FileLog.DefaultFolder());
+        builder.Services.AddSingleton(log);
+        builder.Services.AddSingleton(ToolContext.Load(SettingsStore.DefaultPath(args), log));
+
         builder.Services
-            .AddMcpServer()
+            .AddMcpServer(o => o.ServerInstructions = ToolContext.ServerInstructions)
             .WithStdioServerTransport()
             .WithToolsFromAssembly();
         await builder.Build().RunAsync();
