@@ -45,7 +45,9 @@ namespace MakinoMCP.Launcher
             {
                 // Dev layout: MakinoMCP.exe in a sibling app\ folder.
                 string dev = Path.Combine(launcherDir, "app", "MakinoMCP.exe");
-                return File.Exists(dev) ? dev : null;
+                if (File.Exists(dev)) return dev;
+                // No current.txt and no dev exe: the share may be unreachable, so use what is installed locally.
+                return NewestLocal(LocalApp());
             }
 
             string local = LocalApp();
@@ -67,14 +69,19 @@ namespace MakinoMCP.Launcher
             {
                 // Share unreachable (or copy failed): fall back to the newest local version.
                 Console.Error.WriteLine("MakinoMCP: could not update from the share (" + ex.Message + "); using newest local version.");
-                if (!Directory.Exists(local)) return null;
-                return Directory.GetDirectories(local)
-                    .Where(d => !d.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase))
-                    .Where(d => File.Exists(Path.Combine(d, "MakinoMCP.exe")))
-                    .OrderByDescending(d => Directory.GetCreationTimeUtc(d))
-                    .Select(d => Path.Combine(d, "MakinoMCP.exe"))
-                    .FirstOrDefault();
+                return NewestLocal(local);
             }
+        }
+
+        private static string NewestLocal(string local)
+        {
+            if (!Directory.Exists(local)) return null;
+            return Directory.GetDirectories(local)
+                .Where(d => !d.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase))
+                .Where(d => File.Exists(Path.Combine(d, "MakinoMCP.exe")))
+                .OrderByDescending(d => Directory.GetCreationTimeUtc(d))
+                .Select(d => Path.Combine(d, "MakinoMCP.exe"))
+                .FirstOrDefault();
         }
 
         private static void CopyDir(string source, string dest)

@@ -43,6 +43,37 @@ public class StdioSpikeTests
         }
     }
 
+    [Fact]
+    public async Task Launcher_runs_newest_local_version_when_share_is_unreachable()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var share = Path.Combine(root, "share");
+            var localAppData = Path.Combine(root, "localappdata");
+
+            var (launcherOut, mainOut) = BuildOutputs();
+            CopyDir(launcherOut, share); // no current.txt, no app\ folder: the share's content is unreachable
+            CopyDir(mainOut, Path.Combine(localAppData, "MakinoMCP", "app", "0.0.0-local"));
+
+            var transport = new StdioClientTransport(new StdioClientTransportOptions
+            {
+                Name = "makino-spike",
+                Command = Path.Combine(share, "MakinoMCP.exe"),
+                Arguments = ["serve"],
+                EnvironmentVariables = new Dictionary<string, string?> { ["LOCALAPPDATA"] = localAppData },
+            });
+
+            await using var client = await McpClient.CreateAsync(transport);
+            var tools = await client.ListToolsAsync();
+            Assert.Contains(tools, t => t.Name == "ping");
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch (IOException) { }
+        }
+    }
+
     private static (string launcher, string main) BuildOutputs()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
