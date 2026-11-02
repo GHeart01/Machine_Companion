@@ -49,6 +49,19 @@ public sealed class SharedFoldersTests : IDisposable
         return p;
     }
 
+
+    private static string? TryJunction(string link, string target)
+    {
+        var psi = new ProcessStartInfo("cmd.exe", $"/c mklink /J \"{link}\" \"{target}\"")
+        {
+            CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true,
+        };
+        using var p = Process.Start(psi)!;
+        var output = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
+        p.WaitForExit();
+        return p.ExitCode == 0 && Directory.Exists(link) ? null : "mklink /J failed: " + output.Trim();
+    }
+
     [Fact]
     public void Rejects_dotdot_escape()
     {
@@ -88,26 +101,12 @@ public sealed class SharedFoldersTests : IDisposable
         Assert.NotNull(f.ListFiles("  logs ", null, null, null));
     }
 
-    [Fact]
+    [SkippableFact]
     public void Rejects_junction_leading_out()
     {
         var link = Path.Combine(_shared, "link");
-        var psi = new ProcessStartInfo("cmd.exe", $"/c mklink /J \"{link}\" \"{_outside}\"")
-        {
-            CreateNoWindow = true,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-        using (var p = Process.Start(psi)!)
-        {
-            p.WaitForExit();
-            if (p.ExitCode != 0 || !Directory.Exists(link))
-            {
-                // Environment cannot make junctions; nothing to verify here.
-                return;
-            }
-        }
+        var failure = TryJunction(link, _outside);
+        Skip.If(failure is not null, failure);
         var f = Make();
         var e = Assert.Throws<FolderAccessException>(() => f.ReadFile("Logs", @"link\secret.txt", null, null, null));
         Assert.DoesNotContain("TOP-SECRET", e.Message);
@@ -117,21 +116,92 @@ public sealed class SharedFoldersTests : IDisposable
         Assert.Empty(f.Search("Logs", "TOP-SECRET", null, null).Hits);
     }
 
-    [Fact]
+    [SkippableFact]
     public void Allows_junction_staying_inside()
     {
         Write(@"real\a.txt", "inside text");
-        var link = Path.Combine(_shared, "alias");
-        var psi = new ProcessStartInfo("cmd.exe", $"/c mklink /J \"{link}\" \"{Path.Combine(_shared, "real")}\"")
-        {
-            CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true,
-        };
-        using (var p = Process.Start(psi)!)
-        {
-            p.WaitForExit();
-            if (p.ExitCode != 0 || !Directory.Exists(link)) return;
-        }
+        var failure = TryJunction(Path.Combine(_shared, "alias"), Path.Combine(_shared, "real"));
+        Skip.If(failure is not null, failure);
         Assert.Equal("inside text", Make().ReadFile("Logs", @"alias\a.txt", null, null, null).Text);
+    }
+
+    [SkippableFact]
+    public void Share_root_that_is_a_junction_still_hides_protected_paths()
+    {
+        var real = Path.Combine(_base, "real-share");
+        Directory.CreateDirectory(Path.Combine(real, "prog"));
+        File.WriteAllText(Path.Combine(real, "prog", "app.txt"), "PROG-SECRET");
+        File.WriteAllText(Path.Combine(real, "settings.json"), "PW-SECRET");
+        File.WriteAllText(Path.Combine(real, "ok.txt"), "PROG-SECRET public");
+        var root = Path.Combine(_base, "root-link");
+        var failure = TryJunction(root, real);
+        Skip.If(failure is not null, failure);
+        var f = new SharedFolders([new SharedFolder("S", root, "")], new Limits(),
+            [Path.Combine(real, "prog"), Path.Combine(real, "settings.json")]);
+        var hits = f.Search("S", "SECRET", null, null).Hits;
+        Assert.Equal("ok.txt", Assert.Single(hits).Path);
+        Assert.Empty(f.Search("S", "PW-SECRET", null, null).Hits);
+        var names = f.ListFiles("S", null, null, null).Entries.Select(e => e.Path).ToList();
+        Assert.DoesNotContain("prog", names);
+        Assert.DoesNotContain("settings.json", names);
+        Assert.Throws<FolderAccessException>(() => f.ReadFile("S", @"prog\app.txt", null, null, null));
+        Assert.Throws<FolderAccessException>(() => f.ReadFile("S", "settings.json", null, null, null));
+        Assert.Throws<FolderAccessException>(() => f.ListFiles("S", "prog", null, null));
+    }
+
+    [Theory]
+    [InlineData("MakinoMCP.settings.json")]
+    [InlineData("makinomcp.SETTINGS.json")]
+    [InlineData("MakinoMCP.settings.json.")]
+    [InlineData("MakinoMCP.settings.json ")]
+    public void Settings_file_name_is_refused_even_when_not_in_protected_list(string name)
+    {
+        Directory.CreateDirectory(Path.Combine(_shared, "sub"));
+        File.WriteAllText(Path.Combine(_shared, "sub", "MakinoMCP.settings.json"), "PW-SECRET");
+        File.Delete(_settingsFile);
+        var f = Make(); // no protected paths at all
+        Assert.Throws<FolderAccessException>(() => f.ReadFile("Logs", @"sub\" + name, null, null, null));
+        Assert.Empty(f.Search("Logs", "PW-SECRET", null, null).Hits);
+        Assert.DoesNotContain(f.ListFiles("Logs", "sub", null, null).Entries, e => e.Path.Contains("settings", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Tail_with_huge_count_is_bounded_and_says_so()
+    {
+        Write("huge.txt", string.Join("\n", Enumerable.Range(0, 5000).Select(i => "row " + i + new string('y', 50))));
+        var r = Make(new Limits(500, 1)).ReadFile("Logs", "huge.txt", int.MaxValue, null, null);
+        Assert.True(r.Truncated);
+        Assert.True(r.Text.Length <= 1024);
+        Assert.Equal(5000, r.LastLine);
+        Assert.NotNull(r.Note);
+    }
+
+    [Fact]
+    public void Share_at_a_drive_root_works()
+    {
+        var root = Path.GetPathRoot(_shared)!; // the temp drive's root
+        var rel = Path.GetRelativePath(root, _shared);
+        File.WriteAllText(Path.Combine(_shared, "drive.txt"), "from drive root");
+        var f = new SharedFolders([new SharedFolder("Drive", root, "")], new Limits(), [Path.Combine(_shared, "MakinoMCP.settings.json")]);
+        Assert.Equal("from drive root", f.ReadFile("Drive", Path.Combine(rel, "drive.txt"), null, null, null).Text);
+        var listing = f.ListFiles("Drive", rel, "drive.txt", null);
+        Assert.Equal(Path.Combine(rel, "drive.txt"), Assert.Single(listing.Entries).Path);
+        Assert.Throws<FolderAccessException>(() => f.ReadFile("Drive", Path.Combine(rel, "MakinoMCP.settings.json"), null, null, null));
+        Assert.Throws<FolderAccessException>(() => f.ReadFile("Drive", @"..\x.txt", null, null, null));
+    }
+
+    [Fact]
+    public void Wildcards_are_simple_and_never_throw()
+    {
+        Write("a1.log", "x");
+        Write("ab.log", "x");
+        Write("a1.txt", "x");
+        var f = Make();
+        Assert.Equal(["a1.log", "ab.log"], f.ListFiles("Logs", null, "a?.log", null).Entries.Select(e => e.Path).OrderBy(x => x));
+        Assert.Equal(2, f.ListFiles("Logs", null, "*.LOG", null).Entries.Count);
+        var evil = string.Concat(Enumerable.Repeat("*a", 40)) + "b";
+        Write(new string('a', 200) + ".txt", "x");
+        Assert.Empty(f.ListFiles("Logs", null, evil, null).Entries);
     }
 
     [Fact]
@@ -296,7 +366,7 @@ public sealed class SharedFoldersTests : IDisposable
         Assert.Contains("no path", e.Message);
         // MaxRows 0 means the default 500.
         for (var i = 0; i < 3; i++) Write($"f{i}.txt", "x");
-        Assert.Equal(5, f.ListFiles("Logs", null, null, 1000).Entries.Count); // settings file, a.txt, f0..f2
+        Assert.Equal(4, f.ListFiles("Logs", null, null, 1000).Entries.Count); // a.txt, f0..f2 (the settings file is always hidden)
     }
 
     [Fact]

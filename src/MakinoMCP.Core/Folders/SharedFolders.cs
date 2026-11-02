@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.RegularExpressions;
 using MakinoMCP.Core.Settings;
 
 namespace MakinoMCP.Core.Folders;
@@ -15,6 +14,7 @@ public sealed class SharedFolders
     private const long SearchMaxFileBytes = 50L * 1024 * 1024;
     private const int SearchMaxFiles = 50_000;
     private const int HitTextChars = 300;
+    private const string SettingsFileName = "MakinoMCP.settings.json";
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(5);
 
     private readonly IReadOnlyList<SharedFolder> _folders;
@@ -98,15 +98,16 @@ public sealed class SharedFolders
                 : new FolderAccessException($"There is no folder '{Display(subPath)}' inside shared folder '{folder.Trim()}'.");
         }
 
-        Regex? match = null;
+        string? match = null;
         if (!string.IsNullOrWhiteSpace(pattern))
         {
             if (pattern.IndexOfAny(['\\', '/', ':']) >= 0)
             {
                 throw new FolderAccessException("The pattern matches names in the listed folder only. Use something like *.log, without folders in it.");
             }
-            match = GlobToRegex(pattern.Trim());
+            match = pattern.Trim();
         }
+        var rootReal = RealPath(root);
 
         var take = Math.Min(limit is > 0 ? limit.Value : _maxRows, _maxRows);
         var entries = new List<FileSystemInfo>();
@@ -114,8 +115,8 @@ public sealed class SharedFolders
         {
             foreach (var info in new DirectoryInfo(dir).EnumerateFileSystemInfos())
             {
-                if (match is not null && !match.IsMatch(info.Name)) continue;
-                if (IsProtected(info.FullName)) continue;
+                if (match is not null && !NameMatches(match, info.Name)) continue;
+                if (IsHidden(root, rootReal, info.FullName)) continue;
                 if (IsLink(info) && !LinkStaysInside(info, root)) continue;
                 entries.Add(info);
             }
@@ -129,7 +130,7 @@ public sealed class SharedFolders
         var shown = sorted.Take(take).Select(e => new FileEntry(
             Relative(root, e.FullName),
             e is FileInfo fi ? SafeLength(fi) : null,
-            new DateTimeOffset(SafeWriteTime(e)),
+            SafeOffset(SafeWriteTime(e)),
             e is DirectoryInfo)).ToList();
 
         var capped = sorted.Count > shown.Count;
@@ -184,6 +185,7 @@ public sealed class SharedFolders
         var list = new List<(int No, string Text)>();
         long chars = 0;
         var rangeFull = false;
+        var droppedForSize = false;
         var nextLine = 0;
         var total = 0;
         var cutLongLine = false;
@@ -193,6 +195,7 @@ public sealed class SharedFolders
             queue.Clear();
             list.Clear();
             chars = 0;
+            droppedForSize = false;
             rangeFull = false;
             nextLine = 0;
             total = 0;
@@ -210,6 +213,12 @@ public sealed class SharedFolders
                 if (queue.Count > tail)
                 {
                     chars -= queue.Dequeue().Text.Length + 1;
+                }
+                // Memory stays bounded by size as well as by line count.
+                while (chars > _maxChars && queue.Count > 1)
+                {
+                    chars -= queue.Dequeue().Text.Length + 1;
+                    droppedForSize = true;
                 }
             }
             else if (n >= from && n < upto && !rangeFull)
@@ -234,13 +243,7 @@ public sealed class SharedFolders
         if (tail is not null)
         {
             var kept = queue.ToList();
-            var asked = kept.Count;
-            while (kept.Count > 1 && chars > _maxChars)
-            {
-                chars -= kept[0].Text.Length + 1;
-                kept.RemoveAt(0);
-            }
-            if (kept.Count < asked)
+            if (droppedForSize)
             {
                 truncated = true;
                 notes.Add($"Only the last {kept.Count} lines fit in the {_maxFileKB} KB limit. Read earlier lines with fromLine and lineCount.");
@@ -294,7 +297,8 @@ public sealed class SharedFolders
             throw new FolderAccessException($"Shared folder '{folder.Trim()}' is not reachable right now.");
         }
 
-        var match = string.IsNullOrWhiteSpace(pattern) ? null : GlobToRegex(pattern.Trim());
+        var match = string.IsNullOrWhiteSpace(pattern) ? null : pattern.Trim();
+        var rootReal = RealPath(root);
         var cutoff = sinceHours is > 0 ? DateTime.Now.AddHours(-sinceHours.Value) : (DateTime?)null;
 
         var files = new List<FileInfo>();
@@ -310,7 +314,7 @@ public sealed class SharedFolders
 
             foreach (var child in children)
             {
-                if (IsProtected(child.FullName)) continue;
+                if (IsHidden(root, rootReal, child.FullName)) continue;
                 if (child is DirectoryInfo d)
                 {
                     // Links to folders are not followed while searching (avoids loops and escapes).
@@ -319,7 +323,7 @@ public sealed class SharedFolders
                 }
                 var f = (FileInfo)child;
                 if (IsLink(f) && !LinkStaysInside(f, root)) continue;
-                if (match is not null && !match.IsMatch(f.Name)) continue;
+                if (match is not null && !NameMatches(match, f.Name)) continue;
                 if (cutoff is not null && SafeWriteTime(f) < cutoff) continue;
                 if (files.Count >= SearchMaxFiles) { tooMany = true; break; }
                 files.Add(f);
@@ -412,7 +416,7 @@ public sealed class SharedFolders
         var rootReal = RealPath(root);
         var current = root;
         var real = rootReal;
-        var rest = full.Length > root.Length ? full[(root.Length + 1)..] : "";
+        var rest = Relative(root, full);
         foreach (var segment in rest.Split('\\', StringSplitOptions.RemoveEmptyEntries))
         {
             current = Path.Combine(current, segment);
@@ -437,7 +441,7 @@ public sealed class SharedFolders
             }
         }
 
-        if (IsProtected(full) || IsProtected(real))
+        if (IsSettingsName(full) || IsSettingsName(real) || IsProtected(full) || IsProtected(real))
         {
             throw new FolderAccessException(
                 "That file belongs to MakinoMCP itself (its settings or program files) and is never shared. Ask for something else in the shared folder.");
@@ -499,9 +503,32 @@ public sealed class SharedFolders
         return (IsAtOrInside(target, root) || IsAtOrInside(target, RealPath(root))) && !IsProtected(target);
     }
 
-    private static bool IsAtOrInside(string candidate, string container) =>
-        string.Equals(candidate, container, StringComparison.OrdinalIgnoreCase)
-        || candidate.StartsWith(container + '\\', StringComparison.OrdinalIgnoreCase);
+    private static bool IsAtOrInside(string candidate, string container)
+    {
+        if (string.Equals(candidate, container, StringComparison.OrdinalIgnoreCase)) return true;
+        // A drive root such as C:\ already ends with a separator.
+        var prefix = container.EndsWith('\\') ? container : container + '\\';
+        return candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>MakinoMCP.settings.json (holds the password) is never shared, wherever it is and however it is spelled.</summary>
+    private static bool IsSettingsName(string fullPath)
+    {
+        var name = Path.GetFileName(fullPath.TrimEnd('\\', '/')).TrimEnd(' ', '.');
+        return string.Equals(name, SettingsFileName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>True when the entry, by its path here or by its real path (root reached through a link), must stay hidden.</summary>
+    private bool IsHidden(string root, string rootReal, string fullPath)
+    {
+        if (IsSettingsName(fullPath) || IsProtected(fullPath)) return true;
+        if (!string.Equals(root, rootReal, StringComparison.OrdinalIgnoreCase))
+        {
+            var rel = Relative(root, fullPath);
+            if (rel.Length > 0 && IsProtected(Path.Combine(rootReal, rel))) return true;
+        }
+        return false;
+    }
 
     private static string TrimSep(string p)
     {
@@ -517,8 +544,11 @@ public sealed class SharedFolders
         catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { return null; }
     }
 
-    private static string Relative(string root, string full) =>
-        full.Length <= root.Length ? "" : full[(root.Length + 1)..];
+    private static string Relative(string root, string full)
+    {
+        if (full.Length <= root.Length) return "";
+        return full[(root.EndsWith('\\') ? root.Length : root.Length + 1)..];
+    }
 
     private static string Display(string? p) => string.IsNullOrWhiteSpace(p) ? "(the folder itself)" : p.Trim();
 
@@ -532,9 +562,15 @@ public sealed class SharedFolders
         try { return f.Length; } catch (Exception) { return 0; }
     }
 
-    private static Regex GlobToRegex(string glob) =>
-        new("^" + Regex.Escape(glob).Replace("\\*", ".*").Replace("\\?", ".") + "$",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Singleline, TimeSpan.FromSeconds(1));
+    // Linear-time matcher (no regex, so no timeouts): * and ? only, case-insensitive.
+    private static bool NameMatches(string pattern, string name) =>
+        System.IO.Enumeration.FileSystemName.MatchesSimpleExpression(pattern, name, ignoreCase: true);
+
+    private static DateTimeOffset SafeOffset(DateTime t)
+    {
+        try { return new DateTimeOffset(t); }
+        catch (ArgumentOutOfRangeException) { return DateTimeOffset.MinValue; }
+    }
 
     // ---------------------------------------------------------------- reading text
 
@@ -564,7 +600,9 @@ public sealed class SharedFolders
     {
         using var fs = OpenShared(full);
         var buf = new byte[BinarySniffBytes];
-        var n = fs.Read(buf, 0, buf.Length);
+        int n;
+        try { n = fs.Read(buf, 0, buf.Length); }
+        catch (IOException) { throw new FolderAccessException("That file could not be read (it may have been moved, locked or gone offline)."); }
         if (n >= 2 && ((buf[0] == 0xFF && buf[1] == 0xFE) || (buf[0] == 0xFE && buf[1] == 0xFF))) return false;
         if (n >= 3 && buf[0] == 0xEF && buf[1] == 0xBB && buf[2] == 0xBF) return false;
         return Array.IndexOf(buf, (byte)0, 0, n) >= 0;
@@ -594,6 +632,10 @@ public sealed class SharedFolders
             catch (DecoderFallbackException)
             {
                 reset();
+            }
+            catch (IOException)
+            {
+                throw new FolderAccessException("That file could not be read to the end (it may have been moved, locked or gone offline).");
             }
         }
     }
