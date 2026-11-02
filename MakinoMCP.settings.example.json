@@ -1,0 +1,16 @@
+{
+  "makino": {
+    "server": "MAKINO-CELL-PC",
+    "database": "Makino",
+    "useWindowsLogin": false,
+    "user": "your-login",
+    "password": "",
+    "trustServerCertificate": true,
+    "connectTimeoutSeconds": 10
+  },
+  "folders": [
+    { "name": "makino-logs", "path": "\\\\MAKINO-CELL-PC\\MakinoLog", "description": "Cell PC logs (C:\\Makino\\Log)" },
+    { "name": "ade", "path": "\\\\MAKINO-CELL-PC\\ADE", "description": "ADE drop folder, ADE_Success and ADE_Error" }
+  ],
+  "limits": { "maxRows": 500, "maxFileKB": 256 }
+}

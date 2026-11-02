@@ -8,6 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="ModelContextProtocol" Version="2.3.0" />
+    <ProjectReference Include="..\MakinoMCP.Core\MakinoMCP.Core.csproj" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
   </ItemGroup>
 </Project>

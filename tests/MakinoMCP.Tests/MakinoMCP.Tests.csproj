@@ -12,6 +12,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\MakinoMCP\MakinoMCP.csproj" />
+    <ProjectReference Include="..\..\src\MakinoMCP.Core\MakinoMCP.Core.csproj" />
     <ProjectReference Include="..\..\src\MakinoMCP.Launcher\MakinoMCP.Launcher.csproj" ReferenceOutputAssembly="false" SkipGetTargetFrameworkProperties="true" />
   </ItemGroup>
 </Project>

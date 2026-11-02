@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/MakinoMCP.Core/MakinoMCP.Core.csproj" />
     <Project Path="src/MakinoMCP/MakinoMCP.csproj" />
     <Project Path="src/MakinoMCP.Launcher/MakinoMCP.Launcher.csproj" />
   </Folder>
