@@ -187,8 +187,10 @@ internal sealed class SetupForm : Form
         _snippets.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
         AddSnippet(_snippets, "Claude Code", _claudeCode, _copyClaudeCode);
-        AddSnippet(_snippets, "Cowork (Claude desktop)", _cowork, _copyCowork);
-        var how = Wrapping("Claude Code: paste in a terminal. Cowork: add to the mcpServers section of claude_desktop_config.json, then restart Claude.");
+        AddSnippet(_snippets, "Cowork (Claude desktop, not yet tested)", _cowork, _copyCowork);
+        var how = Wrapping("Claude Code (tested): paste in a terminal. Cowork (not yet tested): add to the mcpServers section of " +
+                           "claude_desktop_config.json, then restart Claude. If Cowork doesn't list the MakinoMCP tools after a " +
+                           "restart, use Claude Code or open an issue on GitHub.");
         how.Margin = new Padding(0, 8, 0, 0);
         _snippets.Controls.Add(how);
         _snippets.SetColumnSpan(how, 2);

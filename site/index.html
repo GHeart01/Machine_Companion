@@ -215,10 +215,11 @@ footer p { margin: 0 0 10px; max-width: 40rem; }
       <p class="note prose">Windows SmartScreen may warn about an unknown publisher, because the program is not code-signed. Choose <strong>More info</strong>, then <strong>Run anyway</strong>, only if you downloaded it from the release above.</p>
 
       <h3>Connect Claude</h3>
-      <p class="label">Claude Code, once per PC</p>
+      <p class="label">Claude Code, once per PC (tested)</p>
       <pre tabindex="0"><code>claude mcp add --scope user makino -- "\\server\Tools\MakinoMCP\MakinoMCP.exe" serve</code></pre>
-      <p class="label">Claude Cowork or Claude Desktop: add to <code>mcpServers</code>, then restart the app</p>
+      <p class="label">Claude Cowork or Claude Desktop (not yet tested): add to <code>mcpServers</code>, then restart the app</p>
       <pre tabindex="0"><code>"makino": { "command": "\\\\server\\Tools\\MakinoMCP\\MakinoMCP.exe", "args": ["serve"] }</code></pre>
+      <p class="note prose">The Cowork route is not yet tested. If Cowork doesn't list the MakinoMCP tools after a restart, use Claude Code or <a href="https://github.com/GHeart01/Machine_Companion/issues">open an issue</a>.</p>
     </section>
 
     <section class="block" aria-labelledby="ask">

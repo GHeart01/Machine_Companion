@@ -53,17 +53,21 @@ runs the newest copy already on the PC. Settings are saved in `MakinoMCP.setting
 
 The setup window shows both snippets with your path filled in.
 
-**Claude Code** (once per PC, for your user):
+**Claude Code** (tested; once per PC, for your user):
 
 ```
 claude mcp add --scope user makino -- "\\server\Tools\MakinoMCP\MakinoMCP.exe" serve
 ```
 
-**Claude Cowork / Claude Desktop**: add this entry to `mcpServers` in the app's configuration, then restart the app.
+**Claude Cowork / Claude Desktop** (not yet tested): add this entry to `mcpServers` in the app's configuration, then
+restart the app.
 
 ```json
 "makino": { "command": "\\\\server\\Tools\\MakinoMCP\\MakinoMCP.exe", "args": ["serve"] }
 ```
+
+The Cowork route is not yet tested. If Cowork doesn't list the MakinoMCP tools after a restart, use Claude Code or
+[open an issue](https://github.com/GHeart01/Machine_Companion/issues).
 
 ## Updating
 
