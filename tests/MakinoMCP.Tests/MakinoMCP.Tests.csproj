@@ -12,6 +12,9 @@
     <PackageReference Include="Xunit.SkippableFact" Version="1.5.85" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="..\..\src\MakinoMCP.Launcher\VersionCopier.cs" Link="VersionCopier.cs" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\..\src\MakinoMCP\MakinoMCP.csproj" />
     <ProjectReference Include="..\..\src\MakinoMCP.Core\MakinoMCP.Core.csproj" />
     <ProjectReference Include="..\..\src\MakinoMCP.Launcher\MakinoMCP.Launcher.csproj" ReferenceOutputAssembly="false" SkipGetTargetFrameworkProperties="true" />

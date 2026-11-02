@@ -11,6 +11,7 @@ namespace MakinoMCP.Launcher
         private const int Steps = 1000;
         private readonly ProgressBar _bar;
         private long _lastTick;
+        private volatile bool _finished;
 
         public CopyProgressForm()
         {
@@ -70,7 +71,16 @@ namespace MakinoMCP.Launcher
 
         public void Finish()
         {
+            _finished = true;
             Post(Close);
+        }
+
+        // Alt+F4 and the like cannot end the window while the copy runs; Windows shutdown and Task Manager still can.
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (!_finished && e.CloseReason != CloseReason.WindowsShutDown && e.CloseReason != CloseReason.TaskManagerClosing)
+                e.Cancel = true;
+            base.OnFormClosing(e);
         }
 
         private void Post(Action a)

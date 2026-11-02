@@ -217,66 +217,10 @@ namespace MakinoMCP.Launcher
             }
         }
 
-        // Copies versions\<version> from the share to a unique temp folder, then renames it into place. Throws on
-        // failure (after removing its temp folder). progress, when given, gets (bytes copied, total bytes).
-        internal static void CopyVersionToLocal(string launcherDir, string version, Action<long, long> progress)
+        // Copies versions\<version> from the share into place; throws on failure. progress gets (bytes copied, total).
+        private static void CopyVersionToLocal(string launcherDir, string version, Action<long, long> progress)
         {
-            string tmp = null;
-            try
-            {
-                string local = LocalApp();
-                Directory.CreateDirectory(local);
-                CleanStale(local);
-                string target = Path.Combine(local, version);
-                if (Directory.Exists(target)) return;
-
-                string source = Path.Combine(launcherDir, "versions", version);
-                long total = progress == null ? 0 : DirSize(source);
-                long done = 0;
-                Action<long> onBytes = null;
-                if (progress != null) onBytes = n => { done += n; progress(done, total); };
-                tmp = target + ".tmp-" + Guid.NewGuid().ToString("N");
-                CopyDir(source, tmp, onBytes);
-                try
-                {
-                    Directory.Move(tmp, target);
-                }
-                catch (IOException)
-                {
-                    if (!Directory.Exists(target)) throw;
-                    // Another copy won the race.
-                }
-                TryDelete(tmp);
-            }
-            catch
-            {
-                if (tmp != null) TryDelete(tmp);
-                throw;
-            }
-        }
-
-        private static long DirSize(string dir)
-        {
-            long n = 0;
-            foreach (string f in Directory.GetFiles(dir, "*", SearchOption.AllDirectories)) n += new FileInfo(f).Length;
-            return n;
-        }
-
-        private static void CleanStale(string local)
-        {
-            try
-            {
-                foreach (string d in Directory.GetDirectories(local, "*.tmp*"))
-                {
-                    if (Directory.GetLastWriteTimeUtc(d) < DateTime.UtcNow.AddHours(-1)) TryDelete(d);
-                }
-            }
-            catch { }
-        }
-
-        private static void TryDelete(string dir)
-        {
-            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+            VersionCopier.CopyToLocal(Path.Combine(launcherDir, "versions", version), LocalApp(), version, progress);
         }
 
         private static string NewestLocal(string local)
@@ -288,31 +232,6 @@ namespace MakinoMCP.Launcher
                 .OrderByDescending(d => Directory.GetCreationTimeUtc(d))
                 .Select(d => Path.Combine(d, "MakinoMCP.exe"))
                 .FirstOrDefault();
-        }
-
-        private static void CopyDir(string source, string dest, Action<long> onBytes)
-        {
-            Directory.CreateDirectory(dest);
-            foreach (string f in Directory.GetFiles(source))
-                CopyFile(f, Path.Combine(dest, Path.GetFileName(f)), onBytes);
-            foreach (string d in Directory.GetDirectories(source))
-                CopyDir(d, Path.Combine(dest, Path.GetFileName(d)), onBytes);
-        }
-
-        private static void CopyFile(string from, string to, Action<long> onBytes)
-        {
-            if (onBytes == null) { File.Copy(from, to, true); return; }
-            var buffer = new byte[1 << 20];
-            using (var input = File.OpenRead(from))
-            using (var output = File.Create(to))
-            {
-                int n;
-                while ((n = input.Read(buffer, 0, buffer.Length)) > 0)
-                {
-                    output.Write(buffer, 0, n);
-                    onBytes(n);
-                }
-            }
         }
 
         private static async Task<int> Run(string exe, string[] args, string settingsPath)

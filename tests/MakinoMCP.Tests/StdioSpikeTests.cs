@@ -243,6 +243,63 @@ public class StdioSpikeTests
     }
 
     [Fact]
+    public async Task Setup_falls_back_to_the_share_when_the_copy_fails()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var share = Path.Combine(root, "share");
+            var localAppData = Path.Combine(root, "localappdata");
+            Directory.CreateDirectory(localAppData);
+
+            var (launcherOut, _) = BuildOutputs();
+            CopyDir(launcherOut, share);
+            File.WriteAllText(Path.Combine(share, "current.txt"), "0.0.0-test");
+            var version = Directory.CreateDirectory(Path.Combine(share, "versions", "0.0.0-test")).FullName;
+            File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), Path.Combine(version, "MakinoMCP.exe"));
+            var locked = Path.Combine(version, "zz-locked.bin"); // copied after the exe, so the copy fails part-way
+            File.WriteAllText(locked, "x");
+
+            var psi = new System.Diagnostics.ProcessStartInfo(Path.Combine(share, "MakinoMCP.exe"), "setup")
+            {
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            psi.Environment["LOCALAPPDATA"] = localAppData;
+            psi.Environment["MAKINOMCP_NO_WINDOW"] = "1";
+            string output, error;
+            using (new FileStream(locked, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+                using var launcher = System.Diagnostics.Process.Start(psi)!;
+                var stdout = launcher.StandardOutput.ReadToEndAsync();
+                var stderr = launcher.StandardError.ReadToEndAsync();
+                launcher.StandardInput.Close();
+                Assert.True(launcher.WaitForExit(30000), "launcher did not exit");
+                output = await stdout;
+                error = await stderr;
+            }
+
+            Assert.Contains("Couldn't copy MakinoMCP to this PC", error);
+            Assert.Contains("Opening it from the share instead", error);
+            Assert.Contains(version, output, StringComparison.OrdinalIgnoreCase); // the share copy was started
+            // The background prefetch the share run starts fails too and cleans up; wait for it.
+            var app = Path.Combine(localAppData, "MakinoMCP", "app");
+            var deadline = DateTime.UtcNow.AddSeconds(15);
+            while (DateTime.UtcNow < deadline && Directory.Exists(app) && Directory.GetDirectories(app, "*.tmp*").Length > 0)
+                await Task.Delay(200);
+            Assert.False(Directory.Exists(app) && Directory.GetDirectories(app, "*.tmp*").Length > 0, "a .tmp folder was left behind");
+            Assert.False(Directory.Exists(Path.Combine(app, "0.0.0-test")));
+        }
+        finally
+        {
+            await CleanUp(root);
+        }
+    }
+
+    [Fact]
     public async Task Invalid_version_in_current_txt_falls_back_to_newest_local()
     {
         var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
