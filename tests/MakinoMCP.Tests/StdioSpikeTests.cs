@@ -197,6 +197,52 @@ public class StdioSpikeTests
     }
 
     [Fact]
+    public async Task Setup_copies_to_this_pc_before_starting_the_local_copy()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var share = Path.Combine(root, "share");
+            var localAppData = Path.Combine(root, "localappdata");
+            Directory.CreateDirectory(localAppData);
+
+            var (launcherOut, _) = BuildOutputs();
+            CopyDir(launcherOut, share);
+            File.WriteAllText(Path.Combine(share, "current.txt"), "0.0.0-test");
+            // Stand-in for the main exe: cmd.exe prints its prompt, which names the folder it was started in.
+            var version = Directory.CreateDirectory(Path.Combine(share, "versions", "0.0.0-test")).FullName;
+            File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), Path.Combine(version, "MakinoMCP.exe"));
+
+            var psi = new System.Diagnostics.ProcessStartInfo(Path.Combine(share, "MakinoMCP.exe"), "setup")
+            {
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            psi.Environment["LOCALAPPDATA"] = localAppData;
+            psi.Environment["MAKINOMCP_NO_WINDOW"] = "1"; // tests never show the progress window
+            using var launcher = System.Diagnostics.Process.Start(psi)!;
+            var stdout = launcher.StandardOutput.ReadToEndAsync();
+            var stderr = launcher.StandardError.ReadToEndAsync();
+            launcher.StandardInput.Close();
+            Assert.True(launcher.WaitForExit(30000), "launcher did not exit");
+
+            var installed = Path.Combine(localAppData, "MakinoMCP", "app", "0.0.0-test");
+            Assert.True(File.Exists(Path.Combine(installed, "MakinoMCP.exe")), "setup did not copy the version to this PC");
+            Assert.Empty(Directory.GetDirectories(Path.Combine(localAppData, "MakinoMCP", "app"), "*.tmp*"));
+            // The child ran from the local copy, and the copy was complete before it started (no background copy to wait for).
+            Assert.Contains(installed, await stdout, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("share", (await stderr).Replace(root, ""), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            await CleanUp(root);
+        }
+    }
+
+    [Fact]
     public async Task Invalid_version_in_current_txt_falls_back_to_newest_local()
     {
         var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));

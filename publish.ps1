@@ -39,7 +39,7 @@ New-Item -ItemType Directory -Path $versionDir -Force | Out-Null
 
 Run 'main publish' {
     dotnet publish $main -c Release -r win-x64 --self-contained -p:PublishSingleFile=true `
-        -p:IncludeNativeLibrariesForSelfExtract=true -p:Version=$Version -o $versionDir --nologo
+        -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:Version=$Version -o $versionDir --nologo
 }
 Run 'launcher publish' { dotnet publish $launcher -c Release -o $layout --nologo }
 

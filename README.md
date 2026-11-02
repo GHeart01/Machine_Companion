@@ -37,6 +37,8 @@ A login that can only read is recommended: then the database enforces the promis
 2. Unzip it into a folder, ideally one on a share so every PC uses the same copy (for example `\\server\Tools\MakinoMCP`).
 3. Run `MakinoMCP.exe`. The setup window opens: enter the server, database and login, press **Test connection**, add any
    folders to share, then **Save**.
+4. Open `MakinoMCP.exe` once on each PC that will use Claude. The first time, it copies itself to the PC (about a minute on a
+   slow network). After that Claude connects in a second.
 
 Windows SmartScreen may warn that the program is from an unknown publisher: it is not code-signed. Choose **More info**,
 then **Run anyway** only if you downloaded it from the release above.

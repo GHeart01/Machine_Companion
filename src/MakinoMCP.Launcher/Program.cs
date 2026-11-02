@@ -5,6 +5,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
+using System.Windows.Forms;
 
 namespace MakinoMCP.Launcher
 {
@@ -12,6 +13,7 @@ namespace MakinoMCP.Launcher
     // stdin/stdout/stderr between the MCP client and it as raw bytes. Stdout carries only MCP messages.
     internal static class Program
     {
+        [STAThread]
         private static int Main(string[] args)
         {
             try
@@ -19,6 +21,9 @@ namespace MakinoMCP.Launcher
                 string launcherDir = AppDomain.CurrentDomain.BaseDirectory;
                 // Background copy started by a first run; must stay silent (no stdout/stderr).
                 if (args.Length == 2 && args[0] == "--prefetch") return Prefetch(launcherDir, args[1]);
+                // Setup (no arguments, or "setup") prepares this PC first: the copy is finished before the setup window
+                // opens, while a small window shows progress. Serving never waits for a copy (see ResolveExe).
+                if (IsSetupMode(args)) PrepareThisPc(launcherDir);
                 string exe = ResolveExe(launcherDir);
                 if (exe == null)
                 {
@@ -32,6 +37,65 @@ namespace MakinoMCP.Launcher
                 Console.Error.WriteLine("MakinoMCP launcher failed: " + ex.Message);
                 return 1;
             }
+        }
+
+        internal static bool IsSetupMode(string[] args)
+        {
+            return args.Length == 0 || args[0].Equals("setup", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Copies the current version to this PC if it is not there yet, with a progress window when a desktop is
+        // available. Never throws: on failure it says so and the caller runs the share copy.
+        private static void PrepareThisPc(string launcherDir)
+        {
+            try
+            {
+                string currentTxt = Path.Combine(launcherDir, "current.txt");
+                if (!File.Exists(currentTxt)) return;
+                string version = File.ReadAllText(currentTxt).Trim();
+                if (!IsValidVersion(version)) return;
+                if (Directory.Exists(Path.Combine(LocalApp(), version))) return;
+                if (!Directory.Exists(Path.Combine(launcherDir, "versions", version))) return;
+
+                Exception error = null;
+                bool showWindow = Environment.UserInteractive
+                    && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MAKINOMCP_NO_WINDOW"));
+                if (showWindow) error = CopyWithWindow(launcherDir, version);
+                else
+                {
+                    try { CopyVersionToLocal(launcherDir, version, null); } catch (Exception ex) { error = ex; }
+                }
+
+                if (error != null)
+                {
+                    string text = "Couldn't copy MakinoMCP to this PC: " + error.Message + ". Opening it from the share instead.";
+                    if (showWindow) MessageBox.Show(text, "MakinoMCP", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    else Console.Error.WriteLine("MakinoMCP: " + text);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("MakinoMCP: could not prepare this PC (" + ex.Message + ").");
+            }
+        }
+
+        // A small progress window; the copy runs on a worker thread and the window closes itself when it ends.
+        private static Exception CopyWithWindow(string launcherDir, string version)
+        {
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Exception error = null;
+            using (var form = new CopyProgressForm())
+            {
+                form.Shown += (s, e) => Task.Run(() =>
+                {
+                    try { CopyVersionToLocal(launcherDir, version, form.Report); }
+                    catch (Exception ex) { error = ex; }
+                    form.Finish();
+                });
+                Application.Run(form);
+            }
+            return error;
         }
 
         private static string LocalApp()
@@ -139,21 +203,40 @@ namespace MakinoMCP.Launcher
                 && !Path.IsPathRooted(v);
         }
 
-        // Copies versions\<version> from the share to a unique temp folder, then renames it into place.
         private static int Prefetch(string launcherDir, string version)
+        {
+            try
+            {
+                if (!IsValidVersion(version)) return 1;
+                CopyVersionToLocal(launcherDir, version, null);
+                return 0;
+            }
+            catch
+            {
+                return 1;
+            }
+        }
+
+        // Copies versions\<version> from the share to a unique temp folder, then renames it into place. Throws on
+        // failure (after removing its temp folder). progress, when given, gets (bytes copied, total bytes).
+        internal static void CopyVersionToLocal(string launcherDir, string version, Action<long, long> progress)
         {
             string tmp = null;
             try
             {
-                if (!IsValidVersion(version)) return 1;
                 string local = LocalApp();
                 Directory.CreateDirectory(local);
                 CleanStale(local);
                 string target = Path.Combine(local, version);
-                if (Directory.Exists(target)) return 0;
+                if (Directory.Exists(target)) return;
 
+                string source = Path.Combine(launcherDir, "versions", version);
+                long total = progress == null ? 0 : DirSize(source);
+                long done = 0;
+                Action<long> onBytes = null;
+                if (progress != null) onBytes = n => { done += n; progress(done, total); };
                 tmp = target + ".tmp-" + Guid.NewGuid().ToString("N");
-                CopyDir(Path.Combine(launcherDir, "versions", version), tmp);
+                CopyDir(source, tmp, onBytes);
                 try
                 {
                     Directory.Move(tmp, target);
@@ -161,16 +244,22 @@ namespace MakinoMCP.Launcher
                 catch (IOException)
                 {
                     if (!Directory.Exists(target)) throw;
-                    // Another prefetch won the race.
+                    // Another copy won the race.
                 }
                 TryDelete(tmp);
-                return 0;
             }
             catch
             {
                 if (tmp != null) TryDelete(tmp);
-                return 1;
+                throw;
             }
+        }
+
+        private static long DirSize(string dir)
+        {
+            long n = 0;
+            foreach (string f in Directory.GetFiles(dir, "*", SearchOption.AllDirectories)) n += new FileInfo(f).Length;
+            return n;
         }
 
         private static void CleanStale(string local)
@@ -201,13 +290,29 @@ namespace MakinoMCP.Launcher
                 .FirstOrDefault();
         }
 
-        private static void CopyDir(string source, string dest)
+        private static void CopyDir(string source, string dest, Action<long> onBytes)
         {
             Directory.CreateDirectory(dest);
             foreach (string f in Directory.GetFiles(source))
-                File.Copy(f, Path.Combine(dest, Path.GetFileName(f)), true);
+                CopyFile(f, Path.Combine(dest, Path.GetFileName(f)), onBytes);
             foreach (string d in Directory.GetDirectories(source))
-                CopyDir(d, Path.Combine(dest, Path.GetFileName(d)));
+                CopyDir(d, Path.Combine(dest, Path.GetFileName(d)), onBytes);
+        }
+
+        private static void CopyFile(string from, string to, Action<long> onBytes)
+        {
+            if (onBytes == null) { File.Copy(from, to, true); return; }
+            var buffer = new byte[1 << 20];
+            using (var input = File.OpenRead(from))
+            using (var output = File.Create(to))
+            {
+                int n;
+                while ((n = input.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    output.Write(buffer, 0, n);
+                    onBytes(n);
+                }
+            }
         }
 
         private static async Task<int> Run(string exe, string[] args, string settingsPath)
