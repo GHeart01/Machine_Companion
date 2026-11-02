@@ -18,6 +18,7 @@ internal sealed class FakeMakinoReader : IMakinoReader
 
     public Func<Exception>? Fail { get; init; }
     public bool Hang { get; init; }
+    public bool CanWrite { get; init; }
 
     private async Task<T> Answer<T>(Func<T> make, CancellationToken ct, string? device = null)
     {
@@ -71,5 +72,5 @@ internal sealed class FakeMakinoReader : IMakinoReader
         ]), ct);
 
     public Task<LoginRightsInfo> GetLoginRightsAsync(CancellationToken ct) =>
-        Answer(() => new LoginRightsInfo(false, Devices.Count, "read only"), ct);
+        Answer(() => new LoginRightsInfo(CanWrite, Devices.Count, CanWrite ? "can write" : "read only"), ct);
 }
