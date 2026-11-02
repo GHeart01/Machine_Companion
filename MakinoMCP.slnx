@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/MakinoMCP/MakinoMCP.csproj" />
+    <Project Path="src/MakinoMCP.Launcher/MakinoMCP.Launcher.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/MakinoMCP.Tests/MakinoMCP.Tests.csproj" />
+  </Folder>
+</Solution>
