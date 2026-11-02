@@ -65,15 +65,25 @@ public static class SettingsStore
         return new(settings, null);
     }
 
-    /// <summary>Writes to a .tmp file, then swaps it in so a reader never sees half a file.</summary>
+    /// <summary>Writes to a .tmp file, then swaps it in so a reader never sees half a file. If the swap fails the .tmp
+    /// (it holds the password) is deleted before the error is passed on.</summary>
     public static void Save(string path, McpSettings s)
     {
         var dir = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(path));
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
         var tmp = path + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(s, Options));
-        if (File.Exists(path)) File.Replace(tmp, path, null);
-        else File.Move(tmp, path);
+        try
+        {
+            File.WriteAllText(tmp, JsonSerializer.Serialize(s, Options));
+            if (File.Exists(path)) File.Replace(tmp, path, null);
+            else File.Move(tmp, path);
+        }
+        catch
+        {
+            try { File.Delete(tmp); }
+            catch (Exception) { /* best effort; the original error matters more */ }
+            throw;
+        }
     }
 
     /// <summary>The path after <c>--settings</c>, else MakinoMCP.settings.json beside the exe.</summary>

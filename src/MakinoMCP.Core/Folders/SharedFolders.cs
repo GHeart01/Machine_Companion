@@ -500,7 +500,8 @@ public sealed class SharedFolders
     {
         var target = ResolvedTarget(info);
         if (target is null) return false;
-        return (IsAtOrInside(target, root) || IsAtOrInside(target, RealPath(root))) && !IsProtected(target);
+        return (IsAtOrInside(target, root) || IsAtOrInside(target, RealPath(root)))
+            && !IsProtected(target) && !IsSettingsName(target);
     }
 
     private static bool IsAtOrInside(string candidate, string container)
@@ -511,11 +512,12 @@ public sealed class SharedFolders
         return candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>MakinoMCP.settings.json (holds the password) is never shared, wherever it is and however it is spelled.</summary>
+    /// <summary>MakinoMCP.settings.json (holds the password) is never shared, wherever it is and however it is spelled,
+    /// nor any file whose name starts with it (the .tmp written while saving, backups).</summary>
     private static bool IsSettingsName(string fullPath)
     {
         var name = Path.GetFileName(fullPath.TrimEnd('\\', '/')).TrimEnd(' ', '.');
-        return string.Equals(name, SettingsFileName, StringComparison.OrdinalIgnoreCase);
+        return name.StartsWith(SettingsFileName, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>True when the entry, by its path here or by its real path (root reached through a link), must stay hidden.</summary>

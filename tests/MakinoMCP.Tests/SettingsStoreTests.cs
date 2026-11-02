@@ -83,6 +83,25 @@ public class SettingsStoreTests : IDisposable
     }
 
     [Fact]
+    public void Failed_save_leaves_no_temp_file_with_the_password()
+    {
+        // File.Replace fails: the settings file is held open by someone else.
+        var locked = Path.Combine(_dir, "locked.json");
+        SettingsStore.Save(locked, Sample());
+        using (new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            Assert.NotNull(Record.Exception(() => SettingsStore.Save(locked, Sample())));
+        }
+        Assert.False(File.Exists(locked + ".tmp"));
+
+        // File.Move fails: a folder has the settings file's name.
+        var folder = Path.Combine(_dir, "folder.json");
+        Directory.CreateDirectory(folder);
+        Assert.NotNull(Record.Exception(() => SettingsStore.Save(folder, Sample())));
+        Assert.False(File.Exists(folder + ".tmp"));
+    }
+
+    [Fact]
     public void DefaultPath_prefers_settings_argument()
     {
         Assert.Equal(@"C:\x\a.json", SettingsStore.DefaultPath(["serve", "--settings", @"C:\x\a.json"]));

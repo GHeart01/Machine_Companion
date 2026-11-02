@@ -165,6 +165,38 @@ public sealed class SharedFoldersTests : IDisposable
         Assert.DoesNotContain(f.ListFiles("Logs", "sub", null, null).Entries, e => e.Path.Contains("settings", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Theory]
+    [InlineData("MakinoMCP.settings.json.tmp")]
+    [InlineData("makinomcp.SETTINGS.json.bak")]
+    [InlineData("MakinoMCP.settings.json.20261102")]
+    public void Settings_temp_and_backup_files_are_refused_by_name(string name)
+    {
+        Write(@"sub\" + name, "PW-SECRET");
+        Write(@"sub\MakinoMCP.settings.example.json", "public example");
+        var f = Make(); // no protected paths at all
+        Assert.Throws<FolderAccessException>(() => f.ReadFile("Logs", @"sub\" + name, null, null, null));
+        Assert.Empty(f.Search("Logs", "PW-SECRET", null, null).Hits);
+        var names = f.ListFiles("Logs", "sub", null, null).Entries.Select(e => e.Path).ToList();
+        Assert.Equal([@"sub\MakinoMCP.settings.example.json"], names);
+    }
+
+    [SkippableFact]
+    public void File_link_to_a_settings_file_inside_the_share_is_hidden()
+    {
+        // The settings file sits in the share but is not in the protected list; a link with a harmless name points at it.
+        var link = Path.Combine(_shared, "sub", "notes.txt");
+        Directory.CreateDirectory(Path.GetDirectoryName(link)!);
+        try { File.CreateSymbolicLink(link, _settingsFile); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Skip.If(true, "Creating a file symbolic link needs Developer Mode or administrator rights: " + e.Message);
+        }
+        var f = Make(); // no protected paths at all
+        Assert.Empty(f.Search("Logs", "hunter2-secret", null, null).Hits);
+        Assert.DoesNotContain(f.ListFiles("Logs", "sub", null, null).Entries, e => e.Path.EndsWith("notes.txt"));
+        Assert.Throws<FolderAccessException>(() => f.ReadFile("Logs", @"sub\notes.txt", null, null, null));
+    }
+
     [Fact]
     public void Tail_with_huge_count_is_bounded_and_says_so()
     {
