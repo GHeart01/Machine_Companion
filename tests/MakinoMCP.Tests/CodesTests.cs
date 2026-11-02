@@ -79,7 +79,10 @@ public class CodesTests
         Assert.Equal("machining", Codes.MachineAction(1));
         Assert.Equal("pallet index", Codes.MachineSubAction(1));
         Assert.Equal("waiting for material", Codes.OrderStatus(8));
-        Assert.Equal("machining", Codes.WorkSetFinish(1));
+        Assert.Equal("clamp", Codes.WorkSetOperation(2));
+        Assert.Equal("unclamp scrap cancelled", Codes.WorkSetOperation(5));
+        Assert.Equal("check fixtures", Codes.WorkSetOperation(30));
+        Assert.Equal("code 28", Codes.WorkSetOperation(28));
         Assert.Equal("maintenance", Codes.WssMode(16));
     }
 
@@ -91,7 +94,7 @@ public class CodesTests
         Assert.Equal("code 999", Codes.MachineAction(999));
         Assert.Equal("code 999", Codes.MachineSubAction(999));
         Assert.Equal("code 999", Codes.OrderStatus(999));
-        Assert.Equal("code 999", Codes.WorkSetFinish(999));
+        Assert.Equal("code 999", Codes.WorkSetOperation(999));
         Assert.Equal("code 999", Codes.WssMode(999));
     }
 }

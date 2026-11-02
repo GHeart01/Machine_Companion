@@ -36,16 +36,17 @@ public sealed partial class SqlMakinoReader
     {
         await using var s = await OpenAsync(ct);
         var schema = s.Schema;
-        var machineTable = schema.HasTable("MachineStatus");
-        var stationTable = schema.HasTable("WorkSetStatus");
+        schema.Require("MachineStatus", "WorkSetStatus", "Pallets", "PMCAlarms", "CNCAlarms",
+            "MachineResults", "WorkSetResults", "VehicleResults");
 
         var sql = new StringBuilder();
-        sql.AppendLine(machineTable ? StatusSql(schema, "MachineStatus", MachineSpots) : "SELECT TOP 0 1 AS DeviceID;");
-        sql.AppendLine(stationTable ? StatusSql(schema, "WorkSetStatus", StationSpots) : "SELECT TOP 0 1 AS DeviceID;");
+        sql.AppendLine(StatusSql(schema, "MachineStatus", MachineSpots));
+        sql.AppendLine(StatusSql(schema, "WorkSetStatus", StationSpots));
         sql.AppendLine(OpenAlarmSql(schema));
-        sql.AppendLine(LastActivitySql(schema));
+        sql.AppendLine(LastActivitySql());
 
         using var cmd = Command(s.Connection, sql.ToString());
+        cmd.Parameters.Add("@now", System.Data.SqlDbType.DateTime).Value = s.Now;
         using var r = await cmd.ExecuteReaderAsync(ct);
         var machines = await ReadStatusAsync(r, MachineSpots, ct);
         await r.NextResultAsync(ct);
@@ -71,7 +72,7 @@ public sealed partial class SqlMakinoReader
 
             if (d.Type == MachineType)
             {
-                var missing = Missing(schema, "MachineStatus", machineTable);
+                var missing = Missing(schema, "MachineStatus");
                 state = machines.TryGetValue(d.Id, out var m)
                     ? state with
                     {
@@ -83,7 +84,7 @@ public sealed partial class SqlMakinoReader
             }
             else if (d.Type == StationType)
             {
-                var missing = Missing(schema, "WorkSetStatus", stationTable);
+                var missing = Missing(schema, "WorkSetStatus");
                 state = stations.TryGetValue(d.Id, out var w)
                     ? state with
                     {
@@ -106,10 +107,8 @@ public sealed partial class SqlMakinoReader
         return mode is null ? "skipped" : $"{mode}, skipped";
     }
 
-    private static IReadOnlyList<string> Missing(SchemaInfo schema, string table, bool tableExists) =>
-        !tableExists
-            ? ["status"]
-            : OptionalStatus.Where(o => o.Table == table && !schema.Has(table, o.Column)).Select(o => o.Words).ToList();
+    private static IReadOnlyList<string> Missing(SchemaInfo schema, string table) =>
+        OptionalStatus.Where(o => o.Table == table && !schema.Has(table, o.Column)).Select(o => o.Words).ToList();
 
     // One status table, with each pallet spot's pallet number looked up in Pallets.
     private static string StatusSql(SchemaInfo schema, string table, string[] spots)
@@ -118,7 +117,9 @@ public sealed partial class SqlMakinoReader
         // Columns a table doesn't have by design (no sub-action on a station) are absent, the same as on old versions.
         var cols = new List<string>
         {
-            "s.DeviceID", "s.Connected", "s.Emergency",
+            "s.DeviceID",
+            Opt(schema, table, "s", "Connected", type: "bit"),
+            Opt(schema, table, "s", "Emergency", type: "bit"),
             Opt(schema, table, "s", machine ? "CNCMode" : "WSSMode", "ModeCode"),
             Opt(schema, table, "s", "MachineAction"),
             Opt(schema, table, "s", "MachineSubAction"),
@@ -129,7 +130,7 @@ public sealed partial class SqlMakinoReader
             var id = spot + "PalletID";
             cols.Add(Opt(schema, table, "s", id));
             cols.Add(schema.Has(table, id)
-                ? $"(SELECT TOP 1 p.PalletNumber FROM Pallets p WHERE p.PalletID = s.{id}) AS {spot}PalletNumber"
+                ? PalletNumberSql(schema, $"s.{id}", spot + "PalletNumber")
                 : $"CAST(NULL AS int) AS {spot}PalletNumber");
             cols.Add(Opt(schema, table, "s", spot + "Status"));
         }
@@ -145,8 +146,7 @@ public sealed partial class SqlMakinoReader
             foreach (var spot in spots)
             {
                 if (Int(r, spot + "PalletID") is not > 0) continue;
-                var status = Int(r, spot + "Status");
-                pallets.Add(new PalletSpot(spot.ToLowerInvariant(), Int(r, spot + "PalletNumber"), status is null ? "" : $"code {status}"));
+                pallets.Add(new PalletSpot(spot.ToLowerInvariant(), Int(r, spot + "PalletNumber"), CodeText(Int(r, spot + "Status"))));
             }
             rows[Int(r, "DeviceID") ?? 0] = new StatusRow(
                 Bool(r, "Connected"), Bool(r, "Emergency"), Int(r, "ModeCode"), Bool(r, "DeviceSkip"),
@@ -155,28 +155,26 @@ public sealed partial class SqlMakinoReader
         return rows;
     }
 
-    // Open (not yet reset) alarms and warnings per device.
+    // Open (not yet reset) alarms and warnings per device; without IsWarning every PMC entry counts as an alarm.
     private static string OpenAlarmSql(SchemaInfo schema)
     {
-        var parts = new List<string>();
-        if (schema.HasTable("PMCAlarms"))
-            parts.Add("SELECT DeviceID, CASE WHEN IsWarning = 1 THEN 0 ELSE 1 END AS A, CASE WHEN IsWarning = 1 THEN 1 ELSE 0 END AS W FROM PMCAlarms WHERE ResetTime IS NULL");
-        if (schema.HasTable("CNCAlarms"))
-            parts.Add("SELECT DeviceID, 1 AS A, 0 AS W FROM CNCAlarms WHERE ResetTime IS NULL");
-        return parts.Count == 0
-            ? "SELECT TOP 0 1 AS DeviceID, 0 AS Alarms, 0 AS Warnings;"
-            : $"SELECT DeviceID, SUM(A) AS Alarms, SUM(W) AS Warnings FROM ({string.Join(" UNION ALL ", parts)}) a GROUP BY DeviceID;";
+        var warning = schema.Has("PMCAlarms", "IsWarning") ? "IsWarning = 1" : "1 = 0";
+        return $"""
+            SELECT DeviceID, SUM(A) AS Alarms, SUM(W) AS Warnings FROM (
+                SELECT DeviceID, CASE WHEN {warning} THEN 0 ELSE 1 END AS A, CASE WHEN {warning} THEN 1 ELSE 0 END AS W
+                FROM PMCAlarms WHERE ResetTime IS NULL
+                UNION ALL
+                SELECT DeviceID, 1, 0 FROM CNCAlarms WHERE ResetTime IS NULL) a
+            GROUP BY DeviceID;
+            """;
     }
 
-    // Last activity per device: the latest finish over the three result tables.
-    private static string LastActivitySql(SchemaInfo schema)
+    /// <summary>Last activity per device: the latest finish over the three result tables, looking back 30 days only
+    /// (so the overview doesn't scan years of results); no finish in 30 days reads as null.</summary>
+    internal static string LastActivitySql()
     {
         var parts = new[] { "MachineResults", "WorkSetResults", "VehicleResults" }
-            .Where(schema.HasTable)
-            .Select(t => $"SELECT DeviceID, MAX(FinishDateTime) AS F FROM {t} GROUP BY DeviceID")
-            .ToList();
-        return parts.Count == 0
-            ? "SELECT TOP 0 1 AS DeviceID, CAST(NULL AS datetime) AS LastFinish;"
-            : $"SELECT DeviceID, MAX(F) AS LastFinish FROM ({string.Join(" UNION ALL ", parts)}) x GROUP BY DeviceID;";
+            .Select(t => $"SELECT DeviceID, MAX(FinishDateTime) AS F FROM {t} WHERE FinishDateTime >= DATEADD(day, -30, @now) GROUP BY DeviceID");
+        return $"SELECT DeviceID, MAX(F) AS LastFinish FROM ({string.Join(" UNION ALL ", parts)}) x GROUP BY DeviceID;";
     }
 }

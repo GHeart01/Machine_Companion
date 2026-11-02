@@ -28,20 +28,9 @@ public sealed partial class SqlMakinoReader
     {
         await using var s = await OpenAsync(ct);
         var deviceId = FindDevice(s.Names(), device);
-        if (!s.Schema.HasTable("DeviceStatusDaySummary")) return new UtilizationList(s.Now, false, []);
+        s.Schema.Require("DeviceStatusDaySummary");
 
-        var oee = s.Schema.Has("DeviceResultDaySummary", "OEE")
-            ? "(SELECT TOP 1 o.OEE FROM DeviceResultDaySummary o WHERE o.DeviceID = d.DeviceID AND o.Date = d.Date)"
-            : "CAST(NULL AS int)";
-        // Days counts today as one: days = 1 is today so far.
-        using var cmd = Command(s.Connection, $"""
-            SELECT TOP (@take) d.DeviceID, d.Date, d.Down, d.Idle, d.Busy, d.Manual, d.Error, {oee} AS Oee
-            FROM DeviceStatusDaySummary d
-            WHERE d.DeviceID IS NOT NULL AND d.Date IS NOT NULL
-              AND d.Date >= DATEADD(day, 1 - @days, CAST(CAST(@now AS date) AS datetime))
-              AND (@device IS NULL OR d.DeviceID = @device)
-            ORDER BY d.Date DESC, d.DeviceID;
-            """);
+        using var cmd = Command(s.Connection, UtilizationSql(s.Schema));
         AddWindow(cmd, s.Now, deviceId, hours: Days(days) * 24);
         cmd.Parameters.Add("@days", System.Data.SqlDbType.Int).Value = Days(days);
 
@@ -65,27 +54,57 @@ public sealed partial class SqlMakinoReader
         static double ToHours(double seconds) => Math.Round(seconds / 3600, 2);
     }
 
+    /// <summary>Daily state seconds; Oee only from DeviceResultDaySummary, the one optional table. Days counts today
+    /// as one: days = 1 is today so far.</summary>
+    internal static string UtilizationSql(SchemaInfo schema)
+    {
+        const string t = "DeviceStatusDaySummary";
+        var oee = schema.Has("DeviceResultDaySummary", "OEE")
+            ? "(SELECT TOP 1 o.OEE FROM DeviceResultDaySummary o WHERE o.DeviceID = d.DeviceID AND o.Date = d.Date) AS Oee"
+            : "CAST(NULL AS int) AS Oee";
+        var cols = string.Join(", ",
+            "d.DeviceID", "d.Date",
+            Opt(schema, t, "d", "Down"), Opt(schema, t, "d", "Idle"), Opt(schema, t, "d", "Busy"),
+            Opt(schema, t, "d", "Manual"), Opt(schema, t, "d", "Error"), oee);
+        return $"""
+            SELECT TOP (@take) {cols}
+            FROM {t} d
+            WHERE d.DeviceID IS NOT NULL AND d.Date IS NOT NULL
+              AND d.Date >= DATEADD(day, 1 - @days, CAST(CAST(@now AS date) AS datetime))
+              AND (@device IS NULL OR d.DeviceID = @device)
+            ORDER BY d.Date DESC, d.DeviceID;
+            """;
+    }
+
+    /// <summary>The newest cap + 1 rows of each result table, as three result sets (machining, work-set, transport).
+    /// Each table's newest cap + 1 rows hold every row of the merged newest cap + 1, so merging them is exact.</summary>
+    internal static string ActivitySql(SchemaInfo schema)
+    {
+        const string window = "x.StartDateTime >= DATEADD(hour, -@hours, @now) AND (@device IS NULL OR x.DeviceID = @device)";
+        var pallet = PalletNumberSql(schema, "x.PalletID", "PalletNumber");
+
+        string Select(string table, params (string Column, string Type)[] columns) =>
+            $"SELECT TOP (@take) x.DeviceID, x.StartDateTime, x.FinishDateTime, {pallet}, "
+            + string.Join(", ", columns.Select(c => Opt(schema, table, "x", c.Column, type: c.Type)))
+            + $" FROM {table} x WHERE {window} ORDER BY x.StartDateTime DESC;";
+
+        return string.Join("\n",
+            Select("MachineResults", ("OrderName", Text), ("PartName", Text), ("NCProgramFileName", Text),
+                ("FinishStatus", Text), ("AlarmNumber", Text), ("AbnormalFinish", "bit")),
+            Select("WorkSetResults", ("FixtureNumber", "int"), ("UnclampOrderName", Text), ("ClampOrderName", Text),
+                ("OperationStatus", "int"), ("ErrorCode", Text)),
+            Select("VehicleResults", ("LoadDevice", Text), ("UnloadDevice", Text), ("CommandType", "int"),
+                ("FinishStatus", "int")));
+    }
+
     public async Task<ActivityList> GetRecentActivityAsync(int hours, string? device, CancellationToken ct)
     {
         await using var s = await OpenAsync(ct);
         var deviceId = FindDevice(s.Names(), device);
 
-        // Each table's newest cap + 1 rows hold every row of the merged newest cap + 1, so the merge below is exact.
-        const string window = "x.StartDateTime >= DATEADD(hour, -@hours, @now) AND (@device IS NULL OR x.DeviceID = @device)";
-        const string pallet = "(SELECT TOP 1 p.PalletNumber FROM Pallets p WHERE p.PalletID = x.PalletID) AS PalletNumber";
-        var sql = new List<string>
-        {
-            s.Schema.HasTable("MachineResults")
-                ? $"SELECT TOP (@take) x.DeviceID, x.StartDateTime, x.FinishDateTime, {pallet}, x.OrderName, x.PartName, x.NCProgramFileName, x.FinishStatus, x.AlarmNumber, x.AbnormalFinish FROM MachineResults x WHERE {window} ORDER BY x.StartDateTime DESC;"
-                : "SELECT TOP 0 1 AS DeviceID;",
-            s.Schema.HasTable("WorkSetResults")
-                ? $"SELECT TOP (@take) x.DeviceID, x.StartDateTime, x.FinishDateTime, {pallet}, x.FixtureNumber, x.UnclampOrderName, x.ClampOrderName, x.OperationStatus, x.ErrorCode FROM WorkSetResults x WHERE {window} ORDER BY x.StartDateTime DESC;"
-                : "SELECT TOP 0 1 AS DeviceID;",
-            s.Schema.HasTable("VehicleResults")
-                ? $"SELECT TOP (@take) x.DeviceID, x.StartDateTime, x.FinishDateTime, {pallet}, x.LoadDevice, x.UnloadDevice, x.CommandType, x.FinishStatus FROM VehicleResults x WHERE {window} ORDER BY x.StartDateTime DESC;"
-                : "SELECT TOP 0 1 AS DeviceID;",
-        };
-        using var cmd = Command(s.Connection, string.Join("\n", sql));
+        s.Schema.Require("MachineResults", "WorkSetResults", "VehicleResults", "Pallets");
+
+        using var cmd = Command(s.Connection, ActivitySql(s.Schema));
         AddWindow(cmd, s.Now, deviceId, hours: Hours(hours));
 
         var items = new List<ActivityItem>();
@@ -113,7 +132,7 @@ public sealed partial class SqlMakinoReader
             var route = $"{Or(Str(r, "LoadDevice"), "?")} → {Or(Str(r, "UnloadDevice"), "?")}";
             items.Add(Item(r, "transport", s,
                 command.Length > 0 ? $"{route} ({command})" : route,
-                finish is null ? null : $"code {Int(r, "FinishStatus") ?? 0}"));
+                finish is null ? null : CodeText(Int(r, "FinishStatus"))));
         }
 
         var newest = items.OrderByDescending(i => i.Start).ToList();
@@ -151,8 +170,8 @@ public sealed partial class SqlMakinoReader
 
     private static string WorkSetResult(int? operationStatus, string errorCode) =>
         errorCode.Length > 0 && errorCode != "0"
-            ? Join(Codes.WorkSetFinish(operationStatus), $"error {errorCode}")
-            : Codes.WorkSetFinish(operationStatus);
+            ? Join(Codes.WorkSetOperation(operationStatus), $"error {errorCode}")
+            : Codes.WorkSetOperation(operationStatus);
 
     private static string Labelled(string label, string value) => value.Length > 0 ? $"{label} {value}" : "";
 

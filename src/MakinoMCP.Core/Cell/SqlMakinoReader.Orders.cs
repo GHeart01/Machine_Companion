@@ -8,12 +8,8 @@ public sealed partial class SqlMakinoReader
     public async Task<OrderList> GetOrdersAsync(bool activeOnly, CancellationToken ct)
     {
         await using var s = await OpenAsync(ct);
-        using var cmd = Command(s.Connection, $"""
-            SELECT TOP (@take) o.OrderName, pa.PartName, pa.Revision, o.Status, o.Quantity, o.MachiningSuspended, o.DueDate, o.CompleteDate
-            FROM Orders o LEFT JOIN Parts pa ON pa.PartID = o.PartID
-            {(activeOnly ? $"WHERE o.Status NOT IN ({FinishedOrderStatuses})" : "")}
-            ORDER BY o.DueDate DESC, o.OrderName;
-            """);
+        s.Schema.Require("Orders", "Parts");
+        using var cmd = Command(s.Connection, OrdersSql(s.Schema, activeOnly));
         AddTake(cmd);
 
         var rows = new List<OrderInfo>();
@@ -34,31 +30,44 @@ public sealed partial class SqlMakinoReader
         return new OrderList(s.Now, capped, orders);
     }
 
+    /// <summary>Orders with their part, latest due first. Without a Status column activeOnly can't filter.</summary>
+    internal static string OrdersSql(SchemaInfo schema, bool activeOnly)
+    {
+        var cols = string.Join(", ",
+            Opt(schema, "Orders", "o", "OrderName", type: Text),
+            Opt(schema, "Parts", "pa", "PartName", type: Text),
+            Opt(schema, "Parts", "pa", "Revision", type: Text),
+            Opt(schema, "Orders", "o", "Status"),
+            Opt(schema, "Orders", "o", "Quantity"),
+            Opt(schema, "Orders", "o", "MachiningSuspended"),
+            Opt(schema, "Orders", "o", "DueDate", type: "datetime"),
+            Opt(schema, "Orders", "o", "CompleteDate", type: "datetime"));
+        var where = activeOnly && schema.Has("Orders", "Status") ? $"WHERE o.Status NOT IN ({FinishedOrderStatuses})" : "";
+        var order = schema.Has("Orders", "DueDate") ? "o.DueDate DESC, o.OrderID DESC" : "o.OrderID DESC";
+        return $"""
+            SELECT TOP (@take) {cols}
+            FROM Orders o LEFT JOIN Parts pa ON pa.PartID = o.PartID
+            {where}
+            ORDER BY {order};
+            """;
+    }
+
     public async Task<PalletList> GetPalletsAsync(CancellationToken ct)
     {
         await using var s = await OpenAsync(ct);
-        using var cmd = Command(s.Connection, """
-            SELECT TOP (@take) p.PalletID, p.PalletNumber, p.PalletName, p.PalletStatus,
-                   (SELECT TOP 1 l.CurDeviceType FROM PalletLocation l WHERE l.PalletID = p.PalletID) AS CurDeviceType,
-                   (SELECT TOP 1 l.CurDeviceNumber FROM PalletLocation l WHERE l.PalletID = p.PalletID) AS CurDeviceNumber,
-                   (SELECT TOP 1 l.CurDevicePosition FROM PalletLocation l WHERE l.PalletID = p.PalletID) AS CurDevicePosition
-            FROM Pallets p
-            ORDER BY p.PalletNumber, p.PalletID;
-            SELECT pf.PalletID, pf.FixtureNumber, f.FixtureName, pf.Suspend, pf.Damaged
-            FROM PalletFixtures pf LEFT JOIN Fixtures f ON f.FixtureID = pf.FixtureID
-            WHERE pf.PalletID IN (SELECT TOP (@take) PalletID FROM Pallets ORDER BY PalletNumber, PalletID)
-            ORDER BY pf.PalletID, pf.FixtureNumber;
-            """);
+        s.Schema.Require("Pallets", "PalletLocation", "PalletFixtures", "Fixtures");
+        using var cmd = Command(s.Connection, PalletsSql(s.Schema));
         AddTake(cmd);
 
         var pallets = new List<(int Id, PalletInfo Info)>();
         using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
         {
+            // Pallets.PalletStatus values on a live cell don't match the Codes.PalletStatus table, so it stays raw.
             pallets.Add((Int(r, "PalletID") ?? 0, new PalletInfo(
                 Int(r, "PalletNumber") ?? 0,
                 Str(r, "PalletName"),
-                Codes.PalletStatus(Int(r, "PalletStatus")),
+                CodeText(Int(r, "PalletStatus")),
                 Location(s, Int(r, "CurDeviceType"), Int(r, "CurDeviceNumber"), Int(r, "CurDevicePosition")),
                 [])));
         }
@@ -68,7 +77,7 @@ public sealed partial class SqlMakinoReader
         {
             // Fixture names are often blank on a cell; the number on the pallet always identifies it.
             var flags = Join(Bool(r, "Suspend") == true ? "suspended" : "", Bool(r, "Damaged") == true ? "damaged" : "");
-            var text = Join($"fixture {Str(r, "FixtureNumber")}", Str(r, "FixtureName"));
+            var text = Join(Labelled("fixture", Str(r, "FixtureNumber")), Str(r, "FixtureName"));
             var id = Int(r, "PalletID") ?? 0;
             if (!fixtures.TryGetValue(id, out var names)) fixtures[id] = names = [];
             names.Add(flags.Length > 0 ? $"{text} ({flags})" : text);
@@ -77,6 +86,37 @@ public sealed partial class SqlMakinoReader
         var rows = pallets.Select(p => p.Info with { Fixtures = fixtures.GetValueOrDefault(p.Id) ?? [] }).ToList();
         var (list, capped) = Cap(rows);
         return new PalletList(s.Now, capped, list);
+    }
+
+    /// <summary>Pallets with their location, then the fixtures on those same pallets.</summary>
+    internal static string PalletsSql(SchemaInfo schema)
+    {
+        string Location(string column) => schema.Has("PalletLocation", column)
+            ? $"(SELECT TOP 1 l.{column} FROM PalletLocation l WHERE l.PalletID = p.PalletID) AS {column}"
+            : $"CAST(NULL AS int) AS {column}";
+
+        var order = schema.Has("Pallets", "PalletNumber") ? "p.PalletNumber, p.PalletID" : "p.PalletID";
+        var pallets = string.Join(", ",
+            "p.PalletID",
+            Opt(schema, "Pallets", "p", "PalletNumber"),
+            Opt(schema, "Pallets", "p", "PalletName", type: Text),
+            Opt(schema, "Pallets", "p", "PalletStatus"),
+            Location("CurDeviceType"), Location("CurDeviceNumber"), Location("CurDevicePosition"));
+        var fixtures = string.Join(", ",
+            "pf.PalletID",
+            Opt(schema, "PalletFixtures", "pf", "FixtureNumber"),
+            Opt(schema, "Fixtures", "f", "FixtureName", type: Text),
+            Opt(schema, "PalletFixtures", "pf", "Suspend", type: "bit"),
+            Opt(schema, "PalletFixtures", "pf", "Damaged", type: "bit"));
+        return $"""
+            SELECT TOP (@take) {pallets}
+            FROM Pallets p
+            ORDER BY {order};
+            SELECT {fixtures}
+            FROM PalletFixtures pf LEFT JOIN Fixtures f ON f.FixtureID = pf.FixtureID
+            WHERE pf.PalletID IN (SELECT TOP (@take) p.PalletID FROM Pallets p ORDER BY {order})
+            ORDER BY pf.PalletID, FixtureNumber;
+            """;
     }
 
     /// <summary>Where a pallet is, in words: the device's name when the cell has a device row for that place, else its

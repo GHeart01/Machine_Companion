@@ -39,11 +39,13 @@ public static partial class ErrorText
             -2 => "the query timed out: the cell PC may be busy, try a shorter time range",
             53 or 2 or 40 or 11001 or 10060 or 10061 or -1 or 258 =>
                 $"could not reach the SQL Server: check the server name ('{login.Server}') and that the cell PC is on",
-            229 or 230 or 297 or 300 => "this login is not allowed to read that table",
+            229 or 230 or 297 or 300 =>
+                "permission denied: this login is not allowed to read a table MakinoMCP needs (give it the db_datareader role)",
             208 => "a table MakinoMCP reads is missing on this cell's software version",
             207 => "a column MakinoMCP reads is missing on this cell's software version",
             _ => $"SQL Server error {sql.Number}",
         },
+        CellSchemaException => "a table MakinoMCP reads is missing on this cell, or this login is not allowed to read it",
         TimeoutException => "timed out: the cell PC may be busy or unreachable",
         Win32Exception { NativeErrorCode: 258 } => "timed out: the cell PC may be busy or unreachable",
         OperationCanceledException => "the request was cancelled",

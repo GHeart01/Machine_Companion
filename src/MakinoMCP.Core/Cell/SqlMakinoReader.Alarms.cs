@@ -9,10 +9,12 @@ public sealed partial class SqlMakinoReader
         await using var s = await OpenAsync(ct);
         var deviceId = FindDevice(s.Names(), device);
 
-        // Open alarms are listed however old they are; otherwise the window applies.
+        s.Schema.Require("PMCAlarms", "CNCAlarms");
+
+        // openOnly ignores hours on purpose: it lists every alarm still open (capped), however long ago it was raised.
+        // Otherwise the window applies.
         var where = openOnly ? "ResetTime IS NULL" : "AlarmTime >= DATEADD(hour, -@hours, @now)";
         var union = AlarmUnion(s.Schema, where, includeWarnings);
-        if (union is null) return new AlarmList(s.Now, false, []);
 
         using var cmd = Command(s.Connection, $"""
             SELECT TOP (@take) Source, DeviceID, AlarmNumber, IsWarning, AlarmMessage, AlarmTime, ResetTime
@@ -48,8 +50,8 @@ public sealed partial class SqlMakinoReader
         await using var s = await OpenAsync(ct);
         var deviceId = FindDevice(s.Names(), device);
 
+        s.Schema.Require("PMCAlarms", "CNCAlarms");
         var union = AlarmUnion(s.Schema, "AlarmTime >= DATEADD(hour, -@hours, @now)", includeWarnings: true);
-        if (union is null) return new AlarmSummary(s.Now, false, []);
 
         // Grouped by number, not message: a message with values in it would otherwise split one alarm into many rows.
         using var cmd = Command(s.Connection, $"""
@@ -81,19 +83,30 @@ public sealed partial class SqlMakinoReader
         return new AlarmSummary(s.Now, capped, summary);
     }
 
-    // PMC and CNC alarms as one row shape; CNC alarms have no warning level. Null when the cell has neither table.
-    private static string? AlarmUnion(SchemaInfo schema, string where, bool includeWarnings)
+    /// <summary>PMC and CNC alarms as one row shape; CNC alarms have no warning level. Without IsWarning every PMC entry
+    /// counts as an alarm, so includeWarnings has nothing to filter.</summary>
+    internal static string AlarmUnion(SchemaInfo schema, string where, bool includeWarnings)
     {
         const string device = "(@device IS NULL OR DeviceID = @device)";
-        var parts = new List<string>();
-        if (schema.HasTable("PMCAlarms"))
-        {
-            var warnings = includeWarnings ? "" : " AND IsWarning = 0";
-            parts.Add($"SELECT 'PMC' AS Source, DeviceID, AlarmNumber, IsWarning, AlarmMessage, AlarmTime, ResetTime FROM PMCAlarms WHERE AlarmTime IS NOT NULL AND {where} AND {device}{warnings}");
-        }
-        if (schema.HasTable("CNCAlarms"))
-            parts.Add($"SELECT 'CNC', DeviceID, AlarmNumber, CAST(0 AS bit), AlarmMessage, AlarmTime, ResetTime FROM CNCAlarms WHERE AlarmTime IS NOT NULL AND {where} AND {device}");
-        return parts.Count == 0 ? null : string.Join("\nUNION ALL\n", parts);
+        var hasWarning = schema.Has("PMCAlarms", "IsWarning");
+        var warnings = includeWarnings || !hasWarning ? "" : " AND IsWarning = 0";
+        var pmc = string.Join(", ",
+            "'PMC' AS Source", "DeviceID",
+            Opt(schema, "PMCAlarms", "a", "AlarmNumber"),
+            hasWarning ? "a.IsWarning AS IsWarning" : "CAST(0 AS bit) AS IsWarning",
+            Opt(schema, "PMCAlarms", "a", "AlarmMessage", type: "nvarchar(4000)"),
+            "AlarmTime", "ResetTime");
+        var cnc = string.Join(", ",
+            "'CNC'", "DeviceID",
+            Opt(schema, "CNCAlarms", "a", "AlarmNumber"),
+            "CAST(0 AS bit)",
+            Opt(schema, "CNCAlarms", "a", "AlarmMessage", type: "nvarchar(4000)"),
+            "AlarmTime", "ResetTime");
+        return $"""
+            SELECT {pmc} FROM PMCAlarms a WHERE AlarmTime IS NOT NULL AND {where} AND {device}{warnings}
+            UNION ALL
+            SELECT {cnc} FROM CNCAlarms a WHERE AlarmTime IS NOT NULL AND {where} AND {device}
+            """;
     }
 
     /// <summary>The parameters every windowed query takes: the cap, the cell's clock, the device filter and the window.</summary>

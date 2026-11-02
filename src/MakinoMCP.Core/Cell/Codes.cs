@@ -144,18 +144,39 @@ public static class Codes
         [32] = "read ID",
     };
 
-    private static readonly Dictionary<int, string> WorkSetFinishes = new()
+    // WorkSetResults.OperationStatus: what the operator did at the work-set station.
+    private static readonly Dictionary<int, string> WorkSetOperations = new()
     {
         [0] = "nothing",
-        [1] = "machining",
-        [2] = "machining suspended",
-        [3] = "hold (clamp)",
-        [4] = "hold (unclamp)",
-        [5] = "hold (other)",
-        [6] = "no work",
-        [7] = "cleaning",
-        [8] = "deburring",
-        [9] = "measuring",
+        [1] = "unclamp",
+        [2] = "clamp",
+        [3] = "clamp suspended",
+        [4] = "unclamp cancelled",
+        [5] = "unclamp scrap cancelled",
+        [6] = "other",
+        [7] = "other cancelled",
+        [8] = "input",
+        [9] = "input cancelled",
+        [10] = "output",
+        [11] = "output cancelled",
+        [12] = "stay on table",
+        [13] = "stay on table cancelled",
+        [14] = "inspection",
+        [15] = "inspection cancelled",
+        [16] = "exchange fixture",
+        [17] = "exchange fixture cancelled",
+        [18] = "stay at front",
+        [19] = "stay at front cancelled",
+        [20] = "material input",
+        [21] = "material input cancelled",
+        [22] = "material output",
+        [23] = "material output cancelled",
+        [24] = "exchange",
+        [25] = "exchange cancelled",
+        [26] = "remove scrap",
+        [27] = "fixture change",
+        [29] = "clamp NG",
+        [30] = "check fixtures",
     };
 
     private static readonly Dictionary<int, string> WssModes = new()
@@ -198,7 +219,7 @@ public static class Codes
 
     public static string VehicleCommand(int? value) => Flags(value, VehicleCommandBits, "none");
 
-    public static string WorkSetFinish(int? value) => Lookup(value, WorkSetFinishes);
+    public static string WorkSetOperation(int? value) => Lookup(value, WorkSetOperations);
 
     public static string WssMode(int? value) => Lookup(value, WssModes);
 

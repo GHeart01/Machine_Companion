@@ -51,6 +51,7 @@ public sealed partial class SqlMakinoReader : IMakinoReader
         {
             await connection.OpenAsync(ct);
             var schema = await SchemaAsync(connection, ct);
+            schema.Require("Devices");
 
             using var cmd = Command(connection, """
                 SELECT GETDATE();
@@ -117,10 +118,39 @@ public sealed partial class SqlMakinoReader : IMakinoReader
         throw new ArgumentException($"No device named '{wanted}'. Devices on this cell: {string.Join(", ", names)}.");
     }
 
-    /// <summary>The select-list entry for an optional column: the column when this cell has it, else NULL, named
-    /// <paramref name="name"/> (default: the column's own name).</summary>
-    private static string Opt(SchemaInfo schema, string table, string alias, string column, string? name = null) =>
-        schema.Has(table, column) ? $"{alias}.{column} AS {name ?? column}" : $"CAST(NULL AS int) AS {name ?? column}";
+    /// <summary>The select-list entry for a column an older cell may lack: the column when this cell has it, else a
+    /// NULL of <paramref name="type"/> (so UNIONs keep their column types), named <paramref name="name"/> (default: the
+    /// column's own name). Every column a query shows goes through here; only join keys and the time columns a query
+    /// filters on are selected unchecked.</summary>
+    private static string Opt(SchemaInfo schema, string table, string alias, string column, string? name = null, string type = "int") =>
+        schema.Has(table, column) ? $"{alias}.{column} AS {name ?? column}" : $"CAST(NULL AS {type}) AS {name ?? column}";
+
+    private const string Text = "varchar(4000)";
+
+    /// <summary>The pallet number for a PalletID expression, looked up in Pallets.</summary>
+    private static string PalletNumberSql(SchemaInfo schema, string palletId, string name) =>
+        schema.Has("Pallets", "PalletNumber")
+            ? $"(SELECT TOP 1 p.PalletNumber FROM Pallets p WHERE p.PalletID = {palletId}) AS {name}"
+            : $"CAST(NULL AS int) AS {name}";
+
+    /// <summary>A raw code nobody has mapped: "code N", or "" when NULL.</summary>
+    internal static string CodeText(int? value) => value is null ? "" : $"code {value}";
+
+    /// <summary>Any integer width or bit as int; text only when it is a whole number (else null). Never throws.</summary>
+    internal static int? ToInt(object? value) => value switch
+    {
+        null or DBNull => null,
+        string text => int.TryParse(text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) ? n : null,
+        bool b => b ? 1 : 0,
+        IConvertible c => TryConvert(c),
+        _ => null,
+    };
+
+    private static int? TryConvert(IConvertible value)
+    {
+        try { return value.ToInt32(CultureInfo.InvariantCulture); }
+        catch (Exception e) when (e is FormatException or InvalidCastException or OverflowException) { return null; }
+    }
 
     public async Task<LoginRightsInfo> GetLoginRightsAsync(CancellationToken ct)
     {
@@ -162,11 +192,7 @@ public sealed partial class SqlMakinoReader : IMakinoReader
     }
 
     // Column readers by name: NULL comes back as null (or "" for text); numbers of any integer width read as int.
-    private static int? Int(SqlDataReader r, string column)
-    {
-        var i = r.GetOrdinal(column);
-        return r.IsDBNull(i) ? null : Convert.ToInt32(r.GetValue(i), CultureInfo.InvariantCulture);
-    }
+    private static int? Int(SqlDataReader r, string column) => ToInt(r.GetValue(r.GetOrdinal(column)));
 
     private static bool? Bool(SqlDataReader r, string column)
     {

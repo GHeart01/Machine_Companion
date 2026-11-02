@@ -50,6 +50,15 @@ public class ErrorTextTests
     }
 
     [Fact]
+    public void ErrorText_permission_denied_hint()
+    {
+        var text = ErrorText.ForClaude(
+            MakeSqlException(229, "The SELECT permission was denied on the object 'Orders', database 'Makino', schema 'dbo'."), Login);
+        Assert.Contains("not allowed to read", text);
+        Assert.Contains("db_datareader", text);
+    }
+
+    [Fact]
     public void SchemaInfo_missing_column_reported()
     {
         var schema = new SchemaInfo(
