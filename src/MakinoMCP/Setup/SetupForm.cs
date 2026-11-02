@@ -4,8 +4,8 @@ using MakinoMCP.Core.Settings;
 namespace MakinoMCP.Setup;
 
 /// <summary>Where a company enters its cell database login and the folders Claude may read, then gets the two
-/// snippets that connect Claude. Plain WinForms in system colours and the system font, so Windows dark mode, high
-/// contrast and display scaling all apply. The rules live in <see cref="SetupChecks"/>.</summary>
+/// snippets that connect Claude. Plain WinForms in the light theme, in system colours and the system font, so high
+/// contrast and display scaling apply (it never follows Windows dark mode). The rules live in <see cref="SetupChecks"/>.</summary>
 internal sealed class SetupForm : Form
 {
     private const string Title = "MakinoMCP setup";
@@ -144,14 +144,14 @@ internal sealed class SetupForm : Form
         _folders.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
         _folders.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize;
         _folders.BackgroundColor = SystemColors.Window;
-        // Themed headers stay light in dark mode; plain ones take the system colours (dark mode and high contrast).
+        // Plain headers take the system colours, so high contrast themes apply.
         _folders.EnableHeadersVisualStyles = false;
         _folders.ColumnHeadersDefaultCellStyle.BackColor = SystemColors.Control;
         _folders.ColumnHeadersDefaultCellStyle.ForeColor = SystemColors.ControlText;
         _folders.ColumnHeadersDefaultCellStyle.SelectionBackColor = SystemColors.Control;
         _folders.ColumnHeadersDefaultCellStyle.SelectionForeColor = SystemColors.ControlText;
-        // Dark mode pairs black HighlightText with a mid-blue Highlight (3.6:1); take whichever system text colour
-        // reads best on it, so high contrast themes keep their own pair. Gridlines likewise.
+        // Take whichever system text colour reads best on the selection, so high contrast themes keep a readable pair.
+        // Gridlines likewise.
         _folders.DefaultCellStyle.SelectionBackColor = SystemColors.Highlight;
         _folders.DefaultCellStyle.SelectionForeColor =
             SetupChecks.MostContrasting(SystemColors.Highlight, SystemColors.HighlightText, SystemColors.WindowText);
@@ -600,7 +600,7 @@ internal sealed class SetupForm : Form
     }
 
     /// <summary>An icon plus words. The icon is a glyph from the Windows icon font drawn in the inherited text font's
-    /// size and colour, so it follows display scaling, dark mode and high contrast; it and its accessible name only
+    /// size and colour, so it follows display scaling and high contrast; it and its accessible name only
     /// repeat what the words already say. Screen readers hear each new line.</summary>
     private sealed class StatusView : TableLayoutPanel
     {

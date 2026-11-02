@@ -114,17 +114,6 @@ public class ContrastTests
     }
 
     [Fact]
-    public void Best_text_on_dark_mode_highlight_is_the_light_one()
-    {
-        // Dark-mode WinForms pairs black HighlightText with a mid-blue Highlight (3.6:1).
-        var highlight = System.Drawing.Color.FromArgb(0x28, 0x64, 0xB4);
-        var black = System.Drawing.Color.FromArgb(0, 0, 0);
-        var nearWhite = System.Drawing.Color.FromArgb(0xF0, 0xF0, 0xF0);
-        Assert.Equal(nearWhite, SetupChecks.MostContrasting(highlight, black, nearWhite));
-        Assert.True(SetupChecks.ContrastRatio(nearWhite, highlight) >= 4.5);
-    }
-
-    [Fact]
     public void Best_keeps_the_first_on_a_tie()
     {
         var white = System.Drawing.Color.White;

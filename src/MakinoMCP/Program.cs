@@ -23,9 +23,6 @@ internal static class Program
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-#pragma warning disable WFO5001 // Dark mode is still marked experimental; system colours keep it safe either way.
-        Application.SetColorMode(SystemColorMode.System);
-#pragma warning restore WFO5001
         Application.Run(new SetupForm(SettingsStore.DefaultPath(args)));
         return 0;
     }
