@@ -4,6 +4,7 @@
     <OutputType>WinExe</OutputType>
     <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>MakinoMCP</AssemblyName>
+    <Version>0.1.0</Version>
     <RootNamespace>MakinoMCP</RootNamespace>
   </PropertyGroup>
   <ItemGroup>

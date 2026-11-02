@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>MakinoMCP</title>
+<meta name="description" content="Let Claude see what your Makino MAS-A5 cell is doing. Read only, free, MIT licensed.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230B5C7A'/%3E%3Cpath d='M8 23V9h3l5 7 5-7h3v14h-3v-8l-5 7-5-7v8z' fill='%23fff'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f4f6f7;
+  --surface: #ffffff;
+  --sunken: #e8edf0;
+  --ink: #13202a;
+  --muted: #475966;
+  --line: #c9d3d9;
+  --accent: #0b5c7a;
+  --on-accent: #ffffff;
+  --ok-bg: #dff3e6;   --ok-ink: #11502a;
+  --warn-bg: #ffecc7; --warn-ink: #6e4200;
+  --idle-bg: #e3e8ec; --idle-ink: #34444f;
+  --focus: #0b5c7a;
+  --font: system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e151a; --surface: #151f26; --sunken: #1c2933; --ink: #e7eef2; --muted: #a2b3be; --line: #2e3e4a;
+    --accent: #6cc4e3; --on-accent: #07212b;
+    --ok-bg: #12331f; --ok-ink: #9be3b3;
+    --warn-bg: #3c2a07; --warn-ink: #ffd27a;
+    --idle-bg: #24323c; --idle-ink: #c3d0d8;
+    --focus: #6cc4e3;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e151a; --surface: #151f26; --sunken: #1c2933; --ink: #e7eef2; --muted: #a2b3be; --line: #2e3e4a;
+  --accent: #6cc4e3; --on-accent: #07212b;
+  --ok-bg: #12331f; --ok-ink: #9be3b3;
+  --warn-bg: #3c2a07; --warn-ink: #ffd27a;
+  --idle-bg: #24323c; --idle-ink: #c3d0d8;
+  --focus: #6cc4e3;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 1rem/1.6 var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-underline-offset: 0.2em; }
+header.top > a:last-child { display: inline-flex; align-items: center; min-height: 44px; }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; border-radius: 4px; }
+.skip { position: absolute; left: 16px; top: -100px; background: var(--accent); color: var(--on-accent); padding: 8px 14px; border-radius: 8px; z-index: 10; }
+.skip:focus { top: 12px; }
+
+.wrap { max-width: 62rem; margin: 0 auto; padding: 0 16px; }
+header.top { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 0; }
+.brand { font-weight: 650; letter-spacing: -0.01em; color: var(--ink); text-decoration: none; display: inline-flex; align-items: center; gap: 10px; }
+.brand svg { width: 28px; height: 28px; }
+
+/* hero */
+.hero { padding: 40px 0 48px; display: grid; gap: 40px; }
+h1 { font-size: clamp(2.1rem, 6.4vw, 3.6rem); line-height: 1.04; letter-spacing: -0.03em; font-weight: 700; margin: 0 0 20px; max-width: 16ch; text-wrap: balance; }
+.lede { font-size: 1.15rem; color: var(--muted); max-width: 38rem; margin: 0 0 28px; }
+.actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.btn {
+  display: inline-flex; align-items: center; min-height: 48px; padding: 0 22px; border-radius: 12px;
+  background: var(--accent); color: var(--on-accent); font-weight: 600; text-decoration: none;
+  border: 1.5px solid var(--accent);
+  transition: transform 140ms var(--ease-out), opacity 140ms var(--ease-out);
+}
+.btn:active { transform: scale(0.97); }
+.btn.quiet { background: transparent; color: var(--accent); }
+@media (hover: hover) and (pointer: fine) { .btn:hover { opacity: 0.88; } }
+.note { color: var(--muted); font-size: 0.9375rem; margin: 14px 0 0; }
+
+/* sample conversation: the one memorable thing */
+.chat { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 20px; }
+.chat h2 { margin: 0 0 16px; font-size: 0.9375rem; font-weight: 600; color: var(--muted); }
+.q { background: var(--sunken); border-radius: 12px; padding: 10px 14px; margin: 0 0 16px; max-width: 28rem; }
+.calls { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; padding: 0; list-style: none; }
+.calls li { font: 0.8125rem/1 var(--mono); padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); }
+.answer p { margin: 0 0 12px; }
+.devices { width: 100%; border-collapse: collapse; margin: 4px 0 14px; font-size: 0.9375rem; }
+.devices th, .devices td { text-align: left; padding: 9px 8px 9px 0; border-top: 1px solid var(--line); vertical-align: top; }
+.devices th { font-weight: 600; }
+.devices thead th { border-top: 0; color: var(--muted); font-weight: 500; font-size: 0.875rem; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px 3px 8px; border-radius: 999px; font-size: 0.875rem; font-weight: 600; white-space: nowrap; }
+.chip svg { width: 14px; height: 14px; flex: none; }
+.chip.ok { background: var(--ok-bg); color: var(--ok-ink); }
+.chip.warn { background: var(--warn-bg); color: var(--warn-ink); }
+.chip.idle { background: var(--idle-bg); color: var(--idle-ink); }
+.src { color: var(--muted); font-size: 0.8125rem; margin: 0; }
+
+/* sections */
+section.block { padding: 48px 0; border-top: 1px solid var(--line); }
+h2.t { font-size: clamp(1.5rem, 4vw, 2rem); line-height: 1.15; letter-spacing: -0.02em; margin: 0 0 16px; font-weight: 680; }
+h3 { font-size: 1.0625rem; margin: 28px 0 8px; }
+.cols { display: grid; gap: 28px; }
+.prose { max-width: 40rem; }
+.prose p { margin: 0 0 14px; }
+.promise { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 12px; padding: 18px 20px; max-width: 40rem; }
+.promise p { margin: 0; }
+ul.plain { padding-left: 1.25rem; margin: 0 0 14px; }
+ul.plain li { margin-bottom: 6px; }
+ol.steps { padding-left: 1.25rem; margin: 0 0 16px; max-width: 40rem; }
+ol.steps li { margin-bottom: 10px; padding-left: 4px; }
+code { font: 0.9em var(--mono); background: var(--sunken); padding: 0.1em 0.35em; border-radius: 5px; overflow-wrap: anywhere; }
+pre { margin: 0 0 16px; background: var(--sunken); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; overflow-x: auto; font: 0.875rem/1.55 var(--mono); }
+pre code { background: none; padding: 0; overflow-wrap: normal; }
+.label { font-weight: 600; margin: 20px 0 6px; }
+
+table.tools { width: 100%; border-collapse: collapse; font-size: 0.9375rem; }
+table.tools th, table.tools td { text-align: left; padding: 11px 12px 11px 0; border-top: 1px solid var(--line); vertical-align: top; }
+table.tools thead th { border-top: 0; color: var(--muted); font-weight: 500; font-size: 0.875rem; }
+table.tools td:first-child { white-space: nowrap; }
+
+footer { border-top: 1px solid var(--line); padding: 32px 0 56px; color: var(--muted); font-size: 0.9375rem; }
+footer p { margin: 0 0 10px; max-width: 40rem; }
+
+@media (min-width: 52rem) {
+  .hero { grid-template-columns: 1.05fr 1fr; align-items: center; gap: 56px; padding: 64px 0 72px; }
+  .cols { grid-template-columns: 1fr 1fr; gap: 56px; }
+}
+@media (max-width: 34rem) {
+  table.tools td:first-child { white-space: normal; overflow-wrap: anywhere; }
+  .devices th, .devices td { padding-right: 6px; }
+}
+@media (prefers-reduced-motion: reduce) { .btn { transition: opacity 140ms linear; } .btn:active { transform: none; } }
+@media (prefers-contrast: more) { :root { --line: #6b7c88; } }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="wrap">
+  <header class="top">
+    <a class="brand" href="#top" id="top">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="var(--accent)"/><path d="M8 23V9h3l5 7 5-7h3v14h-3v-8l-5 7-5-7v8z" fill="var(--on-accent)"/></svg>
+      MakinoMCP
+    </a>
+    <a href="https://github.com/GHeart01/Machine_Companion">Source on GitHub</a>
+  </header>
+
+  <main id="main">
+    <div class="hero">
+      <div>
+        <h1>Ask Claude what your Makino cell is doing.</h1>
+        <p class="lede">MakinoMCP gives Claude a read-only view of a Makino MAS-A5 cell: which machines are running, which alarms are open, what the pallets are doing, and what the log files say.</p>
+        <div class="actions">
+          <a class="btn" href="https://github.com/GHeart01/Machine_Companion/releases/latest">Download for Windows</a>
+          <a class="btn quiet" href="#setup">How to set it up</a>
+        </div>
+        <p class="note">Free and open source (MIT). It only reads: it never changes the cell, the database or any file.</p>
+      </div>
+
+      <div class="chat" role="group" aria-labelledby="chat-h">
+        <h2 id="chat-h">Example conversation, sample data</h2>
+        <p class="q">Is anything wrong with the cell right now?</p>
+        <ul class="calls" aria-label="Tools Claude used">
+          <li>get_cell_overview</li>
+          <li>get_alarms openOnly=true</li>
+        </ul>
+        <div class="answer">
+          <p>One machine needs attention. CONTOSO-MC2 has had a coolant alarm open for 42 minutes, and nothing has finished on it since 09:10.</p>
+          <table class="devices">
+            <thead><tr><th scope="col">Device</th><th scope="col">State</th><th scope="col">Last finished</th></tr></thead>
+            <tbody>
+              <tr><th scope="row">CONTOSO-MC1</th><td><span class="chip ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Running</span></td><td>2 min ago</td></tr>
+              <tr><th scope="row">CONTOSO-MC2</th><td><span class="chip warn"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2l6.5 11.5h-13z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M8 6.5v3M8 11.6v.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>Alarm 1042</span></td><td>09:10</td></tr>
+              <tr><th scope="row">CONTOSO-AGV1</th><td><span class="chip idle"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3v10M11 3v10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Idle</span></td><td>9 min ago</td></tr>
+            </tbody>
+          </table>
+          <p class="src">From the cell database on CONTOSO-CELL-PC. Names, times and numbers here are made up.</p>
+        </div>
+      </div>
+    </div>
+
+    <section class="block" aria-labelledby="reads">
+      <div class="cols">
+        <div>
+          <h2 class="t" id="reads">What it reads</h2>
+          <div class="prose">
+            <ul class="plain">
+              <li>The cell's <strong>Makino database</strong> (SQL Server): device status, alarms, utilisation, recent activity, orders and pallets.</li>
+              <li><strong>Folders you choose to share</strong>, for example the cell PC's <code>C:\Makino\Log</code> shared read only. Claude can list, read and search text files there, and nowhere else.</li>
+            </ul>
+            <p>Some numbers in the cell have no published meaning. Where the meaning of a status was worked out from the installed MAS-A5 software it is shown in words; anything without a known meaning appears as <code>code N</code>.</p>
+          </div>
+        </div>
+        <div>
+          <h2 class="t" id="promise">The read-only promise</h2>
+          <div class="promise">
+            <p>MakinoMCP has no tool that writes, sends, deletes or changes anything. Database access is fixed <code>SELECT</code> queries, and there is no &ldquo;run this SQL&rdquo; tool. A database login that can only read is recommended, so the database enforces the promise too.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="setup" aria-labelledby="setup-h">
+      <h2 class="t" id="setup-h">Set it up</h2>
+      <p class="prose">You need Windows 10 or 11, network access to the cell's SQL Server, and a SQL or Windows login that can read the Makino database.</p>
+      <ol class="steps">
+        <li>Download <code>MakinoMCP-&lt;version&gt;-win-x64.zip</code> from the <a href="https://github.com/GHeart01/Machine_Companion/releases/latest">latest release</a> and check it against the <code>.sha256</code> file beside it.</li>
+        <li>Unzip it to a folder, ideally on a share so every PC uses one copy.</li>
+        <li>Run <code>MakinoMCP.exe</code>. Enter the server, database and login, choose <strong>Test connection</strong>, add any folders to share, then <strong>Save</strong>.</li>
+        <li>Copy the lines the setup window shows into Claude, as below.</li>
+      </ol>
+      <p class="note prose">Windows SmartScreen may warn about an unknown publisher, because the program is not code-signed. Choose <strong>More info</strong>, then <strong>Run anyway</strong>, only if you downloaded it from the release above.</p>
+
+      <h3>Connect Claude</h3>
+      <p class="label">Claude Code, once per PC</p>
+      <pre tabindex="0"><code>claude mcp add --scope user makino -- "\\server\Tools\MakinoMCP\MakinoMCP.exe" serve</code></pre>
+      <p class="label">Claude Cowork or Claude Desktop: add to <code>mcpServers</code>, then restart the app</p>
+      <pre tabindex="0"><code>"makino": { "command": "\\\\server\\Tools\\MakinoMCP\\MakinoMCP.exe", "args": ["serve"] }</code></pre>
+    </section>
+
+    <section class="block" aria-labelledby="ask">
+      <h2 class="t" id="ask">What to ask</h2>
+      <ul class="plain prose">
+        <li>What is every machine in the cell doing right now?</li>
+        <li>Which alarms keep coming back this week, and on which machine?</li>
+        <li>Did the cell sit idle overnight? Show me the gaps.</li>
+        <li>Which orders are still open, and where are their pallets?</li>
+      </ul>
+    </section>
+
+    <section class="block" aria-labelledby="tools-h">
+      <h2 class="t" id="tools-h">Tools Claude gets</h2>
+      <table class="tools">
+        <thead><tr><th scope="col">Tool</th><th scope="col">What it gives Claude</th></tr></thead>
+        <tbody>
+          <tr><td><code>get_cell_overview</code></td><td>Every device: connection, mode, current action, pallets, open alarms, last activity.</td></tr>
+          <tr><td><code>get_alarms</code></td><td>Open and recent PMC and CNC alarms, newest first.</td></tr>
+          <tr><td><code>get_alarm_summary</code></td><td>Alarms grouped by device and number, most frequent first.</td></tr>
+          <tr><td><code>get_utilization</code></td><td>Busy, idle, down and error hours per device and day.</td></tr>
+          <tr><td><code>get_recent_activity</code></td><td>Machining, work-set and transport results, to spot gaps.</td></tr>
+          <tr><td><code>get_orders</code></td><td>Queued and finished orders.</td></tr>
+          <tr><td><code>get_pallets</code></td><td>Each pallet's status, location and fixtures.</td></tr>
+          <tr><td><code>list_shared_folders</code></td><td>The folders you shared, and whether they are reachable.</td></tr>
+          <tr><td><code>list_files</code></td><td>Files and subfolders in a shared folder.</td></tr>
+          <tr><td><code>read_file</code></td><td>A text file, its last lines, or a line range.</td></tr>
+          <tr><td><code>search_files</code></td><td>Plain-text search across a shared folder.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="block" aria-labelledby="limits">
+      <div class="cols">
+        <div>
+          <h2 class="t" id="limits">Limits</h2>
+          <div class="prose">
+            <ul class="plain">
+              <li>History is short: the cell keeps about the last 200 CNC alarms and, on a typical cell, about three months of PMC alarms.</li>
+              <li>Results are capped at 500 rows, and file reads at 256 KB, unless you change the limits in the settings file.</li>
+            </ul>
+          </div>
+        </div>
+        <div>
+          <h2 class="t" id="security">Security</h2>
+          <div class="prose">
+            <ul class="plain">
+              <li>The database password is stored in <strong>plain text</strong> in <code>MakinoMCP.settings.json</code>. Protect that folder, and prefer a read-only login or a Windows login.</li>
+              <li>Whatever is in the database and the shared folders can appear in your Claude conversation. Share only folders you are happy for Claude to read.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>MakinoMCP is not made or endorsed by Makino. Released under the <a href="https://github.com/GHeart01/Machine_Companion/blob/main/LICENSE">MIT licence</a>.</p>
+    <p><a href="https://github.com/GHeart01/Machine_Companion">Source code and releases</a></p>
+  </footer>
+</div>
+</body>
+</html>

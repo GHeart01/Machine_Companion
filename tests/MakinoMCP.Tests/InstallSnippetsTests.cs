@@ -61,7 +61,7 @@ public class InstallSnippetsTests
     public void Snippets_quote_path_with_spaces()
     {
         var (claudeCode, _) = InstallSnippets.For(@"\\srv\Common\Make It\MakinoMCP.exe");
-        Assert.Equal(@"claude mcp add makino -- ""\\srv\Common\Make It\MakinoMCP.exe"" serve", claudeCode);
+        Assert.Equal(@"claude mcp add --scope user makino -- ""\\srv\Common\Make It\MakinoMCP.exe"" serve", claudeCode);
     }
 
     [Fact]

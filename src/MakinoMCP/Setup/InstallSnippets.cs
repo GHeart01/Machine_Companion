@@ -9,7 +9,7 @@ public static class InstallSnippets
     /// <paramref name="launcherPath"/>.</summary>
     public static (string ClaudeCode, string CoworkJson) For(string launcherPath)
     {
-        var claudeCode = $"claude mcp add makino -- \"{launcherPath}\" serve";
+        var claudeCode = $"claude mcp add --scope user makino -- \"{launcherPath}\" serve";
         var cowork = $"\"makino\": {{ \"command\": \"{JsonEscape(launcherPath)}\", \"args\": [\"serve\"] }}";
         return (claudeCode, cowork);
     }
