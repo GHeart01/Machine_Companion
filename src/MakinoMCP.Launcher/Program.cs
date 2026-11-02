@@ -2,12 +2,13 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 
 namespace MakinoMCP.Launcher
 {
-    // Starts the real MakinoMCP.exe (copied to a local folder so the share can be updated) and pumps
+    // Starts the real MakinoMCP.exe (a local copy if present; otherwise straight from the share while a background copy is made) and pumps
     // stdin/stdout/stderr between the MCP client and it as raw bytes. Stdout carries only MCP messages.
     internal static class Program
     {
@@ -16,6 +17,8 @@ namespace MakinoMCP.Launcher
             try
             {
                 string launcherDir = AppDomain.CurrentDomain.BaseDirectory;
+                // Background copy started by a first run; must stay silent (no stdout/stderr).
+                if (args.Length == 2 && args[0] == "--prefetch") return Prefetch(launcherDir, args[1]);
                 string exe = ResolveExe(launcherDir);
                 if (exe == null)
                 {
@@ -55,15 +58,14 @@ namespace MakinoMCP.Launcher
             {
                 string version = File.ReadAllText(currentTxt).Trim();
                 string target = Path.Combine(local, version);
-                if (!Directory.Exists(target))
-                {
-                    string source = Path.Combine(launcherDir, "versions", version);
-                    string tmp = target + ".tmp";
-                    if (Directory.Exists(tmp)) Directory.Delete(tmp, true);
-                    CopyDir(source, tmp);
-                    Directory.Move(tmp, target);
-                }
-                return Path.Combine(target, "MakinoMCP.exe");
+                if (Directory.Exists(target)) return Path.Combine(target, "MakinoMCP.exe");
+
+                // First start on this PC: the copy is far slower than a client's connect timeout, so serve this
+                // session straight from the share and copy in a detached background process for the next start.
+                string shareExe = Path.Combine(launcherDir, "versions", version, "MakinoMCP.exe");
+                if (!File.Exists(shareExe)) throw new FileNotFoundException("version " + version + " is not on the share");
+                StartPrefetch(version);
+                return shareExe;
             }
             catch (Exception ex)
             {
@@ -73,11 +75,105 @@ namespace MakinoMCP.Launcher
             }
         }
 
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr GetStdHandle(int nStdHandle);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetHandleInformation(IntPtr hObject, int dwMask, int dwFlags);
+
+        // Starts "MakinoMCP.exe --prefetch <version>" detached. Best effort: the session works without it.
+        private static void StartPrefetch(string version)
+        {
+            try
+            {
+                // CreateProcess inherits every inheritable handle, including the client's stdio pipes, which would
+                // then stay open after the session ends. Make our own std handles non-inheritable first.
+                foreach (int std in new[] { -10, -11, -12 })
+                {
+                    IntPtr h = GetStdHandle(std);
+                    if (h != IntPtr.Zero && h != new IntPtr(-1)) SetHandleInformation(h, 1, 0);
+                }
+
+                var psi = new ProcessStartInfo(Process.GetCurrentProcess().MainModule.FileName)
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    // Redirected so the child gets fresh pipes instead of our (now non-inheritable) std handles;
+                    // closed straight away because the prefetch never reads or writes them.
+                    RedirectStandardInput = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    WorkingDirectory = Path.GetTempPath(),
+                    Arguments = "--prefetch " + Quote(version),
+                };
+                using (var child = Process.Start(psi))
+                {
+                    child.StandardInput.Close();
+                    child.StandardOutput.Close();
+                    child.StandardError.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("MakinoMCP: could not start the background copy (" + ex.Message + ").");
+            }
+        }
+
+        // Copies versions\<version> from the share to a unique temp folder, then renames it into place.
+        private static int Prefetch(string launcherDir, string version)
+        {
+            string tmp = null;
+            try
+            {
+                string local = LocalApp();
+                Directory.CreateDirectory(local);
+                CleanStale(local);
+                string target = Path.Combine(local, version);
+                if (Directory.Exists(target)) return 0;
+
+                tmp = target + ".tmp-" + Guid.NewGuid().ToString("N");
+                CopyDir(Path.Combine(launcherDir, "versions", version), tmp);
+                try
+                {
+                    Directory.Move(tmp, target);
+                }
+                catch (IOException)
+                {
+                    if (!Directory.Exists(target)) throw;
+                    // Another prefetch won the race.
+                }
+                TryDelete(tmp);
+                return 0;
+            }
+            catch
+            {
+                if (tmp != null) TryDelete(tmp);
+                return 1;
+            }
+        }
+
+        private static void CleanStale(string local)
+        {
+            try
+            {
+                foreach (string d in Directory.GetDirectories(local, "*.tmp*"))
+                {
+                    if (Directory.GetLastWriteTimeUtc(d) < DateTime.UtcNow.AddHours(-1)) TryDelete(d);
+                }
+            }
+            catch { }
+        }
+
+        private static void TryDelete(string dir)
+        {
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+
         private static string NewestLocal(string local)
         {
             if (!Directory.Exists(local)) return null;
             return Directory.GetDirectories(local)
-                .Where(d => !d.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase))
+                .Where(d => Path.GetFileName(d).IndexOf(".tmp", StringComparison.OrdinalIgnoreCase) < 0)
                 .Where(d => File.Exists(Path.Combine(d, "MakinoMCP.exe")))
                 .OrderByDescending(d => Directory.GetCreationTimeUtc(d))
                 .Select(d => Path.Combine(d, "MakinoMCP.exe"))
