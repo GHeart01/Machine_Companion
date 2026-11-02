@@ -82,6 +82,17 @@ public class ReaderSqlTests
     }
 
     [Fact]
+    public void Alarm_summary_counts_calendar_days_like_utilization()
+    {
+        const string window = "DATEADD(day, 1 - @days, CAST(CAST(@now AS date) AS datetime))";
+        var sql = SqlMakinoReader.AlarmSummarySql(SchemaWithout());
+        // Both halves of the PMC/CNC union use the same window, starting at midnight (days - 1) days ago.
+        Assert.Equal(2, sql.Split("AlarmTime >= " + window).Length - 1);
+        Assert.DoesNotContain("DATEADD(hour", sql);
+        Assert.Contains("d.Date >= " + window, SqlMakinoReader.UtilizationSql(SchemaWithout()));
+    }
+
+    [Fact]
     public void Last_activity_looks_back_30_days()
     {
         var sql = SqlMakinoReader.LastActivitySql();

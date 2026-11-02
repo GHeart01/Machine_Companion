@@ -51,19 +51,10 @@ public sealed partial class SqlMakinoReader
         var deviceId = FindDevice(s.Names(), device);
 
         s.Schema.Require("PMCAlarms", "CNCAlarms");
-        var union = AlarmUnion(s.Schema, "AlarmTime >= DATEADD(hour, -@hours, @now)", includeWarnings: true);
 
-        // Grouped by number, not message: a message with values in it would otherwise split one alarm into many rows.
-        using var cmd = Command(s.Connection, $"""
-            SELECT TOP (@take) Source, DeviceID, AlarmNumber, MAX(AlarmMessage) AS AlarmMessage, COUNT(*) AS Times,
-                   SUM(CAST(CASE WHEN ISNULL(ResetTime, @now) > AlarmTime
-                                 THEN DATEDIFF(second, AlarmTime, ISNULL(ResetTime, @now)) ELSE 0 END AS bigint)) / 60.0 AS TotalMinutes,
-                   MIN(AlarmTime) AS FirstSeen, MAX(AlarmTime) AS LastSeen
-            FROM ({union}) a
-            GROUP BY Source, DeviceID, AlarmNumber
-            ORDER BY COUNT(*) DESC, MAX(AlarmTime) DESC;
-            """);
+        using var cmd = Command(s.Connection, AlarmSummarySql(s.Schema));
         AddWindow(cmd, s.Now, deviceId, hours: Days(days) * 24);
+        cmd.Parameters.Add("@days", System.Data.SqlDbType.Int).Value = Days(days);
 
         var rows = new List<AlarmSummaryRow>();
         using var r = await cmd.ExecuteReaderAsync(ct);
@@ -81,6 +72,24 @@ public sealed partial class SqlMakinoReader
         }
         var (summary, capped) = Cap(rows);
         return new AlarmSummary(s.Now, capped, summary);
+    }
+
+    /// <summary>Alarms grouped by device, source and number. Calendar days like get_utilization: days = 1 is today so
+    /// far, days = 7 starts at midnight six days ago.</summary>
+    internal static string AlarmSummarySql(SchemaInfo schema)
+    {
+        var union = AlarmUnion(schema, "AlarmTime >= DATEADD(day, 1 - @days, CAST(CAST(@now AS date) AS datetime))", includeWarnings: true);
+
+        // Grouped by number, not message: a message with values in it would otherwise split one alarm into many rows.
+        return $"""
+            SELECT TOP (@take) Source, DeviceID, AlarmNumber, MAX(AlarmMessage) AS AlarmMessage, COUNT(*) AS Times,
+                   SUM(CAST(CASE WHEN ISNULL(ResetTime, @now) > AlarmTime
+                                 THEN DATEDIFF(second, AlarmTime, ISNULL(ResetTime, @now)) ELSE 0 END AS bigint)) / 60.0 AS TotalMinutes,
+                   MIN(AlarmTime) AS FirstSeen, MAX(AlarmTime) AS LastSeen
+            FROM ({union}) a
+            GROUP BY Source, DeviceID, AlarmNumber
+            ORDER BY COUNT(*) DESC, MAX(AlarmTime) DESC;
+            """;
     }
 
     /// <summary>PMC and CNC alarms as one row shape; CNC alarms have no warning level. Without IsWarning every PMC entry

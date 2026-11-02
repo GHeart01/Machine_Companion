@@ -13,7 +13,8 @@ public static class CellTools
     [McpServerTool(Name = "get_cell_overview", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("What is every device in the cell doing right now? Start here. For each device (machines, vehicles, " +
                  "work-set stations, …): connected, emergency stop, mode, current action, the pallets on it, how many " +
-                 "alarms and warnings are open, and when it last finished something (lastActivity). Status values carry " +
+                 "alarms and warnings are open, and when it last finished something (lastActivity). lastActivity looks " +
+                 "back 30 days: null means nothing finished in that time, not that it never did. Status values carry " +
                  "no timestamp, so compare lastActivity with serverTime to notice a device that is connected but has " +
                  "done nothing for hours. notAvailable names fields this cell's software version doesn't keep.")]
     public static Task<string> GetCellOverview(ToolContext context, CancellationToken ct) =>
@@ -37,7 +38,7 @@ public static class CellTools
     [McpServerTool(Name = "get_alarm_summary", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("Which alarms keep coming back? Alarms of the last days grouped by device, source (PMC/CNC) and alarm " +
                  "number, most frequent first: count, total minutes open, first and last seen. Default: the last 7 " +
-                 "days, every device. Use it for recurring problems; use get_alarms for the individual occurrences. " +
+                 "days (today counts as one, and is only part of a day), every device. Use it for recurring problems; use get_alarms for the individual occurrences. " +
                  "CNC alarm history keeps only about the last 200 alarms, so older CNC counts may be incomplete.")]
     public static Task<string> GetAlarmSummary(
         ToolContext context,
