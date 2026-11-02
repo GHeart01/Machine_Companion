@@ -114,8 +114,8 @@ public sealed class ToolContext
                 ? $"the shared folders didn't answer within {Seconds(budget)} seconds — one may be offline"
                 : $"the folder '{folder.Trim()}' didn't answer within {Seconds(budget)} seconds — it may be offline",
             // SharedFolders turns every expected problem into a FolderAccessException; anything else is a surprise.
-            e => e is FolderAccessException
-                ? e.Message
+            e => e is FolderAccessException ? e.Message
+                : e is OperationCanceledException ? "the request was cancelled"
                 : $"Could not read the shared folder{(folder is null ? "s" : $" '{folder.Trim()}'")}: unexpected error ({e.GetType().Name}: {Short(e.Message)})",
             ct);
     }
