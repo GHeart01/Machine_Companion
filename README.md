@@ -43,9 +43,11 @@ A login that can only read is recommended: then the database enforces the promis
 Windows SmartScreen may warn that the program is from an unknown publisher: it is not code-signed. Choose **More info**,
 then **Run anyway** only if you downloaded it from the release above.
 
-`MakinoMCP.exe` is a small launcher. It copies the current version from the `versions` folder to
-`%LOCALAPPDATA%\MakinoMCP\app` and runs it from there, so you can update the share while PCs are using it. If the share is
-unreachable it runs the newest copy already on the PC. Settings are saved in `MakinoMCP.settings.json` beside the launcher.
+`MakinoMCP.exe` is a small launcher. `current.txt` names the current version in the `versions` folder; the launcher copies
+that version once to `%LOCALAPPDATA%\MakinoMCP\app\<version>` and from then on runs the PC's own copy (on the very first
+start it runs straight from the share while the copy is made in the background). Because PCs run their own copies, a new
+version can be put on the share while people are connected (see [Updating](#updating)). If the share is unreachable it
+runs the newest copy already on the PC. Settings are saved in `MakinoMCP.settings.json` beside the launcher.
 
 ## Connect Claude
 
@@ -62,6 +64,24 @@ claude mcp add --scope user makino -- "\\server\Tools\MakinoMCP\MakinoMCP.exe" s
 ```json
 "makino": { "command": "\\\\server\\Tools\\MakinoMCP\\MakinoMCP.exe", "args": ["serve"] }
 ```
+
+## Updating
+
+1. Put the new version on the share, either way:
+   - From a source checkout: `.\publish.ps1 -Target \\server\Tools\MakinoMCP`.
+   - From a release zip: copy its `versions\<version>` folder into the share's `versions` folder, then `MakinoMCP.exe`
+     and `MakinoMCP.exe.config` if they changed, and `current.txt` last. Keep the share's `MakinoMCP.settings.json`.
+     Windows won't overwrite a launcher that is running but does let you rename it, so rename the old `MakinoMCP.exe`
+     aside first (for example to `MakinoMCP.exe.old`).
+2. Open `MakinoMCP.exe` once on each PC. The first time, it copies the new version to the PC (about a minute on a slow
+   network). After that Claude connects in a second.
+
+Claude sessions already running keep using their version until they are restarted.
+
+Every update needs a new version number: a PC that already has a version never copies it again. `publish.ps1` therefore
+refuses a version that is already on the share. `-Overwrite` replaces it anyway, and is only for a version no PC has used
+yet. `publish.ps1` replaces the launcher only when it changed, renaming the old one to `MakinoMCP.exe.old-<time>`. Old
+`versions\*` folders and `.old-*` files can be deleted once no PC uses them.
 
 ## What to ask Claude
 
@@ -109,8 +129,9 @@ dotnet test MakinoMCP.slnx
 .\publish.ps1 -Zip
 ```
 
-The layout is written to `artifacts\layout`. `.\publish.ps1 -Target \\server\Tools\MakinoMCP` mirrors it to a share without
-touching the settings file already there.
+The layout is written to `artifacts\layout`. `.\publish.ps1 -Target \\server\Tools\MakinoMCP` puts it on a share without
+touching the settings file already there; raise `<Version>` in `src\MakinoMCP\MakinoMCP.csproj` first (see
+[Updating](#updating)).
 
 ## Licence
 
