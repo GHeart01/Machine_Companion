@@ -34,7 +34,7 @@ A login that can only read is recommended: then the database enforces the promis
 
 1. Download `MakinoMCP-<version>-win-x64.zip` from the [latest release](https://github.com/GHeart01/Machine_Companion/releases/latest)
    and check it against the `.sha256` file next to it.
-2. Unzip it into a folder, ideally one on a share so every PC uses the same copy (for example `\server\Tools\MakinoMCP`).
+2. Unzip it into a folder, ideally one on a share so every PC uses the same copy (for example `\\server\Tools\MakinoMCP`).
 3. Run `MakinoMCP.exe`. The setup window opens: enter the server, database and login, press **Test connection**, add any
    folders to share, then **Save**.
 
@@ -52,13 +52,13 @@ The setup window shows both snippets with your path filled in.
 **Claude Code** (once per PC, for your user):
 
 ```
-claude mcp add --scope user makino -- "\server\Tools\MakinoMCP\MakinoMCP.exe" serve
+claude mcp add --scope user makino -- "\\server\Tools\MakinoMCP\MakinoMCP.exe" serve
 ```
 
 **Claude Cowork / Claude Desktop**: add this entry to `mcpServers` in the app's configuration, then restart the app.
 
 ```json
-"makino": { "command": "\\server\Tools\MakinoMCP\MakinoMCP.exe", "args": ["serve"] }
+"makino": { "command": "\\\\server\\Tools\\MakinoMCP\\MakinoMCP.exe", "args": ["serve"] }
 ```
 
 ## What to ask Claude
@@ -107,7 +107,7 @@ dotnet test MakinoMCP.slnx
 .\publish.ps1 -Zip
 ```
 
-The layout is written to `artifacts\layout`. `.\publish.ps1 -Target \server\Tools\MakinoMCP` mirrors it to a share without
+The layout is written to `artifacts\layout`. `.\publish.ps1 -Target \\server\Tools\MakinoMCP` mirrors it to a share without
 touching the settings file already there.
 
 ## Licence
