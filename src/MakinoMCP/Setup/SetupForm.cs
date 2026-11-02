@@ -64,8 +64,7 @@ internal sealed class SetupForm : Form
         AutoScroll = true;
         ClientSize = new Size(660, 760);
         MinimumSize = new Size(520, 360);
-        CancelButton = _close;
-        _close.DialogResult = DialogResult.Cancel;
+        CancelButton = _close; // Esc presses Close
 
         var root = new TableLayoutPanel
         {
@@ -94,6 +93,8 @@ internal sealed class SetupForm : Form
         _copyClaudeCode.Click += (_, _) => Copy(_claudeCode, _copyClaudeCode);
         _copyCowork.Click += (_, _) => Copy(_cowork, _copyCowork);
         _save.Click += OnSaveClick;
+        // Close() rather than DialogResult: the window runs modeless (Application.Run), where DialogResult closes nothing.
+        _close.Click += (_, _) => Close();
 
         LoadExisting();
         WatchForChanges();
@@ -557,7 +558,19 @@ internal sealed class SetupForm : Form
         timer.Start();
     }
 
-    // ------------------------------------------------------------------ closing
+    // ------------------------------------------------------------------ opening and closing
+
+    protected override void OnLoad(EventArgs e)
+    {
+        base.OnLoad(e);
+        // Scaling has run by now: keep the whole window on its screen (at 150-200% the full height may not fit) and let
+        // AutoScroll show the rest.
+        var area = Screen.FromControl(this).WorkingArea;
+        var size = new Size(Math.Min(Width, area.Width), Math.Min(Height, area.Height));
+        if (size == Size) return;
+        Size = size;
+        Location = new Point(area.Left + (area.Width - size.Width) / 2, area.Top + (area.Height - size.Height) / 2);
+    }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
