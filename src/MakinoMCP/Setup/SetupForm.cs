@@ -631,7 +631,8 @@ internal sealed class SetupForm : Form
         if (IsDisposed || _closing.IsCancellationRequested) return;
 
         SetSwitchBusy(false);
-        ShowSwitch(facts, result);
+        // Saved now, not when the read began: Save may have been pressed while claude was answering.
+        ShowSwitch(facts with { SettingsSaved = File.Exists(_settingsPath) }, result);
     }
 
     /// <summary>While busy the box stays enabled, so the keyboard focus stays on it (disabling would move the focus
@@ -672,9 +673,10 @@ internal sealed class SetupForm : Form
         {
             // A fresh switch: Claude Code may have been installed or changed since the window opened.
             var (_, sw) = await ReadSwitchAsync(_closing.Token);
-            result = turnOn
-                ? await sw.TurnOnAsync(Launcher(), _closing.Token)
-                : await sw.TurnOffAsync(_closing.Token);
+            var launcher = Launcher();
+            var ct = _closing.Token;
+            // Off the UI thread, starting the claude processes included.
+            result = await Task.Run(() => turnOn ? sw.TurnOnAsync(launcher, ct) : sw.TurnOffAsync(ct), ct);
         }
         catch (OperationCanceledException)
         {
