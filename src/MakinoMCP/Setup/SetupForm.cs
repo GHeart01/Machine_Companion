@@ -39,6 +39,19 @@ internal sealed class SetupForm : Form
     private readonly Button _removeFolder = ActionButton("&Remove folder");
 
     // Connect Claude
+    private readonly CheckBox _useInClaude = new()
+    {
+        Text = "Use &MakinoMCP in Claude on this PC",
+        AutoSize = true,
+        AutoCheck = false, // the box shows what Claude has, set after each change, never just the click
+        Enabled = false,   // until the first check has run
+        Margin = new Padding(0, 8, 0, 0),
+        AccessibleDescription = "On adds MakinoMCP to Claude for your Windows account on this PC. Off removes it and stops it.",
+    };
+    private readonly StatusView _claudeStatus = new();
+    private readonly Label _claudeNote = Wrapping("");
+    private SwitchFacts? _switchFacts;
+    private bool _switchBusy;
     private readonly Label _connectHint = Wrapping("Save first: the commands that connect Claude to MakinoMCP appear here.");
     private readonly TableLayoutPanel _snippets = new();
     private readonly TextBox _claudeCode = SnippetBox("Claude Code command");
@@ -93,6 +106,7 @@ internal sealed class SetupForm : Form
         _copyClaudeCode.Click += (_, _) => Copy(_claudeCode, _copyClaudeCode);
         _copyCowork.Click += (_, _) => Copy(_cowork, _copyCowork);
         _save.Click += OnSaveClick;
+        _useInClaude.Click += OnUseInClaudeClick;
         // Close() rather than DialogResult: the window runs modeless (Application.Run), where DialogResult closes nothing.
         _close.Click += (_, _) => Close();
 
@@ -176,12 +190,19 @@ internal sealed class SetupForm : Form
     private void BuildConnectClaude(TableLayoutPanel root)
     {
         Add(root, Heading("Connect Claude"));
+        Add(root, _useInClaude);
+        _claudeStatus.Margin = new Padding(0, 6, 0, 0);
+        Add(root, _claudeStatus);
+        _claudeNote.Visible = false;
+        _claudeNote.Margin = new Padding(0, 6, 0, 0);
+        Add(root, _claudeNote);
+        _connectHint.Margin = new Padding(0, 14, 0, 0);
         Add(root, _connectHint);
 
         _snippets.ColumnCount = 2;
         _snippets.AutoSize = true;
         _snippets.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-        _snippets.Margin = new Padding(0, 4, 0, 0);
+        _snippets.Margin = new Padding(0, 10, 0, 0);
         _snippets.Visible = false;
         _snippets.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         _snippets.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -511,6 +532,7 @@ internal sealed class SetupForm : Form
         }
         _dirty = false;
         ShowSnippets();
+        if (_switchFacts is { } facts && !_switchBusy) ShowSwitch(facts with { SettingsSaved = true });
 
         _save.Enabled = false;
         _saveStatus.Set(new StatusLine(StatusKind.Info, "Saved. Checking the folders…"));
@@ -523,10 +545,12 @@ internal sealed class SetupForm : Form
                 $"Saved. {NextStart} This PC can't reach {string.Join(", ", unreachable.Select(n => $"'{n}'"))}: Claude can't read {(unreachable.Count == 1 ? "it" : "them")} until it can."));
     }
 
+    /// <summary>The launcher Claude should start: beside the settings file, by its UNC path when on a mapped drive.</summary>
+    private string Launcher() => UncPath.FromMapped(InstallSnippets.LauncherPath(_settingsPath), UncPath.DriveToUnc);
+
     private void ShowSnippets()
     {
-        var launcher = UncPath.FromMapped(InstallSnippets.LauncherPath(_settingsPath), UncPath.DriveToUnc);
-        var (claudeCode, cowork) = InstallSnippets.For(launcher);
+        var (claudeCode, cowork) = InstallSnippets.For(Launcher());
         _claudeCode.Text = claudeCode;
         _cowork.Text = cowork;
         _connectHint.Visible = false;
@@ -560,7 +584,118 @@ internal sealed class SetupForm : Form
         timer.Start();
     }
 
+    // ------------------------------------------------------------------ use in Claude on this PC
+
+    private static readonly string ClaudeWorkingFolder = Path.Combine(Path.GetTempPath(), "MakinoMCP-claude");
+
+    /// <summary>Reads what Claude Code and Cowork have now, and makes the switch that changes them. Off the UI
+    /// thread: claude can take seconds to answer.</summary>
+    private Task<(SwitchFacts Facts, ClaudeSwitch Switch)> ReadSwitchAsync(CancellationToken ct)
+    {
+        var launcher = Launcher();
+        var saved = File.Exists(_settingsPath);
+        return Task.Run(async () =>
+        {
+            // An empty folder of its own: no project there whose local or .mcp.json entry could hide the user one.
+            Directory.CreateDirectory(ClaudeWorkingFolder);
+            var runner = new ProcessCommandRunner(ClaudeWorkingFolder);
+            var claudePath = await ClaudeRegistration.FindAsync(runner, ct);
+            var registration = claudePath is null ? null : new ClaudeRegistration(runner, claudePath);
+            var status = registration is null ? null : await registration.GetStatusAsync(ct);
+            var cowork = CoworkConfig.FilesForThisUser();
+            var facts = new SwitchFacts(status, cowork.Count > 0, CoworkConfig.AnyHasEntry(cowork), saved, launcher);
+            return (facts, new ClaudeSwitch(registration, cowork, RunningServers.StopForThisUser, () => DateTime.Now));
+        }, ct);
+    }
+
+    /// <summary>Reads the state afresh and shows it; <paramref name="result"/>, when given, replaces the status line
+    /// (the outcome of a change says more than the state alone).</summary>
+    private async Task RefreshSwitchAsync(StatusLine? result = null)
+    {
+        SetSwitchBusy(true);
+        if (result is null) _claudeStatus.Set(new StatusLine(StatusKind.Info, "Checking whether Claude uses MakinoMCP…"));
+        SwitchFacts facts;
+        try
+        {
+            (facts, _) = await ReadSwitchAsync(_closing.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception ex) // never a crash or a stack trace: the message in plain words
+        {
+            facts = new SwitchFacts(new ClaudeStatus(RegistrationState.Unknown, Problem: ex.Message), false, false,
+                File.Exists(_settingsPath), Launcher());
+        }
+        if (IsDisposed || _closing.IsCancellationRequested) return;
+
+        SetSwitchBusy(false);
+        ShowSwitch(facts, result);
+    }
+
+    /// <summary>While busy the box stays enabled, so the keyboard focus stays on it (disabling would move the focus
+    /// away mid-change); clicks are ignored and the status line says what is happening.</summary>
+    private void SetSwitchBusy(bool busy)
+    {
+        _switchBusy = busy;
+        _useInClaude.Cursor = busy ? Cursors.AppStarting : Cursors.Default;
+    }
+
+    private void ShowSwitch(SwitchFacts facts, StatusLine? result = null)
+    {
+        _switchFacts = facts;
+        var view = ClaudeSwitch.Describe(facts);
+        _useInClaude.Checked = view.Checked;
+        _useInClaude.Enabled = view.Enabled;
+        _claudeStatus.Set(result ?? view.Status);
+        _claudeNote.Text = view.Note ?? "";
+        _claudeNote.Visible = view.Note is not null;
+    }
+
+    private async void OnUseInClaudeClick(object? sender, EventArgs e)
+    {
+        if (_switchBusy || !_useInClaude.Enabled) return;
+        var turnOn = !_useInClaude.Checked;
+        if (!turnOn)
+        {
+            var answer = MessageBox.Show(this,
+                "Turn off MakinoMCP for Claude on this PC? Claude sessions that are open will lose the MakinoMCP tools.",
+                Title, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+            if (answer != DialogResult.Yes) return;
+        }
+
+        SetSwitchBusy(true);
+        _claudeStatus.Set(new StatusLine(StatusKind.Info, turnOn ? "Turning on…" : "Turning off and stopping MakinoMCP…"));
+        StatusLine result;
+        try
+        {
+            // A fresh switch: Claude Code may have been installed or changed since the window opened.
+            var (_, sw) = await ReadSwitchAsync(_closing.Token);
+            result = turnOn
+                ? await sw.TurnOnAsync(Launcher(), _closing.Token)
+                : await sw.TurnOffAsync(_closing.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception ex) // never a crash or a stack trace: the message in plain words
+        {
+            result = new StatusLine(StatusKind.Error, $"Couldn't turn {(turnOn ? "on" : "off")} MakinoMCP for Claude: {ex.Message}");
+        }
+        if (IsDisposed || _closing.IsCancellationRequested) return;
+
+        await RefreshSwitchAsync(result);
+    }
+
     // ------------------------------------------------------------------ opening and closing
+
+    protected override async void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        await RefreshSwitchAsync();
+    }
 
     protected override void OnLoad(EventArgs e)
     {
