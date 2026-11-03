@@ -41,7 +41,7 @@ Machine-specific notes (which share it is published to, the live-test settings, 
 | Folder | What it is |
 |---|---|
 | `src/MakinoMCP.Core` | net10.0, no UI or MCP: `Settings` (file model and store), `Cell` (`SqlMakinoReader` split by area, `SchemaInfo` probing, `Codes`, `ErrorText`), `Folders` (`SharedFolders`) |
-| `src/MakinoMCP` | net10.0-windows WinExe `MakinoMCP.exe`: `serve` = MCP host (`Tools/CellTools`, `Tools/FolderTools`, `ToolContext` with time budgets 45 s DB / 20 s folders), no args or `setup` = WinForms setup window (`Setup/`) |
+| `src/MakinoMCP` | net10.0-windows WinExe `MakinoMCP.exe`: `serve` = MCP host (`Tools/CellTools`, `Tools/FolderTools`, `ToolContext` with time budgets 45 s DB / 20 s folders), no args or `setup` = WinForms setup window (`Setup/`), including the "Use MakinoMCP in Claude on this PC" switch (`ClaudeSwitch`: `claude mcp add/remove` via `ClaudeRegistration`, Cowork's config via `CoworkConfig`, stops this user's `serve` processes via `RunningServers`) |
 | `src/MakinoMCP.Launcher` | net48 WinExe, also named `MakinoMCP.exe`, the file users run from a share: reads `current.txt`, runs the local copy in `%LOCALAPPDATA%\MakinoMCP\app\<v>\`; setup mode copies first behind `CopyProgressForm`; serve mode on a fresh PC runs the share copy and prefetches in a detached process (`CreateProcessW`, no inherited handles); `VersionCopier` is the one copy routine |
 | `tests/MakinoMCP.Tests` | xUnit (SkippableFact for live, junction and symlink tests); `StdioSpikeTests` drive a real launcher layout through an MCP client |
 | `scripts/check-private.ps1` | fails on private names (patterns from `-Patterns` or env `PRIVATE_PATTERNS`); never prints the patterns |

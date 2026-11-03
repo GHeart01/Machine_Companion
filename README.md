@@ -51,7 +51,11 @@ runs the newest copy already on the PC. Settings are saved in `MakinoMCP.setting
 
 ## Connect Claude
 
-The setup window shows both snippets with your path filled in.
+**The easy way, on each PC:** open `MakinoMCP.exe` and use the **Use MakinoMCP in Claude on this PC** switch. On adds
+MakinoMCP to Claude Code and to Claude desktop (Cowork, not yet tested) for your Windows account; restart Claude
+to see the tools. Off removes it from Claude on this PC and stops it. Other PCs aren't affected.
+
+To connect by hand instead, the setup window shows both snippets with your path filled in.
 
 **Claude Code** (tested; once per PC, for your user):
 
