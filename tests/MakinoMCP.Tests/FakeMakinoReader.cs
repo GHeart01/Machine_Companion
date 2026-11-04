@@ -31,9 +31,17 @@ internal sealed class FakeMakinoReader : IMakinoReader
     public Task<CellOverview> GetOverviewAsync(CancellationToken ct) => Answer(() => new CellOverview(Now,
     [
         new DeviceState("MC1", "machine", true, false, "memory", "machining", null,
-            [new PalletSpot("table", 7, "waiting for machining")], 1, 0, Now.AddMinutes(-12), []),
-        new DeviceState("Vehicle 1", "vehicle", true, false, null, null, null, [], 0, 0, Now.AddHours(-1), ["sub action"]),
-    ]), ct);
+            [new PalletSpot("table", 7, "processing"), new PalletSpot("next front", 9, "reserved")], 1, 0, Now.AddMinutes(-12), [])
+        {
+            Status = "busy", RecoveryRequest = false, ToolStatus = "lacking tools", CncRun = "run", OperatorCall = "released",
+            RunJob = "machining", Program = new NcProgram("O1234", "O0100"),
+        },
+        new DeviceState("Vehicle 1", "vehicle", true, false, null, "load/unload", null,
+            [new PalletSpot("buffer 1", 7, "")], 0, 0, Now.AddHours(-1), ["vehicle mode", "buffer status"])
+        {
+            Status = "busy", RecoveryRequest = false, TransportFrom = "WSS1", TransportTo = "MC1",
+        },
+    ]) { HistoryDays = 90 }, ct);
 
     public Task<AlarmList> GetAlarmsAsync(int hours, string? device, bool openOnly, bool includeWarnings, CancellationToken ct) =>
         Answer(() => new AlarmList(Now, false,
@@ -68,7 +76,7 @@ internal sealed class FakeMakinoReader : IMakinoReader
     public Task<PalletList> GetPalletsAsync(CancellationToken ct) =>
         Answer(() => new PalletList(Now, false,
         [
-            new PalletInfo(7, "P7", "code 2", "MC1 table", ["FIXTURE-A"]),
+            new PalletInfo(7, "P7", "waiting for machining", "not completed", "MC1 table", ["FIXTURE-A"]),
         ]), ct);
 
     public Task<LoginRightsInfo> GetLoginRightsAsync(CancellationToken ct) =>

@@ -26,10 +26,15 @@ Machine-specific notes (which share it is published to, the live-test settings, 
   `%LOCALAPPDATA%\MakinoMCP\logs\` (`FileLog`). The launcher writes nothing to stdout either.
 - **Bounded output.** Every history tool has a default window and caps at `limits.maxRows`; file reads cap at
   `limits.maxFileKB`; `.log` files default to the last 500 lines. Results that read the database include `serverTime`.
-- **Older cells degrade, they don't crash.** Optional columns go through `Opt()` (NULL when absent);
-  `DeviceResultDaySummary` is the only optional table — any other missing table is an error, never an empty list.
+- **Older cells degrade, they don't crash.** Optional columns go through `Opt()` (NULL when absent). A table a tool
+  needs is required: missing, it is an error, never an empty list. Only sections some cells lack are optional
+  (`DeviceResultDaySummary`; in the overview the vehicle's status — `VehicleStatus`, else the vendor view
+  `ViewVehicleStatus` — and `SystemParameters`), and they say "not available". `SchemaInfo` probes only the names
+  in its `Tables` list; tables reached through synonyms (a remote tool crib) count when a SELECT through them works.
 - **Code meanings live only in `Codes.cs`.** Unknown values render as `code N`. Some status columns are deliberately
-  unmapped (pallet status, table/front/back status, vehicle finish status) because their meanings aren't confirmed.
+  unmapped (vehicle buffer status, vehicle finish status) because their meanings aren't confirmed. `Pallets` holds
+  the dashboard codes the cell's `UpdatePalletStatus` writes (`PalletDisplayStatus`/`PalletWorkStatus`), not the
+  in-memory `PalletStatus` list.
 - **Public repo hygiene.** Nothing specific to any one company in tracked files: examples use `MAKINO-CELL-PC`,
   `your-login`, `\\server\Tools`; test data is sample data. `scripts/check-private.ps1` (and CI, via the
   `PRIVATE_PATTERNS` secret) fails on private names. `docs/superpowers/`, `.superpowers/` and real settings files are

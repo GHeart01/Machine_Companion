@@ -38,6 +38,25 @@ public class LiveReaderTests
     }
 
     [SkippableFact]
+    public async Task Live_overview_has_dashboard_state()
+    {
+        var o = await Reader().GetOverviewAsync(CancellationToken.None);
+
+        Assert.True(o.HistoryDays is null or > 0);
+        var machines = o.Devices.Where(d => d.Type == "machine").ToList();
+        Assert.NotEmpty(machines);
+        Assert.All(machines, m => Assert.True(m.Status is not null || m.NotAvailable.Contains("status")));
+        Assert.All(machines, m => Assert.True(m.ToolStatus is not null || m.NotAvailable.Contains("tool status")));
+        Assert.All(o.Devices.SelectMany(d => d.Pallets), p => Assert.False(string.IsNullOrWhiteSpace(p.Position)));
+        // A vehicle is read from its status table or the vendor view, or says it can't be.
+        Assert.All(o.Devices.Where(d => d.Type == "vehicle"),
+            v => Assert.True(v.Status is not null || v.NotAvailable.Contains("vehicle status")));
+
+        var pallets = await Reader().GetPalletsAsync(CancellationToken.None);
+        Assert.All(pallets.Pallets, p => Assert.False(string.IsNullOrWhiteSpace(p.Status)));
+    }
+
+    [SkippableFact]
     public async Task Live_alarms_last_24h_capped()
     {
         var all = await Reader().GetAlarmsAsync(24, null, false, true, CancellationToken.None);

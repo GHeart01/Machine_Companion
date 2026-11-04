@@ -12,11 +12,17 @@ public static class CellTools
 
     [McpServerTool(Name = "get_cell_overview", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("What is every device in the cell doing right now? Start here. For each device (machines, vehicles, " +
-                 "work-set stations, …): connected, emergency stop, mode, current action, the pallets on it, how many " +
-                 "alarms and warnings are open, and when it last finished something (lastActivity). lastActivity looks " +
-                 "back 30 days: null means nothing finished in that time, not that it never did. Status values carry " +
-                 "no timestamp, so compare lastActivity with serverTime to notice a device that is connected but has " +
-                 "done nothing for hours. notAvailable names fields this cell's software version doesn't keep.")]
+                 "work-set stations, …): connected, emergency stop, status (the cell's own down/idle/busy/manual/error), " +
+                 "recoveryRequest (true: the device waits for an operator to recover it), mode, current action, the " +
+                 "pallets on it with each position's state (\"next …\" spots are pallets reserved to come there next), " +
+                 "how many alarms and warnings are open, and when it last finished something (lastActivity). Machines " +
+                 "also show toolStatus (ready, lacking tools, tool alarm, …), cncRun, operatorCall, runJob and program " +
+                 "(main and executing O-number); the vehicle shows its command, transportFrom/transportTo and the " +
+                 "pallets on its buffers. historyDays is how many days the cell keeps alarm and result history (null " +
+                 "when it doesn't say). lastActivity looks back 30 days: null means nothing finished in that time, not " +
+                 "that it never did. Status values carry no timestamp, so compare lastActivity with serverTime to " +
+                 "notice a device that is connected but has done nothing for hours. notAvailable names fields this " +
+                 "cell's software version (or this login) doesn't provide.")]
     public static Task<string> GetCellOverview(ToolContext context, CancellationToken ct) =>
         context.Database("get_cell_overview", (r, t) => r.GetOverviewAsync(t), ct);
 
@@ -81,9 +87,10 @@ public static class CellTools
         context.Database("get_orders", (r, t) => r.GetOrdersAsync(activeOnly, t), ct);
 
     [McpServerTool(Name = "get_pallets", ReadOnly = true, Idempotent = true, OpenWorld = false)]
-    [Description("Where is each pallet and what state is it in? Every pallet: number, name, status, location (a " +
-                 "device, stocker shelf or station) and the fixtures on it. Status numbers whose meaning is not known " +
-                 "are shown as \"code N\".")]
+    [Description("Where is each pallet and what state is it in? Every pallet: number, name, status (idle, machining, " +
+                 "waiting for machining, machining suspended, transport, damaged, …), workStatus (not completed, normal, " +
+                 "abnormal, cancel; none when there is no work on it), location (a device, stocker shelf or station) and " +
+                 "the fixtures on it. Values whose meaning is not known are shown as \"code N\".")]
     public static Task<string> GetPallets(ToolContext context, CancellationToken ct) =>
         context.Database("get_pallets", (r, t) => r.GetPalletsAsync(t), ct);
 }

@@ -175,8 +175,47 @@ public sealed class ToolTests : IDisposable
         var mc1 = root.GetProperty("devices")[0];
         Assert.Equal("MC1", mc1.GetProperty("name").GetString());
         Assert.Equal("machine", mc1.GetProperty("type").GetString());
-        Assert.Equal("waiting for machining", mc1.GetProperty("pallets")[0].GetProperty("status").GetString());
+        Assert.Equal("processing", mc1.GetProperty("pallets")[0].GetProperty("status").GetString());
         Assert.Contains("\"lastActivity\"", json); // camelCase
+    }
+
+    [Fact]
+    public async Task Overview_json_has_dashboard_state_cart_and_history_days()
+    {
+        var root = Parse(await CellTools.GetCellOverview(Ready(new FakeMakinoReader()), CancellationToken.None));
+
+        Assert.Equal(90, root.GetProperty("historyDays").GetInt32());
+        var mc1 = root.GetProperty("devices")[0];
+        Assert.Equal("busy", mc1.GetProperty("status").GetString());
+        Assert.False(mc1.GetProperty("recoveryRequest").GetBoolean());
+        Assert.Equal("lacking tools", mc1.GetProperty("toolStatus").GetString());
+        Assert.Equal("run", mc1.GetProperty("cncRun").GetString());
+        Assert.Equal("released", mc1.GetProperty("operatorCall").GetString());
+        Assert.Equal("machining", mc1.GetProperty("runJob").GetString());
+        Assert.Equal("O1234", mc1.GetProperty("program").GetProperty("main").GetString());
+        Assert.Equal("O0100", mc1.GetProperty("program").GetProperty("executing").GetString());
+        Assert.Equal("next front", mc1.GetProperty("pallets")[1].GetProperty("position").GetString());
+
+        var cart = root.GetProperty("devices")[1];
+        Assert.Equal("load/unload", cart.GetProperty("action").GetString());
+        Assert.Equal("WSS1", cart.GetProperty("transportFrom").GetString());
+        Assert.Equal("MC1", cart.GetProperty("transportTo").GetString());
+        Assert.Equal("buffer 1", cart.GetProperty("pallets")[0].GetProperty("position").GetString());
+        Assert.False(cart.TryGetProperty("toolStatus", out _)); // new fields that don't apply are left out
+        Assert.False(cart.TryGetProperty("program", out _));
+        // The fields of the 0.1 shape are all still there.
+        foreach (var field in new[] { "name", "type", "connected", "emergency", "mode", "action", "subAction", "pallets",
+                     "openAlarms", "openWarnings", "lastActivity", "notAvailable" })
+            Assert.True(cart.TryGetProperty(field, out _), field);
+    }
+
+    [Fact]
+    public async Task Pallets_json_has_work_status()
+    {
+        var pallet = Parse(await CellTools.GetPallets(Ready(new FakeMakinoReader()), CancellationToken.None))
+            .GetProperty("pallets")[0];
+        Assert.Equal("waiting for machining", pallet.GetProperty("status").GetString());
+        Assert.Equal("not completed", pallet.GetProperty("workStatus").GetString());
     }
 
     [Fact]

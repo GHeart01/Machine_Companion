@@ -63,11 +63,12 @@ public sealed partial class SqlMakinoReader
         using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
         {
-            // Pallets.PalletStatus values on a live cell don't match the Codes.PalletStatus table, so it stays raw.
+            var type = Int(r, "PalletType");
             pallets.Add((Int(r, "PalletID") ?? 0, new PalletInfo(
                 Int(r, "PalletNumber") ?? 0,
                 Str(r, "PalletName"),
-                CodeText(Int(r, "PalletStatus")),
+                PalletStatusWords(type, Int(r, "PalletStatus")),
+                PalletWorkStatusWords(type, Int(r, "WorkStatus")),
                 Location(s, Int(r, "CurDeviceType"), Int(r, "CurDeviceNumber"), Int(r, "CurDevicePosition")),
                 [])));
         }
@@ -101,6 +102,8 @@ public sealed partial class SqlMakinoReader
             Opt(schema, "Pallets", "p", "PalletNumber"),
             Opt(schema, "Pallets", "p", "PalletName", type: Text),
             Opt(schema, "Pallets", "p", "PalletStatus"),
+            Opt(schema, "Pallets", "p", "WorkStatus"),
+            Opt(schema, "Pallets", "p", "PalletType"),
             Location("CurDeviceType"), Location("CurDeviceNumber"), Location("CurDevicePosition"));
         var fixtures = string.Join(", ",
             "pf.PalletID",
@@ -118,6 +121,18 @@ public sealed partial class SqlMakinoReader
             ORDER BY pf.PalletID, FixtureNumber;
             """;
     }
+
+    // The pallet types whose status and work status the cell rewrites into dashboard codes (its UpdatePalletStatus
+    // procedure); other types keep raw values. No PalletType column (an older cell): treat as a dashboard pallet.
+    private static readonly int[] DashboardPalletTypes = [0, 1, 2, 8, 16];
+
+    internal static string PalletStatusWords(int? palletType, int? status) =>
+        IsDashboardPallet(palletType) ? Codes.PalletDisplayStatus(status) : CodeText(status);
+
+    internal static string PalletWorkStatusWords(int? palletType, int? workStatus) =>
+        IsDashboardPallet(palletType) ? Codes.PalletWorkStatus(workStatus) : CodeText(workStatus);
+
+    private static bool IsDashboardPallet(int? palletType) => palletType is null || DashboardPalletTypes.Contains(palletType.Value);
 
     /// <summary>Where a pallet is, in words: the device's name when the cell has a device row for that place, else its
     /// type and number (stockers usually have no row); then the position.</summary>
