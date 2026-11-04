@@ -22,12 +22,15 @@ public sealed class ToolContext
 
     public const string ServerInstructions =
         "MakinoMCP shows what a Makino MAS-A5 cell is doing, read only: it never changes the cell, its database or any " +
-        "file. Start with get_cell_overview (every device's state right now), then use the other tools to dig in. " +
-        "Times are the cell database server's clock; every database result carries serverTime, the server's current " +
-        "time, so measure \"open now\" and \"2 hours ago\" against it, not your own clock. History is limited: on a " +
-        "typical cell CNC alarm history keeps only about the last 200 alarms and PMC alarms about three months. " +
-        "Pallet status and table status numbers whose meaning is not known are shown as \"code N\"; don't guess " +
-        "what they mean. Results are capped at a row limit; capped: true means more rows existed, so narrow the " +
+        "file. Start with get_cell_overview for the state of every device, or get_attention for what needs a person. " +
+        "Then dig in: get_tools and get_tool_changes / get_tool_alarms / get_tool_movements for tools, " +
+        "get_part_routing for how a part is made and whether its tools are there, get_production for parts made and " +
+        "order progress. Times are the cell database server's clock; every database result carries serverTime, the " +
+        "server's current time, so measure \"open now\" and \"2 hours ago\" against it, not your own clock. History is " +
+        "limited: the overview's historyDays gives the days the cell keeps when present, else about three months of " +
+        "PMC alarms and the last ~200 CNC alarms on a typical cell. Tool lengths are in the cell's own unit " +
+        "(lengthUnit), not always mm. Values whose meaning is not known are shown as \"code N\"; don't guess what " +
+        "they mean. Results are capped at a row limit; capped: true means more rows existed, so narrow the " +
         "time range or pick a device. Shared folders hold the cell PC's log files and similar text files.";
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)

@@ -11,7 +11,7 @@ It is a small [Model Context Protocol](https://modelcontextprotocol.io) server f
 ## What it reads, and the read-only promise
 
 - The cell's **Makino database** (SQL Server): device status, alarms, utilisation, recent machining and transport activity,
-  orders and pallets.
+  orders, pallets, tools, part routings and production counts.
 - Optionally, **folders you choose to share** (for example the cell PC's `C:\Makino\Log`, shared read only): list, read and
   search text files.
 
@@ -97,6 +97,10 @@ yet. `publish.ps1` replaces the launcher only when it changed, renaming the old 
 - "Which alarms keep coming back this week, and on which machine?"
 - "Did the cell sit idle overnight? Show me the gaps."
 - "Which orders are still open, and where are their pallets?"
+- "What needs a person right now?"
+- "Which tools are near the end of their life, and which alarmed this week?"
+- "How many parts did we make this week, and how far along is each order?"
+- "How is this part made, and are its tools in the machines?"
 
 ## Tools
 
@@ -109,15 +113,44 @@ yet. `publish.ps1` replaces the launcher only when it changed, renaming the old 
 | `get_recent_activity` | Machining, work-set and vehicle transport results, to spot gaps. |
 | `get_orders` | Queued and finished orders with part, status, quantity and due time. |
 | `get_pallets` | Each pallet's status, location and fixtures. |
+| `get_tools` | Which tools need attention and where a tool is: status per device, life used and remaining, measured length and diameter. |
+| `get_tool_changes` | What changed in the tool data (measurements, imports, edits, alarms), newest first; routine life-count updates only on request. |
+| `get_tool_alarms` | Which tools alarmed lately (worn out, broken, ...), with the tool's life and size then. |
+| `get_tool_movements` | Tools put into or taken out of the machines, with who and why. |
+| `get_part_routing` | How a part is made: processes, jobs, programs and fixtures, and whether the tools each program needs are on the machines. |
+| `get_production` | Parts completed, scrapped and in process per order, plus per-day totals, counted the way the cell's own order screen counts. |
+| `get_attention` | One list of what waits on a person: recovery requests, errors, operator calls, damaged fixtures, tools in alarm; parked fixtures are counted. |
 | `list_shared_folders` | The folders you shared and whether each is reachable. |
 | `list_files` | Files and subfolders in a shared folder, newest first. |
 | `read_file` | A text file, or its last lines or a line range. |
 | `search_files` | Plain-text search across a shared folder. |
 
+## Tool data
+
+- **Units.** Tool lengths and diameters are in the cell's own unit (its tool offset unit, so inch on some cells), not
+  always mm. Tool results say which in `lengthUnit`.
+- **Tool life** is shown as used, remaining and percent, already corrected for whether the cell counts life up or down;
+  if the cell doesn't say, up is assumed and the result says so (`lifeDirectionAssumed`). Time-based life is stored in
+  seconds and shown in minutes.
+- **Tool status is derived the way the System Console shows it:** a set alarm bit means alarm even if the stored status
+  still says ready.
+- **Compact by default.** Big lists (routine life updates, parked fixtures, idle orders) are counted, not listed;
+  `includeLifeUpdates`, `includeParked` or `includeIdle` lists them.
+- **Tables a login can't read.** Where the database login cannot read a table, MakinoMCP uses the vendor's view of it when
+  there is one; otherwise the result names what is `notAvailable`.
+
+## Make more of it
+
+- Share the cell PC's `C:\Makino\Log` folder read only and add it in the setup window. Claude can then read
+  `Exception.log`, `System.log`, `MachiningSchedule.log`, `RecoveryMaintenaceOperation.log` and the other logs next to
+  the alarms the database shows.
+- Also share the Makino install's `Message\<language>` folder (its `.ini` files). They hold the alarm cause and recovery
+  text, so Claude can explain an alarm number in words.
+
 ## Limits
 
 - **History is short.** The cell keeps about the last 200 CNC alarms and, on a typical cell, about three months of PMC
-  alarms. Older events are not there to read.
+  alarms and daily production counts (`historyDays` in the overview says how long). Older events are not there to read.
 - Results are capped (500 rows and 256 KB per file read, unless you change `limits` in the settings file).
 - **Some numbers have no known meaning.** The meanings of some status numbers were worked out from the installed MAS-A5
   software, not from published documentation. A value without a known meaning appears as `code N`.

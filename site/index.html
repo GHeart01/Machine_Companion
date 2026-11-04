@@ -187,7 +187,7 @@ footer p { margin: 0 0 10px; max-width: 40rem; }
           <h2 class="t" id="reads">What it reads</h2>
           <div class="prose">
             <ul class="plain">
-              <li>The cell's <strong>Makino database</strong> (SQL Server): device status, alarms, utilisation, recent activity, orders and pallets.</li>
+              <li>The cell's <strong>Makino database</strong> (SQL Server): device status, alarms, utilisation, recent activity, orders, pallets, tools, part routings and production counts.</li>
               <li><strong>Folders you choose to share</strong>, for example the cell PC's <code>C:\Makino\Log</code> shared read only. Claude can list, read and search text files there, and nowhere else.</li>
             </ul>
             <p>Some numbers in the cell have no published meaning. Where the meaning of a status was worked out from the installed MAS-A5 software it is shown in words; anything without a known meaning appears as <code>code N</code>.</p>
@@ -227,6 +227,9 @@ footer p { margin: 0 0 10px; max-width: 40rem; }
       <h2 class="t" id="ask">What to ask</h2>
       <ul class="plain prose">
         <li>What is every machine in the cell doing right now?</li>
+        <li>What needs a person right now?</li>
+        <li>Which tools are near the end of their life, and which alarmed this week?</li>
+        <li>How many parts did we make this week, and is this part's tooling in the machines?</li>
         <li>Which alarms keep coming back this week, and on which machine?</li>
         <li>Did the cell sit idle overnight? Show me the gaps.</li>
         <li>Which orders are still open, and where are their pallets?</li>
@@ -245,6 +248,13 @@ footer p { margin: 0 0 10px; max-width: 40rem; }
           <tr><td><code>get_recent_activity</code></td><td>Machining, work-set and transport results, to spot gaps.</td></tr>
           <tr><td><code>get_orders</code></td><td>Queued and finished orders.</td></tr>
           <tr><td><code>get_pallets</code></td><td>Each pallet's status, location and fixtures.</td></tr>
+          <tr><td><code>get_tools</code></td><td>Which tools need attention and where a tool is: status, life left, measured size.</td></tr>
+          <tr><td><code>get_tool_changes</code></td><td>What changed in the tool data, newest first.</td></tr>
+          <tr><td><code>get_tool_alarms</code></td><td>Which tools alarmed lately, with their life and size then.</td></tr>
+          <tr><td><code>get_tool_movements</code></td><td>Tools put into or taken out of the machines, with who and why.</td></tr>
+          <tr><td><code>get_part_routing</code></td><td>How a part is made, and whether its tools are on the machines.</td></tr>
+          <tr><td><code>get_production</code></td><td>Parts completed, scrapped and in process per order and per day.</td></tr>
+          <tr><td><code>get_attention</code></td><td>One list of what is waiting on a person right now.</td></tr>
           <tr><td><code>list_shared_folders</code></td><td>The folders you shared, and whether they are reachable.</td></tr>
           <tr><td><code>list_files</code></td><td>Files and subfolders in a shared folder.</td></tr>
           <tr><td><code>read_file</code></td><td>A text file, its last lines, or a line range.</td></tr>
@@ -260,6 +270,7 @@ footer p { margin: 0 0 10px; max-width: 40rem; }
           <div class="prose">
             <ul class="plain">
               <li>History is short: the cell keeps about the last 200 CNC alarms and, on a typical cell, about three months of PMC alarms.</li>
+              <li>Tool lengths are in the cell's own unit (inch on some cells); each result says which.</li>
               <li>Results are capped at 500 rows, and file reads at 256 KB, unless you change the limits in the settings file.</li>
             </ul>
           </div>

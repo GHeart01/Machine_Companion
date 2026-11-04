@@ -412,6 +412,12 @@ public sealed class ToolTests : IDisposable
         Assert.Contains("get_cell_overview", ToolContext.ServerInstructions);
         Assert.Contains("serverTime", ToolContext.ServerInstructions);
         Assert.Contains("200", ToolContext.ServerInstructions);
+        Assert.Contains("get_attention", ToolContext.ServerInstructions);
+        Assert.Contains("get_part_routing", ToolContext.ServerInstructions);
+        Assert.Contains("get_production", ToolContext.ServerInstructions);
+        Assert.Contains("historyDays", ToolContext.ServerInstructions);
+        Assert.Contains("lengthUnit", ToolContext.ServerInstructions);
+        Assert.Contains("code N", ToolContext.ServerInstructions);
     }
 
     [Fact]

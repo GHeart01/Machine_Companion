@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 MakinoMCP is a public, read-only MCP server that lets Claude (Claude Code, Cowork) see what a Makino MAS-A5 cell is
-doing: live machine and station state, alarms, utilization, recent activity, orders and pallets from the cell's SQL
+doing: live machine and station state, alarms, utilization, recent activity, orders, pallets, tools, part routings, production counts and what needs a person from the cell's SQL
 Server database, plus read access to folders the user chooses to share. Each user enters their own database login in a
 setup window; it is saved in plain text in `MakinoMCP.settings.json` next to the launcher. Public repo:
 https://github.com/GHeart01/Machine_Companion (docs page on GitHub Pages, downloads under Releases).
@@ -35,6 +35,14 @@ Machine-specific notes (which share it is published to, the live-test settings, 
   unmapped (vehicle buffer status, vehicle finish status) because their meanings aren't confirmed. `Pallets` holds
   the dashboard codes the cell's `UpdatePalletStatus` writes (`PalletDisplayStatus`/`PalletWorkStatus`), not the
   in-memory `PalletStatus` list.
+- **Tool data is honest about units and meaning.** Lengths are in the cell's unit (`ToolOffsetUnit`, reported as
+  `lengthUnit`), not always mm. Life follows the direction in `ToolLifeCountType` (up assumed and flagged
+  `lifeDirectionAssumed` when absent); life type 0/3 is stored in seconds. Tool status is derived like the System
+  Console (an alarm bit beats a stored "ready"), never just the stored column.
+- **Tables a login can't read fall back to the vendor view** that exposes them (`ViewVehicleStatus`; tool alarms from
+  `ToolAlarmHistory`, else alarm-bit changes in `PresetResults`); only when neither works is the section `notAvailable`.
+- **Outputs stay compact.** Big lists are counted by default, with a flag to expand (`includeLifeUpdates`,
+  `includeParked`, `includeIdle`, `includeTools`); per-day production totals have their own `dailyCapped`.
 - **Public repo hygiene.** Nothing specific to any one company in tracked files: examples use `MAKINO-CELL-PC`,
   `your-login`, `\\server\Tools`; test data is sample data. `scripts/check-private.ps1` (and CI, via the
   `PRIVATE_PATTERNS` secret) fails on private names. `docs/superpowers/`, `.superpowers/` and real settings files are
@@ -45,7 +53,7 @@ Machine-specific notes (which share it is published to, the live-test settings, 
 
 | Folder | What it is |
 |---|---|
-| `src/MakinoMCP.Core` | net10.0, no UI or MCP: `Settings` (file model and store), `Cell` (`SqlMakinoReader` split by area, `SchemaInfo` probing, `Codes`, `ErrorText`), `Folders` (`SharedFolders`) |
+| `src/MakinoMCP.Core` | net10.0, no UI or MCP: `Settings` (file model and store), `Cell` (`SqlMakinoReader` split by area (`Alarms`, `History`, `Orders`, `Overview`, `Tools`, `Routing`, `Production`, `Attention`), `SchemaInfo` probing with `SchemaCache` (a failed probe is retried later), `Codes`, `ErrorText`), `Folders` (`SharedFolders`) |
 | `src/MakinoMCP` | net10.0-windows WinExe `MakinoMCP.exe`: `serve` = MCP host (`Tools/CellTools`, `Tools/FolderTools`, `ToolContext` with time budgets 45 s DB / 20 s folders), no args or `setup` = WinForms setup window (`Setup/`), including the "Use MakinoMCP in Claude on this PC" switch (`ClaudeSwitch`: `claude mcp add/remove` via `ClaudeRegistration`, Cowork's config via `CoworkConfig`, stops this user's `serve` processes via `RunningServers`) |
 | `src/MakinoMCP.Launcher` | net48 WinExe, also named `MakinoMCP.exe`, the file users run from a share: reads `current.txt`, runs the local copy in `%LOCALAPPDATA%\MakinoMCP\app\<v>\`; setup mode copies first behind `CopyProgressForm`; serve mode on a fresh PC runs the share copy and prefetches in a detached process (`CreateProcessW`, no inherited handles); `VersionCopier` is the one copy routine |
 | `tests/MakinoMCP.Tests` | xUnit (SkippableFact for live, junction and symlink tests); `StdioSpikeTests` drive a real launcher layout through an MCP client |
