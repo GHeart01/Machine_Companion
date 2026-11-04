@@ -104,7 +104,7 @@ internal sealed class FakeMakinoReader : IMakinoReader
         Answer(() => new ToolChangeList(Now, false, "mm",
         [
             new ToolChange(Now.AddHours(-3), "MC1", 1001, 101, ["length 101.234 → 101.250 mm"]),
-        ]) { LifeUpdatesLeftOut = !includeLifeUpdates }, ct, device);
+        ]) { LifeUpdatesLeftOut = !includeLifeUpdates, LifeWarningTransitions = includeLifeUpdates ? null : 4 }, ct, device);
 
     public Task<ToolAlarmList> GetToolAlarmsAsync(int days, string? device, int? tool, CancellationToken ct) =>
         Answer(() => new ToolAlarmList(Now, false, "tool alarm history", "mm",

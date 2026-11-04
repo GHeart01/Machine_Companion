@@ -27,8 +27,9 @@ public sealed class ToolContext
         "get_part_routing for how a part is made and whether its tools are there, get_production for parts made and " +
         "order progress. Times are the cell database server's clock; every database result carries serverTime, the " +
         "server's current time, so measure \"open now\" and \"2 hours ago\" against it, not your own clock. History is " +
-        "limited: the overview's historyDays gives the days the cell keeps when present, else about three months of " +
-        "PMC alarms and the last ~200 CNC alarms on a typical cell. Tool lengths are in the cell's own unit " +
+        "limited: the overview's historyDays is how many days the cell keeps PMC alarms and results (about three " +
+        "months on a typical cell when it doesn't say); CNC alarms are limited to about the last 200 regardless. " +
+        "Tool lengths are in the cell's own unit " +
         "(lengthUnit), not always mm. Values whose meaning is not known are shown as \"code N\"; don't guess what " +
         "they mean. Results are capped at a row limit; capped: true means more rows existed, so narrow the " +
         "time range or pick a device. Shared folders hold the cell PC's log files and similar text files.";

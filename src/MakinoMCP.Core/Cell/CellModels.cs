@@ -264,14 +264,24 @@ public sealed record LifeInfo
 /// <summary>LengthUnit is the unit of the lengths in Changed (mm or inch).</summary>
 public sealed record ToolChangeList(DateTime ServerTime, bool Capped, string LengthUnit, IReadOnlyList<ToolChange> Changes)
 {
-    /// <summary>True when the routine life-count updates after each use were left out (the default).</summary>
+    /// <summary>True when the routine updates were left out (the default): the life-count ticks after each use and the
+    /// tools that only stepped to life warning.</summary>
     public bool LifeUpdatesLeftOut { get; init; }
+
+    /// <summary>How many rows in the window were only a tool stepping to life warning (routine wear), left out of
+    /// Changes; null when they are listed (includeLifeUpdates) or the cell keeps no status pair.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? LifeWarningTransitions { get; init; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? LifeDirectionAssumed { get; init; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? LengthUnitAssumed { get; init; }
+
+    /// <summary>What this cell's tool data log can't tell apart (columns it lacks), and how to see the rows anyway.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? NotAvailable { get; init; }
 }
 
 /// <summary>One change to a tool's data (presetter, tool data import, manual edit, the machine after a use): only the

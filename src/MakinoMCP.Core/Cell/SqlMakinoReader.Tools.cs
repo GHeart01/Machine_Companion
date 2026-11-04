@@ -474,6 +474,7 @@ public sealed partial class SqlMakinoReader
         using var cmd = Command(s.Connection, ToolChangesSql(s.Schema, includeLifeUpdates));
         AddToolWindow(cmd, s.Now, days, deviceId, tool, settings.Remain);
         var rows = new List<ToolChange>();
+        int? lifeWarnings = null;
         using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
         {
@@ -485,11 +486,14 @@ public sealed partial class SqlMakinoReader
                 User = NonEmpty(Str(r, "Username")),
             });
         }
+        if (await r.NextResultAsync(ct) && await r.ReadAsync(ct)) lifeWarnings = Int(r, "LifeWarnings") ?? 0;
         var (list, capped) = Cap(rows);
+        var notAvailable = ToolChangesNotAvailable(s.Schema, includeLifeUpdates);
         return new ToolChangeList(s.Now, capped, settings.LengthUnit, list)
         {
-            LifeUpdatesLeftOut = !includeLifeUpdates, LifeDirectionAssumed = Assumed(settings.LifeAssumed),
-            LengthUnitAssumed = Assumed(settings.UnitAssumed),
+            LifeUpdatesLeftOut = !includeLifeUpdates, LifeWarningTransitions = lifeWarnings,
+            LifeDirectionAssumed = Assumed(settings.LifeAssumed), LengthUnitAssumed = Assumed(settings.UnitAssumed),
+            NotAvailable = notAvailable.Count > 0 ? notAvailable : null,
         };
     }
 
@@ -498,9 +502,15 @@ public sealed partial class SqlMakinoReader
 
     private static string LifeKind(int? lifeType) => lifeType switch { 1 => "Distance", 2 => "Count", _ => "Second" };
 
+    // A row in which the tool stepped to life warning (StatusNew 2 from anything else). CASE, so a NULL reads 0.
+    private const string ToLifeWarning = "CASE WHEN p.StatusOld <> p.StatusNew AND p.StatusNew = 2 THEN 1 ELSE 0 END";
+
     /// <summary>Tool data changes, newest first, cap + 1. Without <paramref name="includeLifeUpdates"/> only rows where
     /// something besides the life count changed, the life was reset (moved against its counting direction), or the
-    /// life was changed outside a tool change (M6Flag 0). Expects @take, @now, @days, @device, @tool and @remain.</summary>
+    /// life was changed outside a tool change (M6Flag 0); a row whose only change is the step to life warning (routine
+    /// wear, with the life tick and the life warning bit that come with it) is left out too and counted in a second
+    /// result set (LifeWarnings), when the cell keeps the status pair. Expects @take, @now, @days, @device, @tool and
+    /// @remain.</summary>
     internal static string ToolChangesSql(SchemaInfo schema, bool includeLifeUpdates)
     {
         var pairs = ChangePairs.Where(p => HasPair(schema, p.Column)).Select(p => p.Column).ToList();
@@ -512,24 +522,57 @@ public sealed partial class SqlMakinoReader
                 Opt(schema, Preset, "p", "Username", type: Text), Opt(schema, Preset, "p", "ToolLifeType"),
                 .. pairs.Concat(lives).SelectMany(c => new[] { $"p.{c}Old", $"p.{c}New" }),
             ]);
-        var where = "p.PresetDateTime >= DATEADD(day, -@days, @now) AND (@device IS NULL OR p.DeviceID = @device)"
-                    + " AND (@tool IS NULL OR p.ITN = @tool OR p.FTN = @tool)";
+        var window = "p.PresetDateTime >= DATEADD(day, -@days, @now) AND (@device IS NULL OR p.DeviceID = @device)"
+                     + " AND (@tool IS NULL OR p.ITN = @tool OR p.FTN = @tool)";
+        var where = window;
+        var count = "";
         if (!includeLifeUpdates)
         {
             var lifeMoved = lives.Select(c => $"p.{c}Old <> p.{c}New").ToList();
-            var keep = Any([
-                .. pairs.Select(c => $"p.{c}Old <> p.{c}New"),
+            List<string?> resetOrEdit =
+            [
                 .. lives.Select(c => $"(@remain = 0 AND p.{c}New < p.{c}Old) OR (@remain = 1 AND p.{c}New > p.{c}Old)"),
                 schema.Has(Preset, "M6Flag") && lifeMoved.Count > 0 ? $"(p.M6Flag = 0 AND ({string.Join(" OR ", lifeMoved)}))" : null,
-            ]);
-            where += $" AND ({keep})";
+            ];
+            if (pairs.Contains("Status"))
+            {
+                // A status or life warning bit change is kept unless the row is the step to life warning; any other
+                // change in the row keeps it (NULL-safe through CASE, never NOT over a <>).
+                var steps = pairs.Where(c => c is "Status" or "TLWarning").Select(c => $"p.{c}Old <> p.{c}New");
+                var other = Any([.. pairs.Where(c => c is not ("Status" or "TLWarning")).Select(c => $"p.{c}Old <> p.{c}New"), .. resetOrEdit]);
+                var otherFlag = other == "1 = 0" ? "0" : $"CASE WHEN {other} THEN 1 ELSE 0 END";
+                where += $" AND ({otherFlag} = 1 OR ({ToLifeWarning} = 0 AND ({string.Join(" OR ", steps)})))";
+                count = $"\nSELECT COUNT(*) AS LifeWarnings FROM PresetResults p WHERE {window} AND {ToLifeWarning} = 1 AND {otherFlag} = 0;";
+            }
+            else
+            {
+                where += $" AND ({Any([.. pairs.Select(c => $"p.{c}Old <> p.{c}New"), .. resetOrEdit])})";
+            }
         }
         return $"""
             SELECT TOP (@take) {columns}
             FROM PresetResults p
             WHERE {where}
             ORDER BY p.PresetDateTime DESC;
-            """;
+            """ + count;
+    }
+
+    /// <summary>What the default get_tool_changes list can't tell apart on this cell because PresetResults lacks the
+    /// columns, and how to see the rows anyway; empty with <paramref name="includeLifeUpdates"/> (every row listed).</summary>
+    internal static List<string> ToolChangesNotAvailable(SchemaInfo schema, bool includeLifeUpdates)
+    {
+        if (includeLifeUpdates) return [];
+        var all = ChangePairs.Select(p => p.Column).Concat(LifeKinds.Select(k => $"ActualToolLife{k}")).ToList();
+        if (!all.Any(c => HasPair(schema, c)))
+        {
+            return [$"which tool data changed (no Old/New columns: {string.Join(", ", all.Select(c => $"{c}Old/{c}New"))}); " +
+                    "includeLifeUpdates=true lists every row"];
+        }
+        if (!LifeKinds.Any(k => HasPair(schema, $"ActualToolLife{k}")))
+            return ["life resets (no ActualToolLifeSecond/Distance/Count Old/New columns); includeLifeUpdates=true lists them"];
+        if (!schema.Has(Preset, "M6Flag"))
+            return ["life changes outside a tool change (no M6Flag column); includeLifeUpdates=true lists them"];
+        return [];
     }
 
     /// <summary>What changed in one PresetResults row, in words: status, lengths and offsets (in
@@ -604,6 +647,7 @@ public sealed partial class SqlMakinoReader
         using var cmd = Command(s.Connection, sql);
         AddToolWindow(cmd, s.Now, days, deviceId, tool, remain);
         var rows = new List<ToolAlarmEvent>();
+        var fellBack = false; // a history row without its own life direction used the cell-wide one
         using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
         {
@@ -613,7 +657,9 @@ public sealed partial class SqlMakinoReader
             if (history)
             {
                 alarms = HistoryAlarmWords(s.Schema, c => Int(r, c));
-                var rowRemain = Int(r, "ToolLifeCountType") is { } countType ? countType == 1 : remain;
+                var countType = Int(r, "ToolLifeCountType");
+                fellBack |= countType is null;
+                var rowRemain = countType is { } own ? own == 1 : remain;
                 life = Life(Int(r, "ToolLifeType"), Int(r, "ToolLife"), null, Int(r, "ActualToolLife"), rowRemain, unit);
             }
             else
@@ -635,10 +681,11 @@ public sealed partial class SqlMakinoReader
             });
         }
         var (list, capped) = Cap(rows);
-        // The history rows carry their own life direction; only the fallback depends on the cell-wide one.
+        // History rows carry their own life direction; the fallback, and history rows without one, use the cell-wide one.
         return new ToolAlarmList(s.Now, capped, source, unit, list, notAvailable)
         {
-            LifeDirectionAssumed = Assumed(settings.LifeAssumed && !history), LengthUnitAssumed = Assumed(settings.UnitAssumed),
+            LifeDirectionAssumed = Assumed(settings.LifeAssumed && (!history || fellBack)),
+            LengthUnitAssumed = Assumed(settings.UnitAssumed),
         };
     }
 
@@ -659,6 +706,8 @@ public sealed partial class SqlMakinoReader
                     .. HistoryAlarmColumns.Select(c => Opt(schema, t, "h", c.Column, type: "bit")),
                 ]);
             var missing = new[] { ("POT", "pot"), ("ToolLife", "life") }.Where(c => !schema.Has(t, c.Item1)).Select(c => c.Item2).ToList();
+            var noBits = HistoryAlarmColumns.Where(c => !schema.Has(t, c.Column)).Select(c => c.Column).ToList();
+            if (noBits.Count > 0) missing.Add($"alarm flags {string.Join(", ", noBits)}");
             return ($"""
                 SELECT TOP (@take) {columns}
                 FROM ToolAlarmHistory h
@@ -691,7 +740,8 @@ public sealed partial class SqlMakinoReader
                   AND (@tool IS NULL OR p.ITN = @tool OR p.FTN = @tool) AND ({raised})
                 ORDER BY p.PresetDateTime DESC;
                 """, "tool data changes in which an alarm bit turned on (the tool alarm history is missing on this cell or not readable by this login)",
-                ["pot"]);
+                bits.Count > 0 ? ["pot"] : ["pot", "alarm bits (no Old/New alarm columns: " +
+                    $"{string.Join(", ", Codes.ToolAlarmColumns.Select(c => $"{c.Column}Old/{c.Column}New"))}), so no alarms can be found"]);
         }
         throw new CellSchemaException([AlarmHistory, Preset]);
     }

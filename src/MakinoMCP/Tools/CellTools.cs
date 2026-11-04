@@ -18,8 +18,9 @@ public static class CellTools
                  "how many alarms and warnings are open, and when it last finished something (lastActivity). Machines " +
                  "also show toolStatus (ready, lacking tools, tool alarm, …), cncRun, operatorCall, runJob and program " +
                  "(main and executing O-number); the vehicle shows its transport command (in action), transportFrom/transportTo and the " +
-                 "pallets on its buffers. historyDays is how many days the cell keeps alarm and result history (null " +
-                 "when it doesn't say). lastActivity looks back 30 days: null means nothing finished in that time, not " +
+                 "pallets on its buffers. historyDays is how many days the cell keeps PMC alarms and result history " +
+                 "(null when it doesn't say; CNC alarms are limited to about the last 200 regardless). lastActivity " +
+                 "looks back 30 days: null means nothing finished in that time, not " +
                  "that it never did. Status values carry no timestamp, so compare lastActivity with serverTime to " +
                  "notice a device that is connected but has done nothing for hours. notAvailable names fields this " +
                  "cell's software version (or this login) doesn't provide.")]
@@ -96,13 +97,16 @@ public static class CellTools
     public static Task<string> GetPallets(ToolContext context, CancellationToken ct) =>
         context.Database("get_pallets", (r, t) => r.GetPalletsAsync(t), ct);
 
-    private const string ToolParam = "Only this tool: an ITN (one physical tool) or FTN (a tool type) number. Leave empty for every tool.";
+    private const string ToolParam =
+        "Only this tool number. It is matched against both ITNs (physical tools) and FTNs (tool types), so one number can " +
+        "match a tool and a tool type at once; each row carries both itn and ftn. Leave empty for every tool.";
 
     private const string DaysParam = "How many days back to look, from serverTime. Default 7.";
 
     [McpServerTool(Name = "get_tools", ReadOnly = true, Idempotent = true, OpenWorld = false)]
-    [Description("Which tools need attention, and where is a tool? summary: every device's tool count by status " +
-                 "(ready, life warning, offset error, alarm, unknown), always over all tools. tools: the tools the filter " +
+    [Description("Which tools need attention, and where is a tool? summary: each device's tool count by status " +
+                 "(ready, life warning, offset error, alarm, unknown) over all its tools: the device filter applies, the " +
+                 "tool filter and tool number don't. tools: the tools the filter " +
                  "picks, most severe first: itn (the physical tool), ftn (its tool type), name (the FTN comment), kind, " +
                  "location (machine and pot, or the tool crib / presetter), status (derived as the System Console " +
                  "shows it: an alarm bit set means alarm even if the stored status still says ready), flags (alarm tool, prohibited, " +
@@ -129,14 +133,16 @@ public static class CellTools
                  "tool was), itn, ftn, user, and only the values that changed (lengths in lengthUnit), e.g. " +
                  "\"length 101.234 → 101.250 mm\", " +
                  "\"status ready → alarm\", \"tool life alarm on\", \"life used 75.0 → 0.0 min (reset)\". By default the " +
-                 "routine life-count updates after each use are left out (lifeUpdatesLeftOut); includeLifeUpdates=true " +
-                 "shows them too. Default: the last 7 days, every device and tool.")]
+                 "routine updates are left out (lifeUpdatesLeftOut): the life-count ticks after each use, and rows in " +
+                 "which a tool only stepped to life warning (routine wear), counted in lifeWarningTransitions; " +
+                 "includeLifeUpdates=true lists both. notAvailable names what this cell's log can't tell apart. " +
+                 "Default: the last 7 days, every device and tool.")]
     public static Task<string> GetToolChanges(
         ToolContext context,
         [Description(DaysParam)] int days = 7,
         [Description(DeviceParam)] string? device = null,
         [Description(ToolParam)] int? tool = null,
-        [Description("true: also the routine life-count updates after each use (many rows). Default false.")] bool includeLifeUpdates = false,
+        [Description("true: also the routine updates: life-count ticks after each use and steps to life warning (many rows). Default false.")] bool includeLifeUpdates = false,
         CancellationToken ct = default) =>
         context.Database("get_tool_changes", (r, t) => r.GetToolChangesAsync(days, device, tool, includeLifeUpdates, t), ct);
 
@@ -215,8 +221,8 @@ public static class CellTools
 
     [McpServerTool(Name = "get_attention", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("What is waiting on a person right now? One list, most severe first: devices with a recovery " +
-                 "request, error, emergency stop, disconnected or a machine's operator call; instructions a work-set " +
-                 "station waits for the operator to carry out (clamp, unclamp, …); manual transports not finished; " +
+                 "request, error, emergency stop, disconnected or a machine's operator call; instructions set at a " +
+                 "work-set station (clamp, unclamp, …); manual transports not finished; " +
                  "fixtures damaged, pre-machining suspended (with the reason) or past their reclamp time; tools in " +
                  "alarm or with an offset error per machine; fixtures lacking tools for their next machining; stations " +
                  "or the vehicle over their maintenance cycle count. Fixtures that are only suspended or held at the " +

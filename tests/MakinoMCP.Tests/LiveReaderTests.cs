@@ -175,6 +175,18 @@ public class LiveReaderTests
         Assert.Equal(changes.Changes.OrderByDescending(c => c.Time).Select(c => c.Time), changes.Changes.Select(c => c.Time));
         var withTicks = await Reader(5).GetToolChangesAsync(7, null, null, true, ct);
         Assert.False(withTicks.LifeUpdatesLeftOut);
+        Assert.Null(withTicks.LifeWarningTransitions);
+
+        // Routine wear (a tool stepping to life warning and nothing else) is counted, not listed. The count matches the
+        // rows includeLifeUpdates lists that are only that step (two calls a moment apart, so a row may slip in or out).
+        static bool OnlyWarning(ToolChange c) =>
+            c.Changed.All(w => (w.StartsWith("status ", StringComparison.Ordinal) && w.EndsWith("→ life warning", StringComparison.Ordinal))
+                               || w == "tool life warning on");
+        Assert.NotNull(changes.LifeWarningTransitions);
+        Assert.DoesNotContain(changes.Changes, OnlyWarning);
+        var day = await Reader(20000).GetToolChangesAsync(1, null, null, false, ct);
+        var dayAll = await Reader(20000).GetToolChangesAsync(1, null, null, true, ct);
+        if (!dayAll.Capped) Assert.InRange(day.LifeWarningTransitions ?? -1, dayAll.Changes.Count(OnlyWarning) - 1, dayAll.Changes.Count(OnlyWarning) + 1);
 
         var alarms = await r.GetToolAlarmsAsync(7, null, null, ct);
         Assert.False(string.IsNullOrWhiteSpace(alarms.Source));

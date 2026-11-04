@@ -261,6 +261,64 @@ public class ToolReaderTests
     }
 
     [Fact]
+    public void Tool_changes_count_routine_life_warnings_instead_of_listing_them()
+    {
+        const string warning = "CASE WHEN p.StatusOld <> p.StatusNew AND p.StatusNew = 2 THEN 1 ELSE 0 END";
+        var sql = SqlMakinoReader.ToolChangesSql(SchemaWithout(), includeLifeUpdates: false);
+        var (list, count) = (sql[..sql.IndexOf("SELECT COUNT(*)", StringComparison.Ordinal)], sql[sql.IndexOf("SELECT COUNT(*)", StringComparison.Ordinal)..]);
+
+        // The list keeps a status change unless it is only the step to life warning; anything else in the row keeps it.
+        Assert.Contains($"{warning} = 0 AND (p.StatusOld <> p.StatusNew)", list);
+        Assert.Contains("CASE WHEN p.LengthOld <> p.LengthNew OR ", list);
+        Assert.DoesNotContain("CASE WHEN p.StatusOld <> p.StatusNew OR", list); // status isn't among the "other" changes
+        // The count: the same window, the step to life warning and nothing else (NULL-safe: CASE, never NOT over <>).
+        Assert.StartsWith("SELECT COUNT(*) AS LifeWarnings FROM PresetResults p", count);
+        Assert.Contains("p.PresetDateTime >= DATEADD(day, -@days, @now) AND (@device IS NULL OR p.DeviceID = @device)", count);
+        Assert.Contains("(@tool IS NULL OR p.ITN = @tool OR p.FTN = @tool)", count);
+        Assert.Contains($"{warning} = 1 AND CASE WHEN p.LengthOld <> p.LengthNew OR ", count);
+        Assert.DoesNotContain("NOT (", sql);
+
+        // With every row asked for, or without the status pair, nothing is counted.
+        Assert.DoesNotContain("COUNT(*)", SqlMakinoReader.ToolChangesSql(SchemaWithout(), includeLifeUpdates: true));
+        var noStatus = SqlMakinoReader.ToolChangesSql(SchemaWithout("PresetResults.StatusOld"), includeLifeUpdates: false);
+        Assert.DoesNotContain("COUNT(*)", noStatus);
+        Assert.DoesNotContain("StatusNew", noStatus);
+    }
+
+    [Fact]
+    public void Tool_changes_name_what_an_old_cell_cant_tell_apart()
+    {
+        Assert.Empty(SqlMakinoReader.ToolChangesNotAvailable(SchemaWithout(), includeLifeUpdates: false));
+        Assert.Empty(SqlMakinoReader.ToolChangesNotAvailable(SchemaWithout("PresetResults.M6Flag"), includeLifeUpdates: true));
+
+        var noM6 = SqlMakinoReader.ToolChangesNotAvailable(SchemaWithout("PresetResults.M6Flag"), includeLifeUpdates: false);
+        Assert.Equal(["life changes outside a tool change (no M6Flag column); includeLifeUpdates=true lists them"], noM6);
+
+        // No Old/New pairs at all: the default list would be empty, so say so and how to see the rows.
+        var bare = SchemaWithout(Schema["PresetResults"].Where(c => c.EndsWith("Old", StringComparison.Ordinal)).Select(c => "PresetResults." + c).ToArray());
+        Assert.Contains("1 = 0", SqlMakinoReader.ToolChangesSql(bare, includeLifeUpdates: false));
+        var missing = Assert.Single(SqlMakinoReader.ToolChangesNotAvailable(bare, includeLifeUpdates: false));
+        Assert.StartsWith("which tool data changed (no Old/New columns: StatusOld/StatusNew, LengthOld/LengthNew, ", missing);
+        Assert.Contains("ActualToolLifeSecondOld/ActualToolLifeSecondNew", missing);
+        Assert.EndsWith("); includeLifeUpdates=true lists every row", missing);
+    }
+
+    [Fact]
+    public void Tool_alarms_name_missing_alarm_columns()
+    {
+        // History table without some bit columns: those alarms can't show.
+        var (_, _, history) = SqlMakinoReader.ToolAlarmsSql(SchemaWithout("ToolAlarmHistory.SLAlarm", "ToolAlarmHistory.BT2Alarm"));
+        Assert.Equal(["alarm flags BT2Alarm, SLAlarm"], history);
+
+        // The fallback with no alarm-bit pairs would find nothing: named, not a silent empty list.
+        var noBits = SchemaWithout("ToolAlarmHistory", "PresetResults.AlarmToolOld", "PresetResults.TLAlarmOld", "PresetResults.BTSAlarmOld");
+        var (sql, _, fallback) = SqlMakinoReader.ToolAlarmsSql(noBits);
+        Assert.Contains("AND (1 = 0)", sql);
+        Assert.Equal("pot", fallback[0]);
+        Assert.StartsWith("alarm bits (no Old/New alarm columns: AlarmToolOld/AlarmToolNew, TLAlarmOld/TLAlarmNew, ", fallback[1]);
+    }
+
+    [Fact]
     public void Tool_change_words_list_only_what_changed()
     {
         var row = new Dictionary<string, int?>

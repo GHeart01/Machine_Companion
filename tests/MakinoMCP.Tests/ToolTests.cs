@@ -263,6 +263,9 @@ public sealed class ToolTests : IDisposable
         var changes = Parse(await CellTools.GetToolChanges(context, ct: CancellationToken.None));
         Assert.Equal(FakeMakinoReader.Now, changes.GetProperty("serverTime").GetDateTime());
         Assert.True(changes.GetProperty("lifeUpdatesLeftOut").GetBoolean());
+        Assert.Equal(4, changes.GetProperty("lifeWarningTransitions").GetInt32());
+        var all = Parse(await CellTools.GetToolChanges(context, includeLifeUpdates: true, ct: CancellationToken.None));
+        Assert.False(all.TryGetProperty("lifeWarningTransitions", out _));
         Assert.Equal("length 101.234 → 101.250 mm", changes.GetProperty("changes")[0].GetProperty("changed")[0].GetString());
 
         var alarms = Parse(await CellTools.GetToolAlarms(context, ct: CancellationToken.None));
@@ -418,6 +421,29 @@ public sealed class ToolTests : IDisposable
         Assert.Contains("historyDays", ToolContext.ServerInstructions);
         Assert.Contains("lengthUnit", ToolContext.ServerInstructions);
         Assert.Contains("code N", ToolContext.ServerInstructions);
+        Assert.Contains("historyDays is how many days the cell keeps PMC alarms and results", ToolContext.ServerInstructions);
+        Assert.Contains("CNC alarms are limited to about the last 200 regardless", ToolContext.ServerInstructions);
+    }
+
+    private static string DescriptionOf(string method, string? parameter = null)
+    {
+        var m = typeof(CellTools).GetMethod(method)!;
+        var target = parameter is null ? (ICustomAttributeProvider)m : m.GetParameters().Single(p => p.Name == parameter);
+        return target.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), false)
+            .Cast<System.ComponentModel.DescriptionAttribute>().Single().Description;
+    }
+
+    [Fact]
+    public void Tool_descriptions_say_what_filters_and_counts_cover()
+    {
+        // One number matches an ITN and an FTN alike; every tool tool's rows carry both.
+        foreach (var tool in new[] { "GetTools", "GetToolChanges", "GetToolAlarms", "GetToolMovements" })
+            Assert.Contains("matched against both ITNs (physical tools) and FTNs (tool types)", DescriptionOf(tool, "tool"));
+        Assert.Contains("the device filter applies, the tool filter and tool number don't", DescriptionOf("GetTools"));
+        Assert.Contains("lifeWarningTransitions", DescriptionOf("GetToolChanges"));
+        Assert.Contains("instructions set at a work-set station", DescriptionOf("GetAttention"));
+        Assert.DoesNotContain("waits for the operator", DescriptionOf("GetAttention"));
+        Assert.Contains("CNC alarms are limited to about the last 200 regardless", DescriptionOf("GetCellOverview"));
     }
 
     [Fact]
