@@ -96,13 +96,13 @@ public sealed partial class SqlMakinoReader
     /// <summary>Two result sets: the orders (cap + 1; active ones, or those named by @order / @part whatever their
     /// status; most produced in the window first, then latest due) with their quantities and window sums, and their
     /// daily counts since @from (cap + 1, newest first; days with nothing left out).</summary>
-    internal static string ProductionSql(SchemaInfo schema, bool byOrder, bool byPart)
+    internal static string ProductionSql(SchemaInfo schema, bool byOrder, bool byPart, bool includeIdle)
     {
         var conditions = new List<string>();
         if (byOrder) conditions.Add(NameMatch("Orders", "OrderName", "o", "order"));
         if (byPart) conditions.Add(NameMatch("Parts", "PartName", "pa", "part"));
         if (!byOrder && !byPart && schema.Has("Orders", "Status")) conditions.Add($"o.Status NOT IN ({FinishedOrderStatuses})");
-        var where = conditions.Count > 0 ? string.Join(" AND ", conditions) : "1 = 1";
+        var activeWhere = conditions.Count > 0 ? string.Join(" AND ", conditions) : "1 = 1";
 
         var source = Daily(schema);
         string? Window(string column) => source switch
@@ -113,6 +113,14 @@ public sealed partial class SqlMakinoReader
         };
         var windowCompleted = Window("NormalQtyDay");
         var windowScrap = Window("ScrapQtyDay");
+
+        // Unless asked for every order (or one is named), only those with something happening: output or scrap in
+        // the window, or parts on a fixture that isn't parked (suspended or on hold). The rest are counted.
+        var activity = includeIdle || byOrder || byPart ? null : ActivitySql(schema, windowCompleted, windowScrap);
+        var where = activity is null ? activeWhere : $"{activeWhere} AND ({activity})";
+        var others = activity is null
+            ? "SELECT CAST(NULL AS int) AS OtherActiveOrders;"
+            : $"SELECT COUNT(*) AS OtherActiveOrders FROM Orders o LEFT JOIN Parts pa ON pa.PartID = o.PartID WHERE {activeWhere} AND NOT ({activity});";
         var due = schema.Has("Orders", "DueDate") ? "o.DueDate DESC, " : "";
         var order = (windowCompleted is null ? "" : $"{windowCompleted} DESC, ") + due + "o.OrderID DESC";
 
@@ -153,10 +161,33 @@ public sealed partial class SqlMakinoReader
             WHERE {where}
             ORDER BY {order};
             {daily}
+            {others}
             """;
     }
 
-    public async Task<ProductionList> GetProductionAsync(int days, string? order, string? part, CancellationToken ct)
+    /// <summary>"Something happened to the order" (alias o): output or scrap since @from, or parts clamped on a
+    /// fixture now that isn't suspended or on hold. Null when the cell can tell none of these.</summary>
+    private static string? ActivitySql(SchemaInfo schema, string? windowCompleted, string? windowScrap)
+    {
+        var parts = new List<string>();
+        if (windowCompleted is not null) parts.Add($"ISNULL({windowCompleted}, 0) > 0");
+        if (windowScrap is not null) parts.Add($"ISNULL({windowScrap}, 0) > 0");
+        if (schema.Has("FixtureQuantity", "ClampedQuantity") && schema.Has("FixtureQuantity", "PalletFixtureID")
+            && schema.Has("FixtureRun", "PalletFixtureID") && schema.Has("FixtureRun", "CurOrderID"))
+        {
+            var notParked = new List<string>();
+            if (schema.Has("PalletFixtures", "Suspend")) notParked.Add("ISNULL(pf.Suspend, 0) = 0");
+            if (schema.Has("PalletFixtures", "WorkSetHold")) notParked.Add("ISNULL(pf.WorkSetHold, 0) = 0");
+            var join = notParked.Count > 0 && schema.Has("PalletFixtures", "PalletFixtureID")
+                ? " JOIN PalletFixtures pf ON pf.PalletFixtureID = fq.PalletFixtureID" : "";
+            var filter = join.Length > 0 ? " AND " + string.Join(" AND ", notParked) : "";
+            parts.Add("ISNULL((SELECT SUM(fq.ClampedQuantity) FROM FixtureQuantity fq JOIN FixtureRun fr ON fr.PalletFixtureID = fq.PalletFixtureID" +
+                      $"{join} WHERE fr.CurOrderID = o.OrderID{filter}), 0) > 0");
+        }
+        return parts.Count > 0 ? string.Join(" OR ", parts) : null;
+    }
+
+    public async Task<ProductionList> GetProductionAsync(int days, string? order, string? part, bool includeIdle, CancellationToken ct)
     {
         var window = Days(days);
         var byOrder = !string.IsNullOrWhiteSpace(order);
@@ -172,7 +203,7 @@ public sealed partial class SqlMakinoReader
         else if (quantities.Contains("CAST(NULL AS int) AS ClampedQty")) notAvailable.Add("parts clamped on fixtures (in process includes them)");
         if (Daily(schema) == DailySource.None) notAvailable.Add("daily quantities");
 
-        using var cmd = Command(s.Connection, ProductionSql(schema, byOrder, byPart));
+        using var cmd = Command(s.Connection, ProductionSql(schema, byOrder, byPart, includeIdle));
         AddTake(cmd);
         cmd.Parameters.Add("@from", System.Data.SqlDbType.DateTime).Value = s.Now.Date.AddDays(1 - window);
         if (byOrder)
@@ -212,12 +243,16 @@ public sealed partial class SqlMakinoReader
             list.Add(new DailyQty(DateOnly.FromDateTime(day), Int(r, "NormalQtyDay") ?? 0, Int(r, "ScrapQtyDay") ?? 0));
         }
 
+        await r.NextResultAsync(ct);
+        int? others = await r.ReadAsync(ct) ? Int(r, "OtherActiveOrders") : null;
+
         var rows = orders.Select(o => o.Order with { Daily = daily.TryGetValue(o.Id, out var d) ? d : null }).ToList();
         var (shown, capped) = Cap(rows);
         return new ProductionList(s.Now, capped || dailyRows > _cap, window, shown)
         {
             NotAvailable = notAvailable.Count > 0 ? notAvailable : null,
             Note = ProductionNote(order, part, shown.Count),
+            OtherActiveOrders = others,
         };
     }
 

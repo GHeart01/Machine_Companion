@@ -14,6 +14,7 @@ public class AttentionReaderTests
         ["PalletFixtures"] = ["PalletFixtureID", "PalletID", "FixtureNumber", "Suspend", "WorkSetHold", "Damaged", "StatusReason",
             "PreMcSuspend", "PreMcSuspendReason", "LackingTool", "ReclampStatus"],
         ["Pallets"] = ["PalletID", "PalletNumber"],
+        ["PalletLocation"] = ["PalletID", "CurDeviceType", "CurDeviceNumber"],
         ["FixtureRun"] = ["PalletFixtureID", "CurOrderID", "CurProcessID"],
         ["Orders"] = ["OrderID", "OrderName"],
         ["Processes"] = ["ProcessID", "ProcessNumber"],
@@ -34,8 +35,8 @@ public class AttentionReaderTests
         SqlMakinoReader.AttentionTools[]? tools = null) =>
         new(devices ?? [], fixtures ?? [], commands ?? [], transports ?? [], tools ?? []);
 
-    private static AttentionList Build(SqlMakinoReader.AttentionRows rows, int cap = 500) =>
-        SqlMakinoReader.BuildAttention(Now, cap, rows, []);
+    private static AttentionList Build(SqlMakinoReader.AttentionRows rows, int cap = 500, bool includeParked = true) =>
+        SqlMakinoReader.BuildAttention(Now, cap, rows, [], includeParked);
 
     [Fact]
     public void A_device_needing_recovery_is_one_item_with_every_reason()
@@ -153,6 +154,54 @@ public class AttentionReaderTests
     }
 
     [Fact]
+    public void Parked_fixtures_are_counts_by_default_and_items_on_request()
+    {
+        var rows = Rows(fixtures:
+        [
+            new(1, 1) { Suspend = true, Reason = "no material" },
+            new(2, 1) { Suspend = true, LackingTool = true },
+            new(3, 1) { Suspend = true, Damaged = true },
+            new(4, 1) { Suspend = true, PreMcSuspend = true, PreMcReason = 1 },
+            new(5, 1) { LackingTool = true },
+            new(6, 1) { Hold = true, Reclamp = 1 },
+        ]) with
+        {
+            Parked = [new ParkedGroup("pallet stocker", "machining suspended", 2) { LackingTools = 1 }],
+        };
+
+        var compact = Build(rows, includeParked: false);
+        Assert.Equal([3, 4, 6, 5], compact.Items.Select(i => i.Pallet!.Value)); // damaged, pre-machining, reclamp alarm, lacking
+        Assert.NotNull(compact.Parked);
+        Assert.Equal(2, compact.Parked.Fixtures);
+        Assert.Equal(1, compact.Parked.LackingTools);
+        Assert.Equal("pallet stocker", Assert.Single(compact.Parked.Groups).Place);
+        Assert.Equal(4, compact.Counts["machining suspended"]); // counts still cover every fixture
+
+        var full = Build(rows, includeParked: true);
+        Assert.Equal(6, full.Items.Count);
+        Assert.Equal([1, 2], full.Items.TakeLast(2).Select(i => i.Pallet!.Value));
+        Assert.NotNull(full.Parked);
+
+        Assert.Null(Build(Rows(fixtures: [new(5, 1) { LackingTool = true }]), includeParked: false).Parked);
+    }
+
+    [Fact]
+    public void Parked_groups_merge_stocker_shelves_and_name_devices()
+    {
+        var devices = new[] { (Type: 1, Number: 1, Name: "MC1") };
+        var groups = SqlMakinoReader.MergeParked(
+        [
+            (4, 23, true, false, 5, 1), (4, 5, true, false, 3, 2), (1, 1, true, false, 2, 0), (4, 7, false, true, 1, 0),
+            (null, null, true, true, 1, 0),
+        ], devices);
+
+        Assert.Equal(
+            [("pallet stocker", "machining suspended", 8, (int?)3), ("MC1", "machining suspended", 2, null),
+                ("pallet stocker", "work-set hold", 1, null), ("unknown", "machining suspended, work-set hold", 1, null)],
+            groups.Select(g => (g.Place, g.Condition, g.Fixtures, g.LackingTools)));
+    }
+
+    [Fact]
     public void Cycle_count_over_a_set_limit_is_maintenance_and_no_limit_is_nothing()
     {
         var list = Build(Rows(devices:
@@ -188,7 +237,7 @@ public class AttentionReaderTests
     [Fact]
     public void Fixture_sql_checks_only_the_flags_this_cell_has_and_reads_the_current_order()
     {
-        var full = SqlMakinoReader.AttentionFixturesSql(SchemaWithout());
+        var full = SqlMakinoReader.AttentionFixturesSql(SchemaWithout(), includeParked: true);
         Assert.Contains("TOP (@take)", full);
         Assert.Contains("pf.Suspend = 1", full);
         Assert.Contains("pf.LackingTool = 1", full);
@@ -197,15 +246,31 @@ public class AttentionReaderTests
         Assert.Contains("LEFT JOIN FixtureRun fr ON fr.PalletFixtureID = pf.PalletFixtureID", full);
         Assert.Contains("o.OrderName AS OrderName", full);
 
-        var old = SqlMakinoReader.AttentionFixturesSql(SchemaWithout("PalletFixtures.LackingTool", "PalletFixtures.ReclampStatus", "FixtureRun"));
+        var old = SqlMakinoReader.AttentionFixturesSql(SchemaWithout("PalletFixtures.LackingTool", "PalletFixtures.ReclampStatus", "FixtureRun"), true);
         Assert.DoesNotContain("LackingTool = 1", old);
         Assert.DoesNotContain("ReclampStatus IN", old);
         Assert.DoesNotContain("FixtureRun", old);
         Assert.Contains("CAST(NULL AS varchar(4000)) AS OrderName", old);
 
         var bare = SqlMakinoReader.AttentionFixturesSql(SchemaWithout("PalletFixtures.Suspend", "PalletFixtures.WorkSetHold",
-            "PalletFixtures.Damaged", "PalletFixtures.PreMcSuspend", "PalletFixtures.LackingTool", "PalletFixtures.ReclampStatus"));
+            "PalletFixtures.Damaged", "PalletFixtures.PreMcSuspend", "PalletFixtures.LackingTool", "PalletFixtures.ReclampStatus"), false);
         Assert.Contains("WHERE 1 = 0", bare);
+    }
+
+    [Fact]
+    public void Parked_fixtures_are_left_out_of_the_items_sql_and_grouped_by_place()
+    {
+        const string parked = "(pf.Suspend = 1 OR pf.WorkSetHold = 1) AND ISNULL(pf.Damaged, 0) = 0 AND ISNULL(pf.PreMcSuspend, 0) = 0 AND ISNULL(pf.ReclampStatus, 0) = 0";
+        Assert.Contains($"AND NOT ({parked})", SqlMakinoReader.AttentionFixturesSql(SchemaWithout(), includeParked: false));
+        Assert.DoesNotContain("AND NOT", SqlMakinoReader.AttentionFixturesSql(SchemaWithout(), includeParked: true));
+
+        var groups = SqlMakinoReader.AttentionParkedSql(SchemaWithout());
+        Assert.NotNull(groups);
+        Assert.Contains($"WHERE {parked}", groups);
+        Assert.Contains("FROM PalletLocation l WHERE l.PalletID = pf.PalletID", groups);
+        Assert.Contains("GROUP BY", groups);
+        Assert.Contains("CAST(NULL AS int) AS CurDeviceType", SqlMakinoReader.AttentionParkedSql(SchemaWithout("PalletLocation")));
+        Assert.Null(SqlMakinoReader.AttentionParkedSql(SchemaWithout("PalletFixtures.Suspend", "PalletFixtures.WorkSetHold")));
     }
 
     [Fact]

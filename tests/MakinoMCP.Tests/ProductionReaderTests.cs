@@ -15,6 +15,7 @@ public class ProductionReaderTests
         ["Quantities"] = ["OrderID", "ProcessID", "RemainingQuantity", "NormalQuantity", "ScrapQuantity", "MaterialGroupNo"],
         ["FixtureQuantity"] = ["PalletFixtureID", "OperationID", "ClampedQuantity"],
         ["FixtureRun"] = ["PalletFixtureID", "CurOrderID", "CurProcessID"],
+        ["PalletFixtures"] = ["PalletFixtureID", "Suspend", "WorkSetHold"],
         ["OrderCompletedQtyResults"] = ["ProductionDate", "OrderID", "NormalQtyDay", "ScrapQtyDay"],
         ["ViewOrders"] = ["OrderName", "NormalQty", "ScrapQty", "RemainQty", "InProcQty"],
         ["ViewDayOrderCompletedQty"] = ["ProductionDate", "OrderName", "NormalQtyDay", "ScrapQtyDay"],
@@ -84,20 +85,39 @@ public class ProductionReaderTests
     [Fact]
     public void Production_is_bounded_active_by_default_and_named_orders_match_exactly_first()
     {
-        var active = SqlMakinoReader.ProductionSql(SchemaWithout(), byOrder: false, byPart: false);
+        var active = SqlMakinoReader.ProductionSql(SchemaWithout(), byOrder: false, byPart: false, includeIdle: true);
         Assert.Contains("TOP (@take)", active);
         Assert.Contains("o.Status NOT IN (0, 5, 6)", active);
         Assert.Contains("d.ProductionDate >= @from", active);
         Assert.Contains("FROM OrderCompletedQtyResults d", active);
         Assert.Contains("ORDER BY d.ProductionDate DESC", active);
 
-        var named = SqlMakinoReader.ProductionSql(SchemaWithout(), byOrder: true, byPart: false);
+        var named = SqlMakinoReader.ProductionSql(SchemaWithout(), byOrder: true, byPart: false, includeIdle: false);
         Assert.DoesNotContain("o.Status NOT IN", named); // a named order shows whatever its status
         Assert.Contains("UPPER(x.OrderName) = UPPER(@order)", named);
         Assert.Contains("UPPER(o.OrderName) LIKE UPPER(@orderLike) ESCAPE '\\'", named);
 
-        var part = SqlMakinoReader.ProductionSql(SchemaWithout(), byOrder: false, byPart: true);
+        var part = SqlMakinoReader.ProductionSql(SchemaWithout(), byOrder: false, byPart: true, includeIdle: false);
         Assert.Contains("UPPER(pa.PartName) LIKE UPPER(@partLike) ESCAPE '\\'", part);
+    }
+
+    [Fact]
+    public void By_default_only_orders_with_output_scrap_or_work_on_an_active_fixture_and_the_rest_counted()
+    {
+        var sql = SqlMakinoReader.ProductionSql(SchemaWithout(), byOrder: false, byPart: false, includeIdle: false);
+        Assert.Contains("ISNULL((SELECT SUM(d.NormalQtyDay)", sql);
+        Assert.Contains("ISNULL((SELECT SUM(d.ScrapQtyDay)", sql);
+        Assert.Contains("JOIN PalletFixtures pf ON pf.PalletFixtureID = fq.PalletFixtureID", sql);
+        Assert.Contains("ISNULL(pf.Suspend, 0) = 0 AND ISNULL(pf.WorkSetHold, 0) = 0", sql);
+        Assert.Contains("AS OtherActiveOrders", sql);
+        Assert.Contains("AND NOT (", sql);
+
+        var all = SqlMakinoReader.ProductionSql(SchemaWithout(), false, false, includeIdle: true);
+        Assert.Contains("CAST(NULL AS int) AS OtherActiveOrders", all);
+        Assert.DoesNotContain("AND NOT (", all);
+
+        // Named orders are listed whatever their activity.
+        Assert.Contains("CAST(NULL AS int) AS OtherActiveOrders", SqlMakinoReader.ProductionSql(SchemaWithout(), true, false, false));
     }
 
     [Fact]
@@ -113,10 +133,10 @@ public class ProductionReaderTests
     [Fact]
     public void Daily_quantities_fall_back_to_the_vendor_view_and_else_are_left_out()
     {
-        var view = SqlMakinoReader.ProductionSql(SchemaWithout("OrderCompletedQtyResults"), false, false);
+        var view = SqlMakinoReader.ProductionSql(SchemaWithout("OrderCompletedQtyResults"), false, false, true);
         Assert.Contains("FROM ViewDayOrderCompletedQty d JOIN Orders od ON od.OrderName = d.OrderName", view);
 
-        var none = SqlMakinoReader.ProductionSql(SchemaWithout("OrderCompletedQtyResults", "ViewDayOrderCompletedQty"), false, false);
+        var none = SqlMakinoReader.ProductionSql(SchemaWithout("OrderCompletedQtyResults", "ViewDayOrderCompletedQty"), false, false, true);
         Assert.Contains("CAST(NULL AS int) AS WindowCompleted", none);
         Assert.Contains("WHERE 1 = 0", none); // the daily result set stays, empty
     }

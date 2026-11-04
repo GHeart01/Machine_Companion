@@ -66,7 +66,7 @@ public sealed class ToolTests : IDisposable
         ("get_tool_movements", c => CellTools.GetToolMovements(c, ct: CancellationToken.None)),
         ("get_part_routing", c => CellTools.GetPartRouting(c, "CONTOSO-BRACKET", ct: CancellationToken.None)),
         ("get_production", c => CellTools.GetProduction(c, ct: CancellationToken.None)),
-        ("get_attention", c => CellTools.GetAttention(c, CancellationToken.None)),
+        ("get_attention", c => CellTools.GetAttention(c, ct: CancellationToken.None)),
         ("list_shared_folders", c => FolderTools.ListSharedFolders(c, CancellationToken.None)),
         ("list_files", c => FolderTools.ListFiles(c, "logs", ct: CancellationToken.None)),
         ("read_file", c => FolderTools.ReadFile(c, "logs", "cell.log", ct: CancellationToken.None)),
@@ -328,7 +328,17 @@ public sealed class ToolTests : IDisposable
         var orders = Parse(await CellTools.GetOrders(context, ct: CancellationToken.None));
         Assert.Equal(40, orders.GetProperty("orders")[0].GetProperty("completedQty").GetInt32());
 
-        var attention = Parse(await CellTools.GetAttention(context, CancellationToken.None));
+        Assert.Equal(3, production.GetProperty("otherActiveOrders").GetInt32());
+        var idle = Parse(await CellTools.GetProduction(context, includeIdle: true, ct: CancellationToken.None));
+        Assert.False(idle.TryGetProperty("otherActiveOrders", out _));
+
+        var attention = Parse(await CellTools.GetAttention(context, ct: CancellationToken.None));
+        var parked = attention.GetProperty("parked");
+        Assert.Equal(1, parked.GetProperty("fixtures").GetInt32());
+        Assert.Equal("pallet stocker", parked.GetProperty("groups")[0].GetProperty("place").GetString());
+        Assert.Single(attention.GetProperty("items").EnumerateArray()); // the parked fixture only as a count
+        var listed = Parse(await CellTools.GetAttention(context, includeParked: true, ct: CancellationToken.None));
+        Assert.Equal(2, listed.GetProperty("items").GetArrayLength());
         var item = attention.GetProperty("items")[0];
         Assert.Equal("device", item.GetProperty("kind").GetString());
         Assert.Equal("recovery request", item.GetProperty("what").GetString());

@@ -225,10 +225,14 @@ public class LiveReaderTests
     public async Task Live_production_agrees_with_orders_and_stays_in_its_window()
     {
         var ct = CancellationToken.None;
-        var production = await Reader(100000).GetProductionAsync(7, null, null, ct);
+        var production = await Reader(100000).GetProductionAsync(7, null, null, true, ct);
         var orders = await Reader(100000).GetOrdersAsync(true, ct);
 
-        Assert.Equal(orders.Orders.Count, production.Orders.Count); // the same active orders
+        Assert.Equal(orders.Orders.Count, production.Orders.Count); // includeIdle: the same active orders
+        Assert.Null(production.OtherActiveOrders);
+        var busy = await Reader(100000).GetProductionAsync(7, null, null, false, ct);
+        Assert.Equal(production.Orders.Count, busy.Orders.Count + (busy.OtherActiveOrders ?? 0));
+        Assert.All(busy.Orders, o => Assert.Contains(production.Orders, p => p.Name == o.Name));
         var byName = orders.Orders.GroupBy(o => o.Name).ToDictionary(g => g.Key, g => g.First());
         foreach (var o in production.Orders)
         {
@@ -245,9 +249,9 @@ public class LiveReaderTests
         }
 
         Skip.If(production.Orders.Count < 2, "fewer than two active orders");
-        var named = await Reader().GetProductionAsync(30, production.Orders[0].Name, null, ct);
+        var named = await Reader().GetProductionAsync(30, production.Orders[0].Name, null, false, ct);
         Assert.Contains(named.Orders, o => o.Name == production.Orders[0].Name);
-        var capped = await Reader(1).GetProductionAsync(7, null, null, ct);
+        var capped = await Reader(1).GetProductionAsync(7, null, null, true, ct);
         Assert.True(capped.Capped);
         Assert.Single(capped.Orders);
     }
@@ -257,7 +261,7 @@ public class LiveReaderTests
     {
         var ct = CancellationToken.None;
         var overview = await Reader().GetOverviewAsync(ct);
-        var list = await Reader(100000).GetAttentionAsync(ct);
+        var list = await Reader(100000).GetAttentionAsync(true, ct);
 
         string[] kinds = ["device", "work set", "manual transport", "fixture", "tools", "maintenance"];
         Assert.All(list.Items, i => Assert.Contains(i.Kind, kinds));
@@ -278,10 +282,17 @@ public class LiveReaderTests
         if (firstParked >= 0) Assert.All(list.Items.Skip(firstParked), i => Assert.True(i.Kind == "fixture" && IsParked(i.What)));
 
         Skip.If(list.Items.Count < 4, "fewer than four things need attention");
-        var capped = await Reader(3).GetAttentionAsync(ct);
+        var capped = await Reader(3).GetAttentionAsync(true, ct);
         Assert.True(capped.Capped);
         Assert.Equal(list.Items.Take(3).Select(i => (i.Kind, i.What)), capped.Items.Select(i => (i.Kind, i.What)));
         Assert.Equal(list.Counts, capped.Counts);
+
+        // By default the parked fixtures are only counted, per place and condition.
+        var compact = await Reader(100000).GetAttentionAsync(false, ct);
+        Assert.DoesNotContain(compact.Items, i => i.Kind == "fixture" && IsParked(i.What));
+        Assert.Equal(list.Items.Count(i => i.Kind == "fixture" && IsParked(i.What)), compact.Parked?.Fixtures ?? 0);
+        Assert.Equal(list.Items.Count(i => !(i.Kind == "fixture" && IsParked(i.What))), compact.Items.Count);
+        Assert.Equal(list.Counts, compact.Counts);
     }
 
     private static bool IsParked(string what) =>

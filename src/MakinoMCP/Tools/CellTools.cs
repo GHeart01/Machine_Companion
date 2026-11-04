@@ -197,16 +197,19 @@ public static class CellTools
                  "process), scrapQty (any process), remainingQty (not started), inProcessQty (started, not finished: " +
                  "clampedQty on fixtures now plus parts waiting between processes), status; then completedInWindow, " +
                  "scrapInWindow and daily (date, completed, scrap; days with none left out) for the last days. Orders " +
-                 "that made the most in the window come first, then latest due. Default: active orders, the last 7 " +
-                 "days (today counts as one). Naming an order or a part (exact name, else every name containing the " +
-                 "text) shows its orders whatever their status. The cell keeps daily counts for about three months.")]
+                 "that made the most in the window come first, then latest due. Default: the last 7 days (today counts " +
+                 "as one) and only the active orders something happened to in them (output, scrap, or parts on a " +
+                 "fixture that isn't suspended or on hold); otherActiveOrders counts the rest, includeIdle=true lists " +
+                 "them too. Naming an order or a part (exact name, else every name containing the text) shows its " +
+                 "orders whatever their status or activity. The cell keeps daily counts for about three months.")]
     public static Task<string> GetProduction(
         ToolContext context,
         [Description("How many days of daily counts, from today back (today counts as one). Default 7.")] int days = 7,
         [Description("Only this order: its name, or part of it. Leave empty for every active order.")] string? order = null,
         [Description("Only the orders of this part: its name, or part of it. Leave empty for every part.")] string? part = null,
+        [Description("true: also list the active orders nothing happened to in the window. Default false.")] bool includeIdle = false,
         CancellationToken ct = default) =>
-        context.Database("get_production", (r, t) => r.GetProductionAsync(days, order, part, t), ct);
+        context.Database("get_production", (r, t) => r.GetProductionAsync(days, order, part, includeIdle, t), ct);
 
     [McpServerTool(Name = "get_attention", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("What is waiting on a person right now? One list, most severe first: devices with a recovery " +
@@ -214,13 +217,19 @@ public static class CellTools
                  "station waits for the operator to carry out (clamp, unclamp, …); manual transports not finished; " +
                  "fixtures damaged, pre-machining suspended (with the reason) or past their reclamp time; tools in " +
                  "alarm or with an offset error per machine; fixtures lacking tools for their next machining; stations " +
-                 "or the vehicle over their maintenance cycle count; last, fixtures whose machining is suspended or " +
-                 "held at the work-set station (operators often park fixtures this way; detail is the reason they " +
-                 "typed). Each item: kind, what, device or pallet/fixture, order and process, detail, since (only when " +
-                 "the cell records it). counts: how many of each condition the cell has, even past the row cap. " +
+                 "or the vehicle over their maintenance cycle count. Fixtures that are only suspended or held at the " +
+                 "work-set station (operators park fixtures this way) are counted in parked: how many, how many of " +
+                 "them lack tools, per place (where their pallets are) and condition; includeParked=true lists them " +
+                 "last as items with the reason the operator typed (detail). Each item: kind, what, device or " +
+                 "pallet/fixture, order and process, detail, since (only when the cell records it). counts: how many " +
+                 "of each condition the cell has, parked ones included, even past the row cap. " +
                  "machineToolStatus: each machine's tool status, as context only (\"lacking tools\" there usually means " +
                  "a later job waits for a tool; the fixtures concerned are the items). notAvailable names sections " +
                  "this cell or login can't show.")]
-    public static Task<string> GetAttention(ToolContext context, CancellationToken ct) =>
-        context.Database("get_attention", (r, t) => r.GetAttentionAsync(t), ct);
+    public static Task<string> GetAttention(
+        ToolContext context,
+        [Description("true: list the parked fixtures (only suspended or on hold) one by one instead of only counting them. Default false.")]
+        bool includeParked = false,
+        CancellationToken ct = default) =>
+        context.Database("get_attention", (r, t) => r.GetAttentionAsync(includeParked, t), ct);
 }

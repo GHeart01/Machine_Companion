@@ -158,7 +158,7 @@ internal sealed class FakeMakinoReader : IMakinoReader
             };
         }, ct);
 
-    public Task<ProductionList> GetProductionAsync(int days, string? order, string? part, CancellationToken ct) =>
+    public Task<ProductionList> GetProductionAsync(int days, string? order, string? part, bool includeIdle, CancellationToken ct) =>
         Answer(() => new ProductionList(Now, false, days,
         [
             new OrderProduction("ORDER-001", "CONTOSO-BRACKET", "active", 100)
@@ -166,16 +166,19 @@ internal sealed class FakeMakinoReader : IMakinoReader
                 CompletedQty = 40, ScrapQty = 2, RemainingQty = 57, InProcessQty = 1, ClampedQty = 1, CompletedInWindow = 6,
                 ScrapInWindow = 0, Daily = [new DailyQty(new DateOnly(2026, 11, 1), 6, 0)],
             },
-        ]), ct);
+        ]) { OtherActiveOrders = includeIdle ? null : 3 }, ct);
 
-    public Task<AttentionList> GetAttentionAsync(CancellationToken ct) =>
+    public Task<AttentionList> GetAttentionAsync(bool includeParked, CancellationToken ct) =>
         Answer(() => new AttentionList(Now, false, new Dictionary<string, int> { ["recovery request"] = 1, ["machining suspended"] = 1 },
         [
             new AttentionItem("device", "recovery request") { Device = "WSS1" },
-            new AttentionItem("fixture", "machining suspended") { Pallet = 7, Fixture = 1, Detail = "waiting for material" },
+            .. includeParked
+                ? [new AttentionItem("fixture", "machining suspended") { Pallet = 7, Fixture = 1, Detail = "waiting for material" }]
+                : Array.Empty<AttentionItem>(),
         ], [])
         {
             MachineToolStatus = new Dictionary<string, string> { ["MC1"] = "lacking tools" },
+            Parked = new ParkedFixtures(1, [new ParkedGroup("pallet stocker", "machining suspended", 1)]),
         }, ct);
 
     public Task<LoginRightsInfo> GetLoginRightsAsync(CancellationToken ct) =>

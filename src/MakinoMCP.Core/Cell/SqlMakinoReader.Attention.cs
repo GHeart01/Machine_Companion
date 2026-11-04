@@ -70,11 +70,19 @@ public sealed partial class SqlMakinoReader
         IReadOnlyList<AttentionTransport> Transports, IReadOnlyList<AttentionTools> Tools)
     {
         public IReadOnlyDictionary<string, int>? FixtureCounts { get; init; }
+
+        /// <summary>The parked fixtures grouped by place and condition (see <see cref="AttentionParkedSql"/>).</summary>
+        public IReadOnlyList<ParkedGroup>? Parked { get; init; }
     }
+
+    /// <summary>Parked: suspended or on hold, and nothing else wrong with it (lacking tools aside).</summary>
+    private static bool IsParked(AttentionFixture f) =>
+        (f.Suspend || f.Hold) && !f.Damaged && !f.PreMcSuspend && f.Reclamp is null or 0;
 
     /// <summary>The items, most severe first (then newest first where the cell says since when), capped; the counts
     /// and each machine's tool status as context.</summary>
-    internal static AttentionList BuildAttention(DateTime now, int cap, AttentionRows rows, IReadOnlyList<string> notAvailable)
+    internal static AttentionList BuildAttention(
+        DateTime now, int cap, AttentionRows rows, IReadOnlyList<string> notAvailable, bool includeParked)
     {
         var items = new List<(int Rank, AttentionItem Item)>();
         var counts = new Dictionary<string, int>();
@@ -176,6 +184,7 @@ public sealed partial class SqlMakinoReader
             if (f.Suspend) conditions.Add(("machining suspended", "machining suspended", RankParked));
             if (conditions.Count == 0) continue;
             if (rows.FixtureCounts is null) foreach (var c in conditions) Count(c.Key);
+            if (!includeParked && IsParked(f)) continue; // counted in Parked instead
             items.Add((conditions.Min(c => c.Rank), new AttentionItem("fixture", string.Join(", ", conditions.Select(c => c.Words)))
             {
                 Pallet = f.Pallet, Fixture = f.Fixture, Order = f.Order, Process = f.Process, Detail = NonEmpty(OneLine(f.Reason)),
@@ -193,10 +202,41 @@ public sealed partial class SqlMakinoReader
             .Select(i => i.Item)
             .ToList();
         var capped = sorted.Count > cap;
+        var parked = rows.Parked is { Count: > 0 } groups
+            ? new ParkedFixtures(groups.Sum(g => g.Fixtures), groups)
+            {
+                LackingTools = groups.Sum(g => g.LackingTools ?? 0) is > 0 and var lacking ? lacking : null,
+            }
+            : null;
         return new AttentionList(now, capped, counts, capped ? sorted.GetRange(0, cap) : sorted, notAvailable)
         {
             MachineToolStatus = toolStatus.Count > 0 ? toolStatus : null,
+            Parked = parked,
         };
+    }
+
+    /// <summary>Rows of <see cref="AttentionParkedSql"/> (pallet place type and number, suspended, held, fixtures,
+    /// lacking tools) as groups per place and condition, biggest first. A place with a device row is that device's
+    /// name; any other (the stocker shelves) its device type's words, so all shelves are one place.</summary>
+    internal static List<ParkedGroup> MergeParked(
+        IEnumerable<(int? Type, int? Number, bool Suspended, bool Held, int N, int Lacking)> rows,
+        IReadOnlyList<(int Type, int Number, string Name)> devices)
+    {
+        var merged = new List<(string Place, string Condition, int N, int Lacking)>();
+        foreach (var r in rows)
+        {
+            var place = r.Type is null or 0
+                ? "unknown"
+                : devices.FirstOrDefault(d => d.Type == r.Type && d.Number == r.Number).Name ?? Codes.DeviceType(r.Type);
+            var condition = string.Join(", ", new[] { r.Suspended ? "machining suspended" : null, r.Held ? "work-set hold" : null }.OfType<string>());
+            var i = merged.FindIndex(m => m.Place == place && m.Condition == condition);
+            if (i < 0) merged.Add((place, condition, r.N, r.Lacking));
+            else merged[i] = (place, condition, merged[i].N + r.N, merged[i].Lacking + r.Lacking);
+        }
+        return merged
+            .OrderByDescending(m => m.N)
+            .Select(m => new ParkedGroup(m.Place, m.Condition, m.N) { LackingTools = m.Lacking > 0 ? m.Lacking : null })
+            .ToList();
     }
 
     /// <summary>Typed text on one line, runs of spaces collapsed.</summary>
@@ -220,7 +260,7 @@ public sealed partial class SqlMakinoReader
     /// suspended or held, then the rest),
     /// with the order and process FixtureRun says they hold now. "WHERE 1 = 0" when the cell has none of the
     /// condition columns.</summary>
-    internal static string AttentionFixturesSql(SchemaInfo schema)
+    internal static string AttentionFixturesSql(SchemaInfo schema, bool includeParked)
     {
         const string t = "PalletFixtures";
         bool Has(string column) => schema.Has(t, column);
@@ -265,11 +305,50 @@ public sealed partial class SqlMakinoReader
                     + (withOrder ? " LEFT JOIN Orders o ON o.OrderID = fr.CurOrderID" : "")
                     + (withProcess ? " LEFT JOIN Processes pr ON pr.ProcessID = fr.CurProcessID" : "");
         var where = conditions.Count > 0 ? string.Join(" OR ", conditions) : "1 = 0";
+        if (!includeParked && ParkedCondition(schema) is { } parkedSql) where = $"({where}) AND NOT ({parkedSql})";
         return $"""
             SELECT TOP (@take) {cols}
             FROM PalletFixtures pf{joins}
             WHERE {where}
             ORDER BY {severity}, PalletNumber, FixtureNumber;
+            """;
+    }
+
+    /// <summary>A parked fixture in SQL: suspended or on hold, not damaged, not pre-machining suspended, no reclamp
+    /// timeout. Null when the cell has neither the suspend nor the hold column.</summary>
+    private static string? ParkedCondition(SchemaInfo schema)
+    {
+        const string t = "PalletFixtures";
+        var held = new List<string>();
+        if (schema.Has(t, "Suspend")) held.Add("pf.Suspend = 1");
+        if (schema.Has(t, "WorkSetHold")) held.Add("pf.WorkSetHold = 1");
+        if (held.Count == 0) return null;
+        var nothingElse = new List<string>();
+        if (schema.Has(t, "Damaged")) nothingElse.Add("ISNULL(pf.Damaged, 0) = 0");
+        if (schema.Has(t, "PreMcSuspend")) nothingElse.Add("ISNULL(pf.PreMcSuspend, 0) = 0");
+        if (schema.Has(t, "ReclampStatus")) nothingElse.Add("ISNULL(pf.ReclampStatus, 0) = 0");
+        return $"({string.Join(" OR ", held)})" + string.Concat(nothingElse.Select(c => " AND " + c));
+    }
+
+    /// <summary>The parked fixtures counted per pallet place (PalletLocation type and number) and condition, with how
+    /// many are lacking tools. Grouped rows, at most places × 3. Null when the cell can't tell a parked fixture.</summary>
+    internal static string? AttentionParkedSql(SchemaInfo schema)
+    {
+        const string t = "PalletFixtures";
+        if (ParkedCondition(schema) is not { } parked) return null;
+        string Place(string column) =>
+            schema.Has(t, "PalletID") && schema.Has("PalletLocation", "PalletID") && schema.Has("PalletLocation", column)
+                ? $"(SELECT TOP 1 l.{column} FROM PalletLocation l WHERE l.PalletID = pf.PalletID) AS {column}"
+                : $"CAST(NULL AS int) AS {column}";
+        string Bit(string column, string condition) => schema.Has(t, column) ? $"CASE WHEN {condition} THEN 1 ELSE 0 END" : "0";
+        return $"""
+            SELECT x.CurDeviceType, x.CurDeviceNumber, x.Suspended, x.Held, COUNT(*) AS N, SUM(x.Lacking) AS Lacking FROM (
+                SELECT {Place("CurDeviceType")}, {Place("CurDeviceNumber")},
+                       {Bit("Suspend", "pf.Suspend = 1")} AS Suspended, {Bit("WorkSetHold", "pf.WorkSetHold = 1")} AS Held,
+                       {Bit("LackingTool", "pf.LackingTool = 1")} AS Lacking
+                FROM PalletFixtures pf
+                WHERE {parked}) x
+            GROUP BY x.CurDeviceType, x.CurDeviceNumber, x.Suspended, x.Held;
             """;
     }
 
@@ -350,7 +429,7 @@ public sealed partial class SqlMakinoReader
 
     // --- reading ---
 
-    public async Task<AttentionList> GetAttentionAsync(CancellationToken ct)
+    public async Task<AttentionList> GetAttentionAsync(bool includeParked, CancellationToken ct)
     {
         await using var s = await OpenAsync(ct);
         var schema = s.Schema;
@@ -433,10 +512,11 @@ public sealed partial class SqlMakinoReader
 
         var fixtures = new List<AttentionFixture>();
         IReadOnlyDictionary<string, int>? fixtureCounts = null;
+        List<ParkedGroup>? parked = null;
         if (schema.HasTable("PalletFixtures"))
         {
             if (!schema.HasTable("FixtureRun")) notAvailable.Add("each fixture's current order and process");
-            using (var cmd = Command(s.Connection, AttentionFixturesSql(schema)))
+            using (var cmd = Command(s.Connection, AttentionFixturesSql(schema, includeParked)))
             {
                 AddTake(cmd);
                 using var r = await cmd.ExecuteReaderAsync(ct);
@@ -465,6 +545,18 @@ public sealed partial class SqlMakinoReader
                     }
                 }
                 fixtureCounts = found;
+            }
+            if (AttentionParkedSql(schema) is { } parkedSql)
+            {
+                using var cmd = Command(s.Connection, parkedSql);
+                using var r = await cmd.ExecuteReaderAsync(ct);
+                var groups = new List<(int?, int?, bool, bool, int, int)>();
+                while (await r.ReadAsync(ct))
+                {
+                    groups.Add((Int(r, "CurDeviceType"), Int(r, "CurDeviceNumber"), Int(r, "Suspended") == 1, Int(r, "Held") == 1,
+                        Int(r, "N") ?? 0, Int(r, "Lacking") ?? 0));
+                }
+                parked = MergeParked(groups, s.Devices.Select(d => (d.Type, d.Number, d.Name)).ToList());
             }
         }
         else notAvailable.Add("fixtures (suspended, damaged, lacking tools, …)");
@@ -499,9 +591,9 @@ public sealed partial class SqlMakinoReader
 
         var rows = new AttentionRows(s.Devices.Select(d => devices[d.Id]).ToList(), fixtures, commands, transports, tools)
         {
-            FixtureCounts = fixtureCounts,
+            FixtureCounts = fixtureCounts, Parked = parked,
         };
-        return BuildAttention(s.Now, _cap, rows, notAvailable);
+        return BuildAttention(s.Now, _cap, rows, notAvailable, includeParked);
     }
 
     private static bool Has(SqlDataReader r, string column)

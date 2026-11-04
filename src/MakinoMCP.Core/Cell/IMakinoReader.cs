@@ -45,11 +45,14 @@ public interface IMakinoReader
     Task<PartRouting> GetPartRoutingAsync(string part, string? revision, bool includeTools, CancellationToken ct);
 
     /// <summary>Quantities per order (active orders, or the ones named by <paramref name="order"/> / <paramref name="part"/>
-    /// whatever their status), with the completed and scrap counts per day of the last <paramref name="days"/>.</summary>
-    Task<ProductionList> GetProductionAsync(int days, string? order, string? part, CancellationToken ct);
+    /// whatever their status), with the completed and scrap counts per day of the last <paramref name="days"/>. Without
+    /// <paramref name="includeIdle"/>, active orders with no output, scrap or work on an active fixture in the window are
+    /// only counted (OtherActiveOrders).</summary>
+    Task<ProductionList> GetProductionAsync(int days, string? order, string? part, bool includeIdle, CancellationToken ct);
 
-    /// <summary>Everything that waits on a person right now, most severe first.</summary>
-    Task<AttentionList> GetAttentionAsync(CancellationToken ct);
+    /// <summary>Everything that waits on a person right now, most severe first. Without <paramref name="includeParked"/>,
+    /// fixtures that are only suspended or on hold are counted per place (Parked), not listed.</summary>
+    Task<AttentionList> GetAttentionAsync(bool includeParked, CancellationToken ct);
 
     Task<LoginRightsInfo> GetLoginRightsAsync(CancellationToken ct);
 }

@@ -463,6 +463,11 @@ public sealed record ProductionList(DateTime ServerTime, bool Capped, int Days, 
     /// <summary>Why the list is empty when an order or part was named.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Note { get; init; }
+
+    /// <summary>Active orders left out because nothing happened to them in the window (no output, no scrap, no parts on
+    /// a fixture that isn't suspended or on hold); null when every active order is listed.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? OtherActiveOrders { get; init; }
 }
 
 /// <summary>One order's counts, as the cell's own order screen counts them. Quantity: required. CompletedQty: good
@@ -508,6 +513,26 @@ public sealed record AttentionList(
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyDictionary<string, string>? MachineToolStatus { get; init; }
+
+    /// <summary>Fixtures that are only suspended or on hold (no damage, pre-machining suspend or reclamp timeout),
+    /// counted per place; null when there are none.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ParkedFixtures? Parked { get; init; }
+}
+
+/// <summary>Fixtures parked by operators (machining suspended or held at the work-set station): how many, how many of
+/// them are also lacking tools, and per place (where their pallets are: a device, or "pallet stocker") and condition.
+/// get_attention with includeParked lists them one by one with the reason typed.</summary>
+public sealed record ParkedFixtures(int Fixtures, IReadOnlyList<ParkedGroup> Groups)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? LackingTools { get; init; }
+}
+
+public sealed record ParkedGroup(string Place, string Condition, int Fixtures)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? LackingTools { get; init; }
 }
 
 /// <summary>Kind: device, work set, manual transport, fixture, tools or maintenance. What: its conditions, joined.
