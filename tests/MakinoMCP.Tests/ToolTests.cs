@@ -16,7 +16,8 @@ public sealed class ToolTests : IDisposable
     private static readonly string[] SpecNames =
     [
         "get_cell_overview", "get_alarms", "get_alarm_summary", "get_utilization", "get_recent_activity", "get_orders",
-        "get_pallets", "list_shared_folders", "list_files", "read_file", "search_files",
+        "get_pallets", "get_tools", "get_tool_changes", "get_tool_alarms", "get_tool_movements", "list_shared_folders",
+        "list_files", "read_file", "search_files",
     ];
 
     private readonly string _base = Path.Combine(Path.GetTempPath(), "makinomcp-tools-" + Guid.NewGuid().ToString("N"));
@@ -58,6 +59,10 @@ public sealed class ToolTests : IDisposable
         ("get_recent_activity", c => CellTools.GetRecentActivity(c, ct: CancellationToken.None)),
         ("get_orders", c => CellTools.GetOrders(c, ct: CancellationToken.None)),
         ("get_pallets", c => CellTools.GetPallets(c, CancellationToken.None)),
+        ("get_tools", c => CellTools.GetTools(c, ct: CancellationToken.None)),
+        ("get_tool_changes", c => CellTools.GetToolChanges(c, ct: CancellationToken.None)),
+        ("get_tool_alarms", c => CellTools.GetToolAlarms(c, ct: CancellationToken.None)),
+        ("get_tool_movements", c => CellTools.GetToolMovements(c, ct: CancellationToken.None)),
         ("list_shared_folders", c => FolderTools.ListSharedFolders(c, CancellationToken.None)),
         ("list_files", c => FolderTools.ListFiles(c, "logs", ct: CancellationToken.None)),
         ("read_file", c => FolderTools.ReadFile(c, "logs", "cell.log", ct: CancellationToken.None)),
@@ -103,7 +108,7 @@ public sealed class ToolTests : IDisposable
             Fail = () => new InvalidOperationException($"Login failed for 'your-login' with Password={Password}; server down"),
         });
 
-        foreach (var (_, call) in AllTools.Take(7))
+        foreach (var (_, call) in AllTools.Take(11))
         {
             var json = await call(context);
             var error = ErrorOf(json);
@@ -216,6 +221,64 @@ public sealed class ToolTests : IDisposable
             .GetProperty("pallets")[0];
         Assert.Equal("waiting for machining", pallet.GetProperty("status").GetString());
         Assert.Equal("not completed", pallet.GetProperty("workStatus").GetString());
+    }
+
+    [Fact]
+    public async Task Tools_json_is_compact_and_says_when_life_is_not_managed()
+    {
+        var json = await CellTools.GetTools(Ready(new FakeMakinoReader()), ct: CancellationToken.None);
+        var root = Parse(json);
+
+        Assert.Equal("problems", root.GetProperty("filter").GetString());
+        Assert.Equal("mm", root.GetProperty("lengthUnit").GetString());
+        var summary = root.GetProperty("summary")[0];
+        Assert.Equal("MC1", summary.GetProperty("device").GetString());
+        Assert.Equal(3, summary.GetProperty("byStatus").GetProperty("ready").GetInt32());
+
+        var worn = root.GetProperty("tools")[0];
+        Assert.Equal(1001, worn.GetProperty("itn").GetInt32());
+        Assert.Equal("MC1 pot 20", worn.GetProperty("location").GetString());
+        var life = worn.GetProperty("cutters")[0].GetProperty("life");
+        Assert.Equal(92.0, life.GetProperty("usedPercent").GetDouble());
+        Assert.Equal("min", life.GetProperty("unit").GetString());
+        Assert.Equal(101.25, worn.GetProperty("cutters")[0].GetProperty("length").GetDouble());
+        Assert.False(worn.TryGetProperty("flags", out _)); // empty and null fields are left out
+        Assert.False(worn.TryGetProperty("itnComment", out _));
+        Assert.False(root.TryGetProperty("lifeDirectionAssumed", out _));
+
+        var unmanaged = root.GetProperty("tools")[1].GetProperty("cutters")[0].GetProperty("life");
+        Assert.Equal("not life-managed", unmanaged.GetProperty("note").GetString());
+        Assert.False(unmanaged.TryGetProperty("usedPercent", out _));
+    }
+
+    [Fact]
+    public async Task Tool_history_json_has_server_time_and_words()
+    {
+        var context = Ready(new FakeMakinoReader());
+
+        var changes = Parse(await CellTools.GetToolChanges(context, ct: CancellationToken.None));
+        Assert.Equal(FakeMakinoReader.Now, changes.GetProperty("serverTime").GetDateTime());
+        Assert.True(changes.GetProperty("lifeUpdatesLeftOut").GetBoolean());
+        Assert.Equal("length 101.234 → 101.250 mm", changes.GetProperty("changes")[0].GetProperty("changed")[0].GetString());
+
+        var alarms = Parse(await CellTools.GetToolAlarms(context, ct: CancellationToken.None));
+        Assert.Equal("tool life alarm", alarms.GetProperty("alarms")[0].GetProperty("alarms")[0].GetString());
+        Assert.False(alarms.TryGetProperty("capped", out var capped) && capped.GetBoolean());
+
+        var moves = Parse(await CellTools.GetToolMovements(context, ct: CancellationToken.None));
+        var move = moves.GetProperty("movements")[0];
+        Assert.Equal("out", move.GetProperty("action").GetString());
+        Assert.Equal("CRIB1 (tool crib)", move.GetProperty("to").GetString());
+    }
+
+    [Fact]
+    public async Task Unknown_tool_filter_lists_the_filters()
+    {
+        var error = ErrorOf(await CellTools.GetTools(Ready(new FakeMakinoReader()), filter: "broken", ct: CancellationToken.None));
+
+        Assert.DoesNotContain("Could not read the Makino cell database", error); // passed through as-is
+        Assert.Contains("near_end", error);
+        Assert.Contains("problems", error);
     }
 
     [Fact]

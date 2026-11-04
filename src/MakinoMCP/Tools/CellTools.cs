@@ -93,4 +93,75 @@ public static class CellTools
                  "the fixtures on it. Values whose meaning is not known are shown as \"code N\".")]
     public static Task<string> GetPallets(ToolContext context, CancellationToken ct) =>
         context.Database("get_pallets", (r, t) => r.GetPalletsAsync(t), ct);
+
+    private const string ToolParam = "Only this tool: an ITN (one physical tool) or FTN (a tool type) number. Leave empty for every tool.";
+
+    private const string DaysParam = "How many days back to look, from serverTime. Default 7.";
+
+    [McpServerTool(Name = "get_tools", ReadOnly = true, Idempotent = true, OpenWorld = false)]
+    [Description("Which tools need attention, and where is a tool? summary: every device's tool count by status " +
+                 "(ready, life warning, offset error, alarm, unknown), always over all tools. tools: the tools the filter " +
+                 "picks, most severe first: itn (the physical tool), ftn (its tool type), name (the FTN comment), kind, " +
+                 "location (machine and pot, or the tool crib / presetter), status, flags (alarm tool, prohibited, " +
+                 "absent), movingTo (during a tool in/out), and per cutter: status, alarms, life and measured length/" +
+                 "diameter (in lengthUnit, mm or inch as the cell keeps them). life: unit (min, count, m or inch), limit, " +
+                 "warnAtUsed, used, remaining " +
+                 "and usedPercent, already corrected for whether this cell counts life up or down (lifeDirectionAssumed: " +
+                 "true means the cell doesn't say and up was assumed); note \"not life-managed\" means the tool has no " +
+                 "life limit, so no percentage. Filters: problems (default: status life warning, offset error or alarm, " +
+                 "an alarm/absent/prohibited flag, or 90 % or more of its life used), near_end (80 % used or past its " +
+                 "warning), alarm, absent, all. Giving a tool number without a filter shows that tool whatever its state.")]
+    public static Task<string> GetTools(
+        ToolContext context,
+        [Description(DeviceParam)] string? device = null,
+        [Description("problems (default), near_end, alarm, absent or all.")] string? filter = null,
+        [Description(ToolParam)] int? tool = null,
+        CancellationToken ct = default) =>
+        context.Database("get_tools", (r, t) => r.GetToolsAsync(device, filter, tool, t), ct);
+
+    [McpServerTool(Name = "get_tool_changes", ReadOnly = true, Idempotent = true, OpenWorld = false)]
+    [Description("What changed in the tool data? Every change the cell recorded (presetter measurements, tool data " +
+                 "imports, manual edits, alarms set or cleared after machining), newest first: time, device (where the " +
+                 "tool was), itn, ftn, user, and only the values that changed (lengths in lengthUnit), e.g. " +
+                 "\"length 101.234 → 101.250 mm\", " +
+                 "\"status ready → alarm\", \"tool life alarm on\", \"life used 75.0 → 0.0 min (reset)\". By default the " +
+                 "routine life-count updates after each use are left out (lifeUpdatesLeftOut); includeLifeUpdates=true " +
+                 "shows them too. Default: the last 7 days, every device and tool.")]
+    public static Task<string> GetToolChanges(
+        ToolContext context,
+        [Description(DaysParam)] int days = 7,
+        [Description(DeviceParam)] string? device = null,
+        [Description(ToolParam)] int? tool = null,
+        [Description("true: also the routine life-count updates after each use (many rows). Default false.")] bool includeLifeUpdates = false,
+        CancellationToken ct = default) =>
+        context.Database("get_tool_changes", (r, t) => r.GetToolChangesAsync(days, device, tool, includeLifeUpdates, t), ct);
+
+    [McpServerTool(Name = "get_tool_alarms", ReadOnly = true, Idempotent = true, OpenWorld = false)]
+    [Description("Which tools alarmed lately (worn out, broken, …)? Newest first: time, device, pot, itn, ftn, alarms " +
+                 "(tool life alarm, broken tool, spindle load, …), the tool's life then, and its length/diameter (in " +
+                 "lengthUnit). source " +
+                 "says where they come from: the cell's tool alarm history, or, when this login can't read it, the tool " +
+                 "data changes in which an alarm bit turned on (no pot: see notAvailable). Default: the last 7 days, " +
+                 "every device and tool.")]
+    public static Task<string> GetToolAlarms(
+        ToolContext context,
+        [Description(DaysParam)] int days = 7,
+        [Description(DeviceParam)] string? device = null,
+        [Description(ToolParam)] int? tool = null,
+        CancellationToken ct = default) =>
+        context.Database("get_tool_alarms", (r, t) => r.GetToolAlarmsAsync(days, device, tool, t), ct);
+
+    [McpServerTool(Name = "get_tool_movements", ReadOnly = true, Idempotent = true, OpenWorld = false)]
+    [Description("Which tools were put into or taken out of the machines? Newest first: time, action (in: into a " +
+                 "machine, out: out of one), itn, ftn, name, from and to (device and pot), the tool's status and " +
+                 "usedPercent at the time, user and the reason given for taking it out. The cell logs only moves into " +
+                 "or out of a machine, not tool crib ↔ presetter. Default: the last 7 days, every device (either end) " +
+                 "and tool.")]
+    public static Task<string> GetToolMovements(
+        ToolContext context,
+        [Description(DaysParam)] int days = 7,
+        [Description(DeviceParam)] string? device = null,
+        [Description(ToolParam)] int? tool = null,
+        CancellationToken ct = default) =>
+        context.Database("get_tool_movements", (r, t) => r.GetToolMovementsAsync(days, device, tool, t), ct);
 }

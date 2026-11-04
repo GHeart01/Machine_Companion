@@ -100,7 +100,7 @@ public sealed class ToolContext
         var budget = DatabaseBudget;
         return Run(tool, budget, token => read(reader, token),
             () => $"the cell database didn't answer within {Seconds(budget)} seconds",
-            e => e is ArgumentException && IsUnknownDevice(e) ? e.Message : ErrorText.ForClaude(e, Login),
+            e => IsBadArgument(e) ? e.Message : ErrorText.ForClaude(e, Login),
             ct);
     }
 
@@ -153,10 +153,12 @@ public sealed class ToolContext
 
     private MakinoLogin Login => Settings.Settings?.Makino ?? new MakinoLogin("", "", false, "", "");
 
-    // The reader's "No device named 'X'. Devices on this cell: …" (any other ArgumentException, such as a bad
-    // connection string, goes through ErrorText, which scrubs it).
-    private static bool IsUnknownDevice(Exception e) =>
-        e.GetType() == typeof(ArgumentException) && e.Message.StartsWith("No device named ", StringComparison.Ordinal);
+    // The reader's "No device named 'X'. Devices on this cell: …" and "No filter named 'X'. Use one of: …" (any other
+    // ArgumentException, such as a bad connection string, goes through ErrorText, which scrubs it).
+    private static bool IsBadArgument(Exception e) =>
+        e.GetType() == typeof(ArgumentException)
+        && (e.Message.StartsWith("No device named ", StringComparison.Ordinal)
+            || e.Message.StartsWith("No filter named ", StringComparison.Ordinal));
 
     private static string Short(string message)
     {

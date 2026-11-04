@@ -9,7 +9,8 @@ public class StdioSpikeTests
     private static readonly string[] ToolNames =
     [
         "get_alarm_summary", "get_alarms", "get_cell_overview", "get_orders", "get_pallets", "get_recent_activity",
-        "get_utilization", "list_files", "list_shared_folders", "read_file", "search_files",
+        "get_tool_alarms", "get_tool_changes", "get_tool_movements", "get_tools", "get_utilization", "list_files",
+        "list_shared_folders", "read_file", "search_files",
     ];
 
     [Fact]
