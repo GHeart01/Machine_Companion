@@ -106,18 +106,18 @@ yet. `publish.ps1` replaces the launcher only when it changed, renaming the old 
 
 | Tool | What Claude gets |
 | --- | --- |
-| `get_cell_overview` | Every device: connected, emergency stop, mode, current action, pallets, open alarms, last activity. |
+| `get_cell_overview` | Every device: connected, emergency stop, status (down, idle, busy, manual, error), recovery request, mode, current action, pallets, open alarms, last activity. Machines add tool status, CNC run state, operator call, current job and program; the cart adds its transport from and to. `historyDays`: how long the cell keeps PMC alarms and results. |
 | `get_alarms` | Open and recent PMC and CNC alarms, newest first, with how long each was open. |
 | `get_alarm_summary` | Alarms grouped by device and number, most frequent first. |
 | `get_utilization` | Hours busy, idle, down, manual and in error per device and day; OEE where the cell keeps it. |
 | `get_recent_activity` | Machining, work-set and vehicle transport results, to spot gaps. |
-| `get_orders` | Queued and finished orders with part, status, quantity and due time. |
+| `get_orders` | Queued and finished orders with part, status, quantity, completed, scrap and remaining quantities, and due time. |
 | `get_pallets` | Each pallet's status, location and fixtures. |
 | `get_tools` | Which tools need attention and where a tool is: status per device, life used and remaining, measured length and diameter. |
-| `get_tool_changes` | What changed in the tool data (measurements, imports, edits, alarms), newest first; routine life-count updates only on request. |
+| `get_tool_changes` | What changed in the tool data (measurements, imports, edits, alarms), newest first; routine life-count updates and tools that only reached their life warning are counted, and listed only on request. |
 | `get_tool_alarms` | Which tools alarmed lately (worn out, broken, ...), with the tool's life and size then. |
 | `get_tool_movements` | Tools put into or taken out of the machines, with who and why. |
-| `get_part_routing` | How a part is made: processes, jobs, programs and fixtures, and whether the tools each program needs are on the machines. |
+| `get_part_routing` | How a part is made: processes, jobs, programs and fixtures, and whether the tools each program needs are on the machines. The tool check is approximate: main program only, subprograms not followed, remaining life not checked. |
 | `get_production` | Parts completed, scrapped and in process per order, plus per-day totals, counted the way the cell's own order screen counts. |
 | `get_attention` | One list of what waits on a person: recovery requests, errors, operator calls, damaged fixtures, tools in alarm; parked fixtures are counted. |
 | `list_shared_folders` | The folders you shared and whether each is reachable. |
@@ -132,25 +132,26 @@ yet. `publish.ps1` replaces the launcher only when it changed, renaming the old 
 - **Tool life** is shown as used, remaining and percent, already corrected for whether the cell counts life up or down;
   if the cell doesn't say, up is assumed and the result says so (`lifeDirectionAssumed`). Time-based life is stored in
   seconds and shown in minutes.
-- **Tool status is derived the way the System Console shows it:** a set alarm bit means alarm even if the stored status
-  still says ready.
-- **Compact by default.** Big lists (routine life updates, parked fixtures, idle orders) are counted, not listed;
-  `includeLifeUpdates`, `includeParked` or `includeIdle` lists them.
+- **Tool status:** an alarm flag beats a stored "ready" (and a life warning flag shows as life warning); otherwise it is
+  the stored status.
+- **Compact by default.** Big lists (routine life updates and steps to life warning, parked fixtures, idle orders) are
+  counted, not listed; `includeLifeUpdates`, `includeParked` or `includeIdle` lists them.
 - **Tables a login can't read.** Where the database login cannot read a table, MakinoMCP uses the vendor's view of it when
   there is one; otherwise the result names what is `notAvailable`.
 
 ## Make more of it
 
-- Share the cell PC's `C:\Makino\Log` folder read only and add it in the setup window. Claude can then read
-  `Exception.log`, `System.log`, `MachiningSchedule.log`, `RecoveryMaintenaceOperation.log` and the other logs next to
-  the alarms the database shows.
-- Also share the Makino install's `Message\<language>` folder (its `.ini` files). They hold the alarm cause and recovery
-  text, so Claude can explain an alarm number in words.
+- Share the cell PC's `C:\Makino\Log` folder read only and add it in the setup window. Claude can then read logs such
+  as `Exception.log` and `System.log` next to the alarms the database shows (other logs may live elsewhere on the PC).
+- Also share the Makino install's `Message\<language>` folder. Its `.ini` files hold the cause and recovery text of CNC
+  alarms, so Claude can explain a CNC alarm number in words. The alarm text of the other devices is in Access `.mdb`
+  files, which the text tools can't read.
 
 ## Limits
 
-- **History is short.** The cell keeps about the last 200 CNC alarms and, on a typical cell, about three months of PMC
-  alarms and daily production counts (`historyDays` in the overview says how long). Older events are not there to read.
+- **History is short.** `historyDays` in the overview says how many days the cell keeps PMC alarms and result history
+  (about three months on a typical cell). The cell keeps daily production counts for about three months. CNC alarms
+  are limited to about the last 200 regardless. Older events are not there to read.
 - Results are capped (500 rows and 256 KB per file read, unless you change `limits` in the settings file).
 - **Some numbers have no known meaning.** The meanings of some status numbers were worked out from the installed MAS-A5
   software, not from published documentation. A value without a known meaning appears as `code N`.

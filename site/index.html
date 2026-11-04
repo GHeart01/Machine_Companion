@@ -241,18 +241,18 @@ footer p { margin: 0 0 10px; max-width: 40rem; }
       <table class="tools">
         <thead><tr><th scope="col">Tool</th><th scope="col">What it gives Claude</th></tr></thead>
         <tbody>
-          <tr><td><code>get_cell_overview</code></td><td>Every device: connection, mode, current action, pallets, open alarms, last activity.</td></tr>
+          <tr><td><code>get_cell_overview</code></td><td>Every device: connection, emergency stop, status, recovery request, mode, current action, pallets, open alarms, last activity. Machines add tool status, CNC run state, operator call, current job and program; the cart adds where it is carrying a pallet from and to. <code>historyDays</code> says how long the cell keeps PMC alarms and results.</td></tr>
           <tr><td><code>get_alarms</code></td><td>Open and recent PMC and CNC alarms, newest first.</td></tr>
           <tr><td><code>get_alarm_summary</code></td><td>Alarms grouped by device and number, most frequent first.</td></tr>
           <tr><td><code>get_utilization</code></td><td>Busy, idle, down and error hours per device and day.</td></tr>
           <tr><td><code>get_recent_activity</code></td><td>Machining, work-set and transport results, to spot gaps.</td></tr>
-          <tr><td><code>get_orders</code></td><td>Queued and finished orders.</td></tr>
+          <tr><td><code>get_orders</code></td><td>Queued and finished orders, with completed, scrap and remaining quantities.</td></tr>
           <tr><td><code>get_pallets</code></td><td>Each pallet's status, location and fixtures.</td></tr>
           <tr><td><code>get_tools</code></td><td>Which tools need attention and where a tool is: status, life left, measured size.</td></tr>
-          <tr><td><code>get_tool_changes</code></td><td>What changed in the tool data, newest first.</td></tr>
+          <tr><td><code>get_tool_changes</code></td><td>What changed in the tool data, newest first. Routine life updates and tools that only reached their life warning are counted, and listed on request.</td></tr>
           <tr><td><code>get_tool_alarms</code></td><td>Which tools alarmed lately, with their life and size then.</td></tr>
           <tr><td><code>get_tool_movements</code></td><td>Tools put into or taken out of the machines, with who and why.</td></tr>
-          <tr><td><code>get_part_routing</code></td><td>How a part is made, and whether its tools are on the machines.</td></tr>
+          <tr><td><code>get_part_routing</code></td><td>How a part is made, and whether its tools are on the machines. The tool check is approximate: main program only, subprograms not followed, remaining life not checked.</td></tr>
           <tr><td><code>get_production</code></td><td>Parts completed, scrapped and in process per order and per day.</td></tr>
           <tr><td><code>get_attention</code></td><td>One list of what is waiting on a person right now.</td></tr>
           <tr><td><code>list_shared_folders</code></td><td>The folders you shared, and whether they are reachable.</td></tr>
@@ -269,7 +269,7 @@ footer p { margin: 0 0 10px; max-width: 40rem; }
           <h2 class="t" id="limits">Limits</h2>
           <div class="prose">
             <ul class="plain">
-              <li>History is short: the cell keeps about the last 200 CNC alarms and, on a typical cell, about three months of PMC alarms.</li>
+              <li>History is short: <code>historyDays</code> in the overview says how many days the cell keeps PMC alarms and results (about three months on a typical cell), daily production counts are kept about three months, and CNC alarms are limited to about the last 200 regardless.</li>
               <li>Tool lengths are in the cell's own unit (inch on some cells); each result says which.</li>
               <li>Results are capped at 500 rows, and file reads at 256 KB, unless you change the limits in the settings file.</li>
             </ul>
