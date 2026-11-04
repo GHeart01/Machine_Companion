@@ -495,6 +495,22 @@ public static class Codes
         [5] = "cancelled",
     };
 
+    // WorkSetJobs.OperationType (WorkSetOperation): what a work-set job of a routing does.
+    private static readonly Dictionary<int, string> WorkSetJobOperations = new()
+    {
+        [0] = "load",
+        [1] = "unload",
+        [2] = "other",
+    };
+
+    // MachineJobs.OperatorCall (OperatorCallType): whether a machining job stops for the operator.
+    private static readonly Dictionary<int, string> JobOperatorCalls = new()
+    {
+        [0] = "none",
+        [1] = "permanent",
+        [2] = "one-shot",
+    };
+
     // InformationFiles.InfoType (InformationFileType).
     private static readonly Dictionary<int, string> InfoFileTypes = new()
     {
@@ -570,6 +586,10 @@ public static class Codes
     public static string ManualTransportStatus(int? value) => Lookup(value, ManualTransportStatuses);
 
     public static string InfoFileType(int? value) => Lookup(value, InfoFileTypes);
+
+    public static string WorkSetJobOperation(int? value) => Lookup(value, WorkSetJobOperations);
+
+    public static string JobOperatorCall(int? value) => Lookup(value, JobOperatorCalls);
 
     private static string Lookup(int? value, IReadOnlyDictionary<int, string> map)
     {

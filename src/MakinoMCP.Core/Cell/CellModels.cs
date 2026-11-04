@@ -126,8 +126,16 @@ public sealed record ActivityItem(
     string Detail,
     string? Result);
 
-public sealed record OrderList(DateTime ServerTime, bool Capped, IReadOnlyList<OrderInfo> Orders);
+public sealed record OrderList(DateTime ServerTime, bool Capped, IReadOnlyList<OrderInfo> Orders)
+{
+    /// <summary>What this cell (or login) can't show: the quantities when neither the cell's quantity table nor its
+    /// order view is readable.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? NotAvailable { get; init; }
+}
 
+/// <summary>Quantity is the order's required quantity; Completed the time it completed. CompletedQty: good parts out
+/// of the last process; ScrapQty: scrapped in any process; RemainingQty: not started yet (first process).</summary>
 public sealed record OrderInfo(
     string Name,
     string Part,
@@ -135,7 +143,17 @@ public sealed record OrderInfo(
     int Quantity,
     bool Suspended,
     DateTime? Due,
-    DateTime? Completed);
+    DateTime? Completed)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? CompletedQty { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ScrapQty { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? RemainingQty { get; init; }
+}
 
 public sealed record PalletList(DateTime ServerTime, bool Capped, IReadOnlyList<PalletInfo> Pallets);
 
@@ -322,4 +340,194 @@ public sealed record ToolMovement(DateTime Time, string Action, int Itn, int? Ft
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Reason { get; init; }
+}
+
+// 0.2: routing, production and attention. Optional fields are left out of the JSON when null.
+
+/// <summary>A part's routing, or the candidates when the name matched several parts (then Part is null; ask again
+/// with the exact name, and the revision when names repeat). OtherMatches names other parts whose names contain the
+/// query (an exact name wins over them; parts split per operation are separate parts). ToolCheck says how far the
+/// tool check goes; NotAvailable names what this cell or login can't show.</summary>
+public sealed record PartRouting(DateTime ServerTime, string Query, bool Capped)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PartRoute? Part { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<PartCandidate>? Candidates { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? OtherMatches { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Note { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ToolCheck { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? NotAvailable { get; init; }
+}
+
+public sealed record PartCandidate(string Name, int Processes)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Revision { get; init; }
+}
+
+/// <summary>Status is the most severe of its processes' statuses (ready, suspended, cancelled).</summary>
+public sealed record PartRoute(string Name, string Status, IReadOnlyList<ProcessRoute> Processes)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Revision { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Comment { get; init; }
+}
+
+/// <summary>One process (route step), in order. MaxFixtures: how many fixtures may work on it at once (left out when
+/// unlimited). Fixtures: where it can be clamped, as "pallet 12 fixture 1", in the cell's priority order.</summary>
+public sealed record ProcessRoute(int Number, string Status, IReadOnlyList<OperationRoute> Operations, IReadOnlyList<JobRoute> Jobs)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Name { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MaxFixtures { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? Fixtures { get; init; }
+}
+
+/// <summary>ClampQuantity: parts clamped per fixture for this operation.</summary>
+public sealed record OperationRoute(int Sequence, int ClampQuantity)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Name { get; init; }
+}
+
+/// <summary>One job of a process, in order: work setting (WorkSet load or unload, InfoFile the work instructions),
+/// machining (Program, OperatorCall when the job stops for the operator, Tools), … Minutes: the planned machining or
+/// work-set time. FeasibleDevices: where it may run.</summary>
+public sealed record JobRoute(int Number, string Type)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Program { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? WorkSet { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? InfoFile { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? Minutes { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? OperatorCall { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? FeasibleDevices { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<ProgramTool>? Tools { get; init; }
+}
+
+/// <summary>A tool type (FTN) the machining program needs, Needed of them. Ptn only when the program calls it by
+/// another number. Cutting: how much life one run uses ("12.5 min", "40 count"). Usable: per feasible machine, the
+/// tools of this type there in status ready or life warning; MissingOn: the machines with fewer than Needed.</summary>
+public sealed record ProgramTool(int Ftn, int Needed)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Ptn { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Name { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Cutting { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyDictionary<string, int>? Usable { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? MissingOn { get; init; }
+}
+
+/// <summary>Days: the window of the daily counts (today counts as one).</summary>
+public sealed record ProductionList(DateTime ServerTime, bool Capped, int Days, IReadOnlyList<OrderProduction> Orders)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? NotAvailable { get; init; }
+}
+
+/// <summary>One order's counts, as the cell's own order screen counts them. Quantity: required. CompletedQty: good
+/// parts out of the last process; ScrapQty: scrapped in any process; RemainingQty: not started (first process);
+/// InProcessQty: started, not finished (ClampedQty clamped on fixtures now, plus parts waiting between processes).
+/// CompletedInWindow/ScrapInWindow and Daily: per production day in the window (days without any left out).</summary>
+public sealed record OrderProduction(string Name, string Part, string Status, int Quantity)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? CompletedQty { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ScrapQty { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? RemainingQty { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? InProcessQty { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ClampedQty { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? CompletedInWindow { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ScrapInWindow { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<DailyQty>? Daily { get; init; }
+}
+
+public sealed record DailyQty(DateOnly Date, int Completed, int Scrap);
+
+/// <summary>What waits on a person, most severe first. Counts: how many of each condition the cell has (devices,
+/// fixtures, tools, …), even past the row cap. MachineToolStatus: each machine's tool status for its upcoming work, as
+/// context only (a busy machine often reads "lacking tools" while a later job waits for a tool; the fixtures lacking
+/// tools are items). NotAvailable: sections this cell or login can't show.</summary>
+public sealed record AttentionList(
+    DateTime ServerTime, bool Capped, IReadOnlyDictionary<string, int> Counts, IReadOnlyList<AttentionItem> Items,
+    IReadOnlyList<string> NotAvailable)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyDictionary<string, string>? MachineToolStatus { get; init; }
+}
+
+/// <summary>Kind: device, work set, manual transport, fixture, tools or maintenance. What: its conditions, joined.
+/// Since only where the cell records when it started.</summary>
+public sealed record AttentionItem(string Kind, string What)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Device { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Pallet { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Fixture { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Order { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Process { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Detail { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTime? Since { get; init; }
 }

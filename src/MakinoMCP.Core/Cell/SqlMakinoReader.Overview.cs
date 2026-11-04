@@ -212,6 +212,7 @@ public sealed partial class SqlMakinoReader
             Opt(schema, table, "s", "RunJob"),
             Opt(schema, table, "s", "MainONumber"),
             Opt(schema, table, "s", "ExecONumber"),
+            Opt(schema, table, "s", "TotalCycleCount"),
         };
         foreach (var spot in spots)
         {
@@ -285,7 +286,8 @@ public sealed partial class SqlMakinoReader
                 Opt(schema, t, "v", "FromDeviceName", type: Text),
                 Opt(schema, t, "v", "ToDeviceName", type: Text),
                 Buffer(1), Opt(schema, t, "v", "Buffer1Status"),
-                Buffer(2), Opt(schema, t, "v", "Buffer2Status"));
+                Buffer(2), Opt(schema, t, "v", "Buffer2Status"),
+                Opt(schema, t, "v", "TotalCycleCount"));
             return $"SELECT {cols} FROM VehicleStatus v;";
         }
         if (schema.HasTable("ViewVehicleStatus"))
@@ -304,7 +306,8 @@ public sealed partial class SqlMakinoReader
                 Opt(schema, t, "v", "FromDevice", "FromDeviceName", Text),
                 Opt(schema, t, "v", "ToDevice", "ToDeviceName", Text),
                 Opt(schema, t, "v", "PalletNumber", "Buffer1PalletNumber"), "CAST(NULL AS int) AS Buffer1Status",
-                Opt(schema, t, "v", "PalletNumber2", "Buffer2PalletNumber"), "CAST(NULL AS int) AS Buffer2Status");
+                Opt(schema, t, "v", "PalletNumber2", "Buffer2PalletNumber"), "CAST(NULL AS int) AS Buffer2Status",
+                Opt(schema, t, "v", "TotalCycleCount"));
             return $"SELECT {cols} FROM ViewVehicleStatus v;";
         }
         return null;
@@ -313,20 +316,10 @@ public sealed partial class SqlMakinoReader
     private static async Task<Dictionary<int, VehicleRow>> ReadVehiclesAsync(
         SqlDataReader r, IReadOnlyList<DeviceRow> devices, CancellationToken ct)
     {
-        var vehicles = devices.Where(d => d.Type == VehicleType).ToList();
         var rows = new Dictionary<int, VehicleRow>();
         while (await r.ReadAsync(ct))
         {
-            // The view names the vehicle by number (and name) instead of id.
-            var id = Int(r, "DeviceID");
-            if (id is null)
-            {
-                var number = Int(r, "DeviceNumber");
-                var name = Str(r, "DeviceName");
-                id = (vehicles.FirstOrDefault(d => number is not null && d.Number == number)
-                      ?? vehicles.FirstOrDefault(d => name.Length > 0 && string.Equals(d.Name, name, StringComparison.OrdinalIgnoreCase)))?.Id;
-                if (id is null) continue;
-            }
+            if (VehicleIdOf(r, devices) is not { } id) continue;
             var pallets = new List<PalletSpot>();
             for (var n = 1; n <= 2; n++)
             {
@@ -334,11 +327,23 @@ public sealed partial class SqlMakinoReader
                 if (pallet is not > 0) continue;
                 pallets.Add(new PalletSpot($"buffer {n}", pallet, CodeText(Int(r, $"Buffer{n}Status"))));
             }
-            rows[id.Value] = new VehicleRow(
+            rows[id] = new VehicleRow(
                 Bool(r, "Connected"), Bool(r, "Emergency"), Int(r, "VHCMode"), Int(r, "Status"), Bool(r, "Recovery"),
                 Int(r, "CommandType"), Str(r, "FromDeviceName"), Str(r, "ToDeviceName"), pallets);
         }
         return rows;
+    }
+
+    /// <summary>The vehicle a row of <see cref="VehicleSql"/> is about: its DeviceID, or (the vendor view names the
+    /// vehicle by number and name instead) the vehicle device with that number, else that name; null when none fits.</summary>
+    private static int? VehicleIdOf(SqlDataReader r, IReadOnlyList<DeviceRow> devices)
+    {
+        if (Int(r, "DeviceID") is { } id) return id;
+        var vehicles = devices.Where(d => d.Type == VehicleType).ToList();
+        var number = Int(r, "DeviceNumber");
+        var name = Str(r, "DeviceName");
+        return (vehicles.FirstOrDefault(d => number is not null && d.Number == number)
+                ?? vehicles.FirstOrDefault(d => name.Length > 0 && string.Equals(d.Name, name, StringComparison.OrdinalIgnoreCase)))?.Id;
     }
 
     /// <summary>How long the cell keeps its history (days); null when SystemParameters or its columns are missing.</summary>

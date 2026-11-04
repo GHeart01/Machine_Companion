@@ -185,4 +185,106 @@ public class LiveReaderTests
         Assert.All(moves.Movements, m => Assert.Contains(m.Action, new[] { "in", "out" }));
         Assert.All(moves.Movements, m => Assert.True(m.Time >= moves.ServerTime.AddDays(-30).AddMinutes(-1)));
     }
+
+    [SkippableFact]
+    public async Task Live_part_routing_finds_candidates_then_one_part()
+    {
+        var ct = CancellationToken.None;
+        PartRouting? several = null;
+        foreach (var text in new[] { "-", "0", "1", "A", "E" })
+        {
+            several = await Reader().GetPartRoutingAsync(text, null, false, ct);
+            if (several.Candidates is { Count: > 1 }) break;
+        }
+        Skip.If(several?.Candidates is not { Count: > 1 }, "no text matched several parts");
+        Assert.Null(several!.Part); // several matches: candidates only, never a silent pick
+        Assert.All(several.Candidates!, c => Assert.True(c.Processes >= 0));
+
+        var pick = several.Candidates![0];
+        var one = await Reader().GetPartRoutingAsync(pick.Name, pick.Revision, true, ct);
+        Assert.NotNull(one.Part);
+        Assert.Equal(pick.Name, one.Part.Name, ignoreCase: true);
+        Assert.Equal(one.Part.Processes.Select(p => p.Number).Order(), one.Part.Processes.Select(p => p.Number));
+        Assert.All(one.Part.Processes, p => Assert.Equal(p.Jobs.Select(j => j.Number).Order(), p.Jobs.Select(j => j.Number)));
+        Assert.StartsWith("approximate", one.ToolCheck);
+        foreach (var tool in one.Part.Processes.SelectMany(p => p.Jobs).SelectMany(j => j.Tools ?? []))
+        {
+            Assert.True(tool.Needed >= 1);
+            if (tool.Usable is null) continue;
+            Assert.All(tool.MissingOn ?? [], m => Assert.True(tool.Usable[m] < tool.Needed));
+            Assert.All(tool.Usable.Where(u => u.Value < tool.Needed), u => Assert.Contains(u.Key, tool.MissingOn ?? []));
+        }
+
+        var none = await Reader().GetPartRoutingAsync("no-such-part-xyz-0000", null, true, ct);
+        Assert.Null(none.Part);
+        Assert.Empty(none.Candidates!);
+        await Assert.ThrowsAsync<ArgumentException>(() => Reader().GetPartRoutingAsync(" ", null, true, ct));
+    }
+
+    [SkippableFact]
+    public async Task Live_production_agrees_with_orders_and_stays_in_its_window()
+    {
+        var ct = CancellationToken.None;
+        var production = await Reader(100000).GetProductionAsync(7, null, null, ct);
+        var orders = await Reader(100000).GetOrdersAsync(true, ct);
+
+        Assert.Equal(orders.Orders.Count, production.Orders.Count); // the same active orders
+        var byName = orders.Orders.GroupBy(o => o.Name).ToDictionary(g => g.Key, g => g.First());
+        foreach (var o in production.Orders)
+        {
+            var other = byName[o.Name];
+            Assert.Equal(other.CompletedQty, o.CompletedQty);
+            Assert.Equal(other.ScrapQty, o.ScrapQty);
+            Assert.Equal(other.RemainingQty, o.RemainingQty);
+            Assert.True(o.InProcessQty is null || o.ClampedQty is null || o.InProcessQty >= o.ClampedQty);
+            var daily = o.Daily ?? [];
+            var from = DateOnly.FromDateTime(production.ServerTime).AddDays(-6);
+            Assert.All(daily, d => Assert.True(d.Date >= from));
+            Assert.Equal(daily.OrderByDescending(d => d.Date).Select(d => d.Date), daily.Select(d => d.Date));
+            if (!production.Capped) Assert.Equal(o.CompletedInWindow ?? 0, daily.Sum(d => d.Completed));
+        }
+
+        Skip.If(production.Orders.Count < 2, "fewer than two active orders");
+        var named = await Reader().GetProductionAsync(30, production.Orders[0].Name, null, ct);
+        Assert.Contains(named.Orders, o => o.Name == production.Orders[0].Name);
+        var capped = await Reader(1).GetProductionAsync(7, null, null, ct);
+        Assert.True(capped.Capped);
+        Assert.Single(capped.Orders);
+    }
+
+    [SkippableFact]
+    public async Task Live_attention_is_ordered_counted_and_capped()
+    {
+        var ct = CancellationToken.None;
+        var overview = await Reader().GetOverviewAsync(ct);
+        var list = await Reader(100000).GetAttentionAsync(ct);
+
+        string[] kinds = ["device", "work set", "manual transport", "fixture", "tools", "maintenance"];
+        Assert.All(list.Items, i => Assert.Contains(i.Kind, kinds));
+        Assert.All(list.Items, i => Assert.False(string.IsNullOrWhiteSpace(i.What)));
+        Assert.All(list.Items.Where(i => i.Device is not null), i => Assert.Contains(overview.Devices, d => d.Name == i.Device));
+        Assert.All(list.Counts.Values, n => Assert.True(n > 0));
+        Assert.All(list.MachineToolStatus ?? new Dictionary<string, string>(),
+            m => Assert.Contains(overview.Devices, d => d.Name == m.Key && d.Type == "machine"));
+        // A machine's "lacking tools" is context, never an item of its own.
+        Assert.DoesNotContain(list.Items, i => i.Kind == "device" && i.What.Contains("lacking", StringComparison.Ordinal));
+        if (!list.Capped)
+        {
+            Assert.Equal(list.Counts.GetValueOrDefault("machining suspended"),
+                list.Items.Count(i => i.Kind == "fixture" && i.What.Contains("machining suspended", StringComparison.Ordinal)));
+        }
+        // Parked fixtures (only suspended or on hold) come after everything else.
+        var firstParked = list.Items.ToList().FindIndex(i => i.Kind == "fixture" && IsParked(i.What));
+        if (firstParked >= 0) Assert.All(list.Items.Skip(firstParked), i => Assert.True(i.Kind == "fixture" && IsParked(i.What)));
+
+        Skip.If(list.Items.Count < 4, "fewer than four things need attention");
+        var capped = await Reader(3).GetAttentionAsync(ct);
+        Assert.True(capped.Capped);
+        Assert.Equal(list.Items.Take(3).Select(i => (i.Kind, i.What)), capped.Items.Select(i => (i.Kind, i.What)));
+        Assert.Equal(list.Counts, capped.Counts);
+    }
+
+    private static bool IsParked(string what) =>
+        what.Split(", ").All(w => w is "machining suspended" or "work-set hold" or "lacking tools")
+        && (what.Contains("machining suspended", StringComparison.Ordinal) || what.Contains("work-set hold", StringComparison.Ordinal));
 }

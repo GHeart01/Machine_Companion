@@ -24,16 +24,24 @@ public sealed partial class SqlMakinoReader
                 Int(r, "Quantity") ?? 0,
                 Int(r, "MachiningSuspended") is > 0,
                 Date(r, "DueDate"),
-                Date(r, "CompleteDate")));
+                Date(r, "CompleteDate"))
+            {
+                CompletedQty = Int(r, "CompletedQty"), ScrapQty = Int(r, "ScrapQty"), RemainingQty = Int(r, "RemainingQty"),
+            });
         }
         var (orders, capped) = Cap(rows);
-        return new OrderList(s.Now, capped, orders);
+        return new OrderList(s.Now, capped, orders)
+        {
+            NotAvailable = OrderQuantityColumns(s.Schema, inProcess: false) is null ? [QuantitiesNotAvailable] : null,
+        };
     }
 
-    /// <summary>Orders with their part, latest due first. Without a Status column activeOnly can't filter.</summary>
+    /// <summary>Orders with their part and quantities (the same as get_production's), latest due first. Without a
+    /// Status column activeOnly can't filter.</summary>
     internal static string OrdersSql(SchemaInfo schema, bool activeOnly)
     {
-        var cols = string.Join(", ",
+        List<string> cols =
+        [
             Opt(schema, "Orders", "o", "OrderName", type: Text),
             Opt(schema, "Parts", "pa", "PartName", type: Text),
             Opt(schema, "Parts", "pa", "Revision", type: Text),
@@ -41,11 +49,13 @@ public sealed partial class SqlMakinoReader
             Opt(schema, "Orders", "o", "Quantity"),
             Opt(schema, "Orders", "o", "MachiningSuspended"),
             Opt(schema, "Orders", "o", "DueDate", type: "datetime"),
-            Opt(schema, "Orders", "o", "CompleteDate", type: "datetime"));
+            Opt(schema, "Orders", "o", "CompleteDate", type: "datetime"),
+            .. OrderQuantityColumns(schema, inProcess: false) ?? NoQuantityColumns(inProcess: false),
+        ];
         var where = activeOnly && schema.Has("Orders", "Status") ? $"WHERE o.Status NOT IN ({FinishedOrderStatuses})" : "";
         var order = schema.Has("Orders", "DueDate") ? "o.DueDate DESC, o.OrderID DESC" : "o.OrderID DESC";
         return $"""
-            SELECT TOP (@take) {cols}
+            SELECT TOP (@take) {string.Join(", ", cols)}
             FROM Orders o LEFT JOIN Parts pa ON pa.PartID = o.PartID
             {where}
             ORDER BY {order};

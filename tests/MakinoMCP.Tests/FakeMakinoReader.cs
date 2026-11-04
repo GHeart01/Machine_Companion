@@ -70,7 +70,10 @@ internal sealed class FakeMakinoReader : IMakinoReader
     public Task<OrderList> GetOrdersAsync(bool activeOnly, CancellationToken ct) =>
         Answer(() => new OrderList(Now, false,
         [
-            new OrderInfo("ORDER-001", "CONTOSO-BRACKET", "in progress", 10, false, Now.AddDays(1), null),
+            new OrderInfo("ORDER-001", "CONTOSO-BRACKET", "in progress", 10, false, Now.AddDays(1), null)
+            {
+                CompletedQty = 40, ScrapQty = 2, RemainingQty = 57,
+            },
         ]), ct);
 
     public Task<PalletList> GetPalletsAsync(CancellationToken ct) =>
@@ -117,6 +120,63 @@ internal sealed class FakeMakinoReader : IMakinoReader
                 Name = "CONTOSO 6MM DRILL", UsedPercent = 40,
             },
         ]), ct, device);
+
+    public Task<PartRouting> GetPartRoutingAsync(string part, string? revision, bool includeTools, CancellationToken ct) =>
+        Answer(() =>
+        {
+            if (string.IsNullOrWhiteSpace(part)) throw new ArgumentException(SqlMakinoReader.NoPartGiven);
+            if (part == "CONTOSO")
+            {
+                return new PartRouting(Now, part, false)
+                {
+                    Candidates = [new PartCandidate("CONTOSO-BRACKET-OP1", 1), new PartCandidate("CONTOSO-BRACKET-OP2", 1)],
+                    Note = SqlMakinoReader.SeveralPartsNote,
+                };
+            }
+            var tool = new ProgramTool(501, 1)
+            {
+                Name = "CONTOSO 12MM END MILL", Cutting = "12.5 min",
+                Usable = new Dictionary<string, int> { ["MC1"] = 2, ["MC2"] = 0 }, MissingOn = ["MC2"],
+            };
+            return new PartRouting(Now, part, false)
+            {
+                Part = new PartRoute("CONTOSO-BRACKET", "ready",
+                [
+                    new ProcessRoute(1, "ready", [new OperationRoute(1, 1)],
+                    [
+                        new JobRoute(1, "work setting") { WorkSet = "load", FeasibleDevices = ["WSS1"] },
+                        new JobRoute(2, "machining")
+                        {
+                            Program = "CONTOSO-BRACKET-OP1", Minutes = 42.5, FeasibleDevices = ["MC1", "MC2"], Tools = [tool],
+                        },
+                    ])
+                    {
+                        Fixtures = ["pallet 7 fixture 1"],
+                    },
+                ]),
+                ToolCheck = SqlMakinoReader.ToolCheckNote,
+            };
+        }, ct);
+
+    public Task<ProductionList> GetProductionAsync(int days, string? order, string? part, CancellationToken ct) =>
+        Answer(() => new ProductionList(Now, false, days,
+        [
+            new OrderProduction("ORDER-001", "CONTOSO-BRACKET", "active", 100)
+            {
+                CompletedQty = 40, ScrapQty = 2, RemainingQty = 57, InProcessQty = 1, ClampedQty = 1, CompletedInWindow = 6,
+                ScrapInWindow = 0, Daily = [new DailyQty(new DateOnly(2026, 11, 1), 6, 0)],
+            },
+        ]), ct);
+
+    public Task<AttentionList> GetAttentionAsync(CancellationToken ct) =>
+        Answer(() => new AttentionList(Now, false, new Dictionary<string, int> { ["recovery request"] = 1, ["machining suspended"] = 1 },
+        [
+            new AttentionItem("device", "recovery request") { Device = "WSS1" },
+            new AttentionItem("fixture", "machining suspended") { Pallet = 7, Fixture = 1, Detail = "waiting for material" },
+        ], [])
+        {
+            MachineToolStatus = new Dictionary<string, string> { ["MC1"] = "lacking tools" },
+        }, ct);
 
     public Task<LoginRightsInfo> GetLoginRightsAsync(CancellationToken ct) =>
         Answer(() => new LoginRightsInfo(CanWrite, Devices.Count, CanWrite ? "can write" : "read only"), ct);

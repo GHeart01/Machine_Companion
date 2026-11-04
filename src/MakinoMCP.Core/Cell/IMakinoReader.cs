@@ -39,5 +39,17 @@ public interface IMakinoReader
     /// <summary>Tools put into or taken out of a machine in the last <paramref name="days"/>, newest first.</summary>
     Task<ToolMovementList> GetToolMovementsAsync(int days, string? device, int? tool, CancellationToken ct);
 
+    /// <summary>A part's routing: the part named exactly <paramref name="part"/> (case-insensitive; also the
+    /// <paramref name="revision"/> when given), else the one part whose name contains it; several → candidates and no
+    /// routing. An empty part name throws ArgumentException.</summary>
+    Task<PartRouting> GetPartRoutingAsync(string part, string? revision, bool includeTools, CancellationToken ct);
+
+    /// <summary>Quantities per order (active orders, or the ones named by <paramref name="order"/> / <paramref name="part"/>
+    /// whatever their status), with the completed and scrap counts per day of the last <paramref name="days"/>.</summary>
+    Task<ProductionList> GetProductionAsync(int days, string? order, string? part, CancellationToken ct);
+
+    /// <summary>Everything that waits on a person right now, most severe first.</summary>
+    Task<AttentionList> GetAttentionAsync(CancellationToken ct);
+
     Task<LoginRightsInfo> GetLoginRightsAsync(CancellationToken ct);
 }

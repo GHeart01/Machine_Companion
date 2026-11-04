@@ -25,6 +25,8 @@ public sealed class SchemaInfo
         "Processes", "Operations", "Jobs", "MachineJobs", "WorkSetJobs", "JobFeasibleDevices", "FixtureProcesses",
         "NCProgramFiles", "InformationFiles", "Quantities", "FixtureQuantity", "FixtureRun", "OrderCompletedQtyResults",
         "WorkSetCommand", "ManualTransport",
+        // The vendor's views of the order quantities, for a login that can't read the tables behind them.
+        "ViewOrders", "ViewDayOrderCompletedQty",
     ];
 
     /// <summary>How long one synonym probe's command may run.</summary>
