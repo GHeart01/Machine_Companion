@@ -182,6 +182,11 @@ public class RoutingReaderTests
         var (none, noMachines) = SqlMakinoReader.Availability(501, 1, [], new Dictionary<(int, int), int>());
         Assert.Null(none);
         Assert.Null(noMachines);
+
+        // The cell counts a tool missing only when fewer usable ones than ToolCount sit there; ToolCount 0 never is.
+        var (counted, neverMissing) = SqlMakinoReader.Availability(501, 0, [(1, "MC1")], new Dictionary<(int, int), int>());
+        Assert.Equal(0, counted!["MC1"]);
+        Assert.Null(neverMissing);
     }
 
     [Fact]

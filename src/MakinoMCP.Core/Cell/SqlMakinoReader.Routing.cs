@@ -16,7 +16,7 @@ public sealed partial class SqlMakinoReader
 
     public const string ToolCheckNote =
         "approximate: main program only, subprograms not followed; usable = tools of that type on the machine in status " +
-        "ready or life warning, remaining life not checked";
+        "ready or life warning (as get_tools shows it), remaining life not checked";
 
     /// <summary>A part the search found: name, revision ("" when blank) and how many processes it has.</summary>
     internal sealed record PartMatch(int Id, string Name, string Revision, int ProcessCount);
@@ -58,11 +58,13 @@ public sealed partial class SqlMakinoReader
             };
         }
 
+        // The search's cap only matters for candidates; a picked part's routing is capped only by its own tool rows.
+        capped = false;
         var (route, programs) = await ReadRouteAsync(s, chosen, notAvailable, ct);
         if (includeTools)
         {
             var (withTools, toolsCapped) = await AddToolsAsync(s, chosen.Id, route, programs, notAvailable, ct);
-            (route, capped) = (withTools, capped || toolsCapped);
+            (route, capped) = (withTools, toolsCapped);
         }
         return new PartRouting(s.Now, wanted, capped)
         {
@@ -405,7 +407,7 @@ public sealed partial class SqlMakinoReader
             while (await r.ReadAsync(ct))
             {
                 rows.Add((Int(r, "NCProgramFileID") ?? 0, Int(r, "FTN") ?? 0, Int(r, "ProgramToolNumber"),
-                    Math.Max(1, Int(r, "ToolCount") ?? 1),
+                    Int(r, "ToolCount") ?? 0, // the cell's own rule: missing when usable < ToolCount
                     CuttingUse(Int(r, "ToolLifeType"), Int(r, "CuttingTime"), Int(r, "CuttingDistance"), Int(r, "CuttingCount"),
                         settings.LengthUnit),
                     Str(r, "FTNComment")));
@@ -419,7 +421,7 @@ public sealed partial class SqlMakinoReader
         Dictionary<(int DeviceId, int Ftn), int>? counts = null;
         if (rows.Count > 0)
         {
-            if (s.Schema.HasTable(Itd) && s.Schema.HasTable(Ftd) && s.Schema.HasTable(Loc))
+            if (s.Schema.HasTable(Itd) && s.Schema.HasTable(Itc) && s.Schema.HasTable(Ftd) && s.Schema.HasTable(Loc))
                 counts = await UsableToolCountsAsync(s, rows.Select(t => t.Ftn).ToList(), ct);
             if (counts is null) notAvailable.Add("usable tools per machine");
         }

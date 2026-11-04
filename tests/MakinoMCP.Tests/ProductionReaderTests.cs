@@ -29,7 +29,7 @@ public class ProductionReaderTests
     [Fact]
     public void Completed_is_the_last_process_good_count_scrap_the_sum_remaining_the_first_process()
     {
-        var cols = string.Join("\n", SqlMakinoReader.OrderQuantityColumns(SchemaWithout(), inProcess: false)!);
+        var cols = string.Join("\n", SqlMakinoReader.OrderQuantityColumns(SchemaWithout(), inProcess: false)!.Columns);
 
         // Completed: good parts of the part's highest-numbered process (summed over material groups).
         Assert.Contains("SUM(q.NormalQuantity)", cols);
@@ -46,14 +46,14 @@ public class ProductionReaderTests
     [Fact]
     public void In_process_is_parts_clamped_for_the_order_plus_those_waiting_between_processes()
     {
-        var cols = string.Join("\n", SqlMakinoReader.OrderQuantityColumns(SchemaWithout(), inProcess: true)!);
+        var cols = string.Join("\n", SqlMakinoReader.OrderQuantityColumns(SchemaWithout(), inProcess: true)!.Columns);
 
         Assert.Contains("SUM(fq.ClampedQuantity) FROM FixtureQuantity fq JOIN FixtureRun fr ON fr.PalletFixtureID = fq.PalletFixtureID WHERE fr.CurOrderID = o.OrderID", cols);
         Assert.Contains("pr.ProcessNumber > (SELECT MIN(p2.ProcessNumber)", cols);
         Assert.Contains("AS ClampedQty", cols);
         Assert.Contains("AS InProcessQty", cols);
 
-        var noFixtures = string.Join("\n", SqlMakinoReader.OrderQuantityColumns(SchemaWithout("FixtureRun"), inProcess: true)!);
+        var noFixtures = string.Join("\n", SqlMakinoReader.OrderQuantityColumns(SchemaWithout("FixtureRun"), inProcess: true)!.Columns);
         Assert.Contains("CAST(NULL AS int) AS InProcessQty", noFixtures);
         Assert.Contains("CAST(NULL AS int) AS ClampedQty", noFixtures);
     }
@@ -61,7 +61,7 @@ public class ProductionReaderTests
     [Fact]
     public void Without_quantities_the_vendor_order_view_gives_them_and_without_both_there_are_none()
     {
-        var view = string.Join("\n", SqlMakinoReader.OrderQuantityColumns(SchemaWithout("Quantities"), inProcess: true)!);
+        var view = string.Join("\n", SqlMakinoReader.OrderQuantityColumns(SchemaWithout("Quantities"), inProcess: true)!.Columns);
         Assert.Contains("(SELECT TOP 1 v.NormalQty FROM ViewOrders v WHERE v.OrderName = o.OrderName) AS CompletedQty", view);
         Assert.Contains("v.InProcQty", view);
         Assert.Contains("CAST(NULL AS int) AS ClampedQty", view);
@@ -118,6 +118,38 @@ public class ProductionReaderTests
 
         // Named orders are listed whatever their activity.
         Assert.Contains("CAST(NULL AS int) AS OtherActiveOrders", SqlMakinoReader.ProductionSql(SchemaWithout(), true, false, false));
+    }
+
+    [Fact]
+    public void Missing_quantity_columns_are_named_not_silently_null()
+    {
+        Assert.Empty(SqlMakinoReader.OrderQuantityColumns(SchemaWithout(), inProcess: true)!.Missing);
+
+        var old = SqlMakinoReader.OrderQuantityColumns(SchemaWithout("Quantities.NormalQuantity", "Quantities.ScrapQuantity"), inProcess: false)!;
+        Assert.Equal(["completed quantity", "scrap quantity"], old.Missing);
+
+        var noFixtures = SqlMakinoReader.OrderQuantityColumns(SchemaWithout("FixtureRun"), inProcess: true)!;
+        Assert.Equal(["parts in process"], noFixtures.Missing);
+
+        var view = SqlMakinoReader.OrderQuantityColumns(SchemaWithout("Quantities"), inProcess: true)!;
+        Assert.Equal(["parts clamped on fixtures (in process includes them)"], view.Missing);
+    }
+
+    [Fact]
+    public void By_default_the_daily_counts_are_totals_per_day_and_per_order_only_for_a_named_order_or_part()
+    {
+        var totals = SqlMakinoReader.ProductionSql(SchemaWithout(), byOrder: false, byPart: false, includeIdle: false);
+        Assert.Contains("CAST(NULL AS int) AS OrderID, d.ProductionDate, SUM(d.NormalQtyDay) AS NormalQtyDay", totals);
+        Assert.Contains("GROUP BY d.ProductionDate", totals);
+        Assert.Contains("HAVING SUM(d.NormalQtyDay) <> 0 OR SUM(d.ScrapQtyDay) <> 0", totals);
+
+        var named = SqlMakinoReader.ProductionSql(SchemaWithout(), byOrder: true, byPart: false, includeIdle: false);
+        Assert.Contains("SELECT TOP (@take) d.OrderID, d.ProductionDate, d.NormalQtyDay, d.ScrapQtyDay", named);
+        Assert.DoesNotContain("GROUP BY d.ProductionDate", named);
+
+        var view = SqlMakinoReader.ProductionSql(SchemaWithout("OrderCompletedQtyResults"), false, false, false);
+        Assert.Contains("FROM ViewDayOrderCompletedQty d JOIN Orders od ON od.OrderName = d.OrderName", view);
+        Assert.Contains("GROUP BY d.ProductionDate", view);
     }
 
     [Fact]

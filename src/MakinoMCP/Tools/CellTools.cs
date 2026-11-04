@@ -195,8 +195,10 @@ public static class CellTools
     [Description("How many parts has the cell made, and how far along is each order? Per order, counted the way the " +
                  "cell's own order screen counts: quantity (required), completedQty (good parts out of the last " +
                  "process), scrapQty (any process), remainingQty (not started), inProcessQty (started, not finished: " +
-                 "clampedQty on fixtures now plus parts waiting between processes), status; then completedInWindow, " +
-                 "scrapInWindow and daily (date, completed, scrap; days with none left out) for the last days. Orders " +
+                 "clampedQty on fixtures now plus parts waiting between processes), status, completedInWindow and " +
+                 "scrapInWindow; daily: per production day (date, completed, scrap; days with none left out) the totals " +
+                 "over the listed orders, or each order's own days when an order or part is named (dailyCapped: the " +
+                 "oldest days didn't fit the row limit). Orders " +
                  "that made the most in the window come first, then latest due. Default: the last 7 days (today counts " +
                  "as one) and only the active orders something happened to in them (output, scrap, or parts on a " +
                  "fixture that isn't suspended or on hold); otherActiveOrders counts the rest, includeIdle=true lists " +

@@ -32,7 +32,12 @@ public sealed partial class SqlMakinoReader
         var (orders, capped) = Cap(rows);
         return new OrderList(s.Now, capped, orders)
         {
-            NotAvailable = OrderQuantityColumns(s.Schema, inProcess: false) is null ? [QuantitiesNotAvailable] : null,
+            NotAvailable = OrderQuantityColumns(s.Schema, inProcess: false) switch
+            {
+                null => [QuantitiesNotAvailable],
+                { Missing.Count: > 0 } quantities => quantities.Missing,
+                _ => null,
+            },
         };
     }
 
@@ -50,7 +55,7 @@ public sealed partial class SqlMakinoReader
             Opt(schema, "Orders", "o", "MachiningSuspended"),
             Opt(schema, "Orders", "o", "DueDate", type: "datetime"),
             Opt(schema, "Orders", "o", "CompleteDate", type: "datetime"),
-            .. OrderQuantityColumns(schema, inProcess: false) ?? NoQuantityColumns(inProcess: false),
+            .. OrderQuantityColumns(schema, inProcess: false)?.Columns ?? NoQuantityColumns(inProcess: false),
         ];
         var where = activeOnly && schema.Has("Orders", "Status") ? $"WHERE o.Status NOT IN ({FinishedOrderStatuses})" : "";
         var order = schema.Has("Orders", "DueDate") ? "o.DueDate DESC, o.OrderID DESC" : "o.OrderID DESC";

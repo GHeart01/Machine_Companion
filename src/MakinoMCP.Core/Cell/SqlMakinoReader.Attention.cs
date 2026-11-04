@@ -129,7 +129,8 @@ public sealed partial class SqlMakinoReader
         foreach (var c in rows.Commands)
         {
             var detail = new List<string>();
-            if (c.Status is > 0) detail.Add($"so far: {Codes.WorkSetOperation(c.Status)}");
+            // WorkSetCommand.OperationStatus has no confirmed meaning yet (it isn't WorkSetResults' list): raw code.
+            if (c.Status is > 0) detail.Add($"status {CodeText(c.Status)}");
             if (c.Quantity is > 0) detail.Add($"quantity {c.Quantity}");
             items.Add((RankWorkSet, new AttentionItem("work set", Codes.WorkSetCommandOperation(c.Operation))
             {
@@ -239,6 +240,47 @@ public sealed partial class SqlMakinoReader
             .ToList();
     }
 
+    // Columns whose absence leaves part of a section empty, and the words notAvailable uses for them.
+    private static readonly (string Table, string Column, string Words)[] AttentionColumns =
+    [
+        ("MachineStatus", "Connected", "machine connection"), ("MachineStatus", "Emergency", "machine emergency stop"),
+        ("MachineStatus", "Status", "machine error state"), ("MachineStatus", "Recovery", "machine recovery requests"),
+        ("MachineStatus", "OperatorCall", "machine operator calls"), ("MachineStatus", "ToolStatus", "machine tool status"),
+        ("WorkSetStatus", "Connected", "work-set station connection"), ("WorkSetStatus", "Emergency", "work-set station emergency stop"),
+        ("WorkSetStatus", "Status", "work-set station error state"), ("WorkSetStatus", "Recovery", "work-set station recovery requests"),
+        ("WorkSetStatus", "TotalCycleCount", "work-set station cycle counts"),
+    ];
+
+    private static readonly (string Column, string Words)[] VehicleColumns =
+    [
+        ("Connected", "vehicle connection"), ("Emergency", "vehicle emergency stop"), ("Status", "vehicle error state"),
+        ("Recovery", "vehicle recovery request"), ("TotalCycleCount", "vehicle cycle count"),
+    ];
+
+    private static readonly (string Column, string Words)[] FixtureColumns =
+    [
+        ("Suspend", "suspended fixtures"), ("WorkSetHold", "fixtures on hold"), ("Damaged", "damaged fixtures"),
+        ("PreMcSuspend", "pre-machining suspended fixtures"), ("LackingTool", "fixtures lacking tools"),
+        ("ReclampStatus", "reclamp timeouts"),
+    ];
+
+    /// <summary>What get_attention can't show because a table it reads lacks a column (a missing table is reported
+    /// by the section itself).</summary>
+    internal static List<string> AttentionColumnsMissing(SchemaInfo schema)
+    {
+        var missing = AttentionColumns.Where(c => schema.HasTable(c.Table) && !schema.Has(c.Table, c.Column)).Select(c => c.Words).ToList();
+        var vehicle = schema.HasTable("VehicleStatus") ? "VehicleStatus" : schema.HasTable("ViewVehicleStatus") ? "ViewVehicleStatus" : null;
+        if (vehicle is not null) missing.AddRange(VehicleColumns.Where(c => !schema.Has(vehicle, c.Column)).Select(c => c.Words));
+        if (schema.HasTable("PalletFixtures"))
+        {
+            var fixtures = FixtureColumns.Where(c => !schema.Has("PalletFixtures", c.Column)).Select(c => c.Words).ToList();
+            if (fixtures.Count == FixtureColumns.Length) missing.Add("fixtures (suspended, damaged, lacking tools, …)");
+            else missing.AddRange(fixtures);
+        }
+        if (schema.HasTable(Itd) && DerivedStatusSql(schema) == "0") missing.Add("tools in alarm");
+        return missing;
+    }
+
     /// <summary>Typed text on one line, runs of spaces collapsed.</summary>
     internal static string OneLine(string text) => string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
 
@@ -283,6 +325,8 @@ public sealed partial class SqlMakinoReader
             var parked = (Has("Suspend") ? " AND ISNULL(pf.Suspend, 0) = 0" : "") + (Has("WorkSetHold") ? " AND ISNULL(pf.WorkSetHold, 0) = 0" : "");
             whens.Add($"WHEN pf.LackingTool = 1{parked} THEN 1");
         }
+        // Parked fixtures last (3), so the cap drops them before anything still waiting (a reclamp warning is 2).
+        if (ParkedCondition(schema) is { } parkedLast) whens.Add($"WHEN {parkedLast} THEN 3");
         var severity = whens.Count > 0 ? $"CASE {string.Join(" ", whens)} ELSE 2 END" : "0";
 
         var run = schema.HasTable("FixtureRun") && schema.Has("FixtureRun", "PalletFixtureID") && Has("PalletFixtureID");
@@ -433,7 +477,7 @@ public sealed partial class SqlMakinoReader
     {
         await using var s = await OpenAsync(ct);
         var schema = s.Schema;
-        var notAvailable = new List<string>();
+        var notAvailable = AttentionColumnsMissing(schema);
 
         var devices = s.Devices.ToDictionary(d => d.Id, d => new AttentionDevice(d.Name, d.Type));
 

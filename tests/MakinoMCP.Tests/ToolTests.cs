@@ -323,7 +323,10 @@ public sealed class ToolTests : IDisposable
         var order = production.GetProperty("orders")[0];
         Assert.Equal(40, order.GetProperty("completedQty").GetInt32());
         Assert.Equal(2, order.GetProperty("scrapQty").GetInt32());
-        Assert.Equal("2026-11-01", order.GetProperty("daily")[0].GetProperty("date").GetString());
+        Assert.Equal("2026-11-01", production.GetProperty("daily")[0].GetProperty("date").GetString()); // totals per day
+        Assert.False(order.TryGetProperty("daily", out _));
+        var named = Parse(await CellTools.GetProduction(context, order: "ORDER-001", ct: CancellationToken.None));
+        Assert.Equal(6, named.GetProperty("orders")[0].GetProperty("daily")[0].GetProperty("completed").GetInt32());
 
         var orders = Parse(await CellTools.GetOrders(context, ct: CancellationToken.None));
         Assert.Equal(40, orders.GetProperty("orders")[0].GetProperty("completedQty").GetInt32());

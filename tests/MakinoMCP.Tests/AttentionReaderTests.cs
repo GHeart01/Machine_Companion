@@ -132,6 +132,7 @@ public class AttentionReaderTests
         Assert.Equal("to MC2", list.Items[3].Detail);
         Assert.Equal(Now.AddMinutes(-40), list.Items[3].Since);
         Assert.Equal("unclamp and clamp", list.Items[1].What);
+        Assert.Equal("quantity 1", list.Items[1].Detail);
         Assert.Equal("3 tools in alarm, 1 with an offset error", list.Items[5].What);
         Assert.Equal("machining suspended", list.Items[^1].What);
     }
@@ -202,6 +203,47 @@ public class AttentionReaderTests
     }
 
     [Fact]
+    public void A_station_instructions_progress_is_a_raw_code_until_its_meaning_is_known()
+    {
+        var list = Build(Rows(commands: [new("WSS1", 4, 1, Operation: 2, Status: 2, Order: null, Quantity: 0)]));
+
+        Assert.Equal("status code 2", Assert.Single(list.Items).Detail);
+    }
+
+    [Fact]
+    public void Missing_columns_name_the_parts_of_a_section_that_cant_be_shown()
+    {
+        var schema = new SchemaInfo(new[]
+        {
+            ("MachineStatus", "DeviceID"), ("MachineStatus", "Connected"), ("MachineStatus", "Status"),
+            ("WorkSetStatus", "DeviceID"), ("WorkSetStatus", "Recovery"), ("WorkSetStatus", "Status"), ("WorkSetStatus", "Connected"),
+            ("WorkSetStatus", "Emergency"),
+            ("ViewVehicleStatus", "DeviceNumber"), ("ViewVehicleStatus", "Status"), ("ViewVehicleStatus", "Recovery"),
+            ("ViewVehicleStatus", "Connected"), ("ViewVehicleStatus", "Emergency"),
+            ("PalletFixtures", "PalletFixtureID"), ("PalletFixtures", "Suspend"), ("PalletFixtures", "Damaged"),
+        });
+
+        var missing = SqlMakinoReader.AttentionColumnsMissing(schema);
+
+        Assert.Contains("machine recovery requests", missing);
+        Assert.Contains("machine emergency stop", missing);
+        Assert.Contains("machine operator calls", missing);
+        Assert.Contains("machine tool status", missing);
+        Assert.Contains("work-set station cycle counts", missing);
+        Assert.Contains("vehicle cycle count", missing);
+        Assert.Contains("fixtures on hold", missing);
+        Assert.Contains("pre-machining suspended fixtures", missing);
+        Assert.Contains("fixtures lacking tools", missing);
+        Assert.Contains("reclamp timeouts", missing);
+        Assert.DoesNotContain("suspended fixtures", missing);
+        Assert.DoesNotContain("damaged fixtures", missing);
+        Assert.DoesNotContain(missing, m => m.StartsWith("work-set station recovery", StringComparison.Ordinal));
+
+        var bare = SqlMakinoReader.AttentionColumnsMissing(new SchemaInfo(new[] { ("PalletFixtures", "PalletFixtureID") }));
+        Assert.Contains("fixtures (suspended, damaged, lacking tools, …)", bare);
+    }
+
+    [Fact]
     public void Cycle_count_over_a_set_limit_is_maintenance_and_no_limit_is_nothing()
     {
         var list = Build(Rows(devices:
@@ -243,6 +285,8 @@ public class AttentionReaderTests
         Assert.Contains("pf.LackingTool = 1", full);
         Assert.Contains("pf.ReclampStatus IN (1, 2)", full);
         Assert.Contains("WHEN pf.LackingTool = 1 AND ISNULL(pf.Suspend, 0) = 0 AND ISNULL(pf.WorkSetHold, 0) = 0 THEN 1", full);
+        // Parked fixtures sort after everything else, so the cap drops them first (never a reclamp warning).
+        Assert.Contains("ISNULL(pf.ReclampStatus, 0) = 0 THEN 3 ELSE 2 END", full);
         Assert.Contains("LEFT JOIN FixtureRun fr ON fr.PalletFixtureID = pf.PalletFixtureID", full);
         Assert.Contains("o.OrderName AS OrderName", full);
 

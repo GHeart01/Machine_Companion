@@ -410,25 +410,27 @@ public sealed partial class SqlMakinoReader
         return condition == "1 = 0" ? null : condition;
     }
 
-    /// <summary>For get_part_routing: how many usable tools (stored status ready or life warning, the rule the cell's
-    /// own lacking-tool check uses) of each of the FTNs <c>@ftn0 … @ftn{n-1}</c> sit on each device. Null when this cell
-    /// lacks a column the count needs (it can't be made, rather than made wrong).</summary>
+    /// <summary>For get_part_routing: how many usable tools (status ready or life warning, the cell's own lacking-tool
+    /// rule, with the status derived as get_tools shows it, so a tool with an alarm bit isn't usable) of each of the
+    /// FTNs <c>@ftn0 … @ftn{n-1}</c> sit on each device. Null when this cell lacks a column the count needs (it can't be
+    /// made, rather than made wrong).</summary>
     internal static string? UsableToolsSql(SchemaInfo schema, int ftnCount)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(ftnCount, 1);
         (string Table, string Column)[] needed =
         [
-            (Itd, "ITNID"), (Itd, "FTNID"), (Itd, "Status"), (Ftd, "FTNID"), (Ftd, "FTN"), (Loc, "ITNID"), (Loc, "CurrentDeviceID"),
+            (Itd, "ITNID"), (Itd, "FTNID"), (Itd, "Status"), (Itc, "ITNID"), (Ftd, "FTNID"), (Ftd, "FTN"), (Loc, "ITNID"),
+            (Loc, "CurrentDeviceID"),
         ];
         if (needed.Any(n => !schema.Has(n.Table, n.Column))) return null;
         var names = string.Join(", ", Enumerable.Range(0, ftnCount).Select(n => $"@ftn{n}"));
         return $"""
-            SELECT l.CurrentDeviceID AS DeviceID, f.FTN, COUNT(*) AS Usable
-            FROM IndividualToolData i
-            JOIN FunctionalToolData f ON f.FTNID = i.FTNID
-            JOIN ToolLocation l ON l.ITNID = i.ITNID
-            WHERE i.Status IN (1, 2) AND f.FTN IN ({names})
-            GROUP BY l.CurrentDeviceID, f.FTN;
+            SELECT x.DeviceID, x.FTN, COUNT(*) AS Usable FROM (
+                SELECT l.CurrentDeviceID AS DeviceID, f.FTN, {DerivedStatusSql(schema)} AS Status
+                FROM {ToolFromSql(schema)}
+                WHERE f.FTN IN ({names}) AND l.CurrentDeviceID IS NOT NULL) x
+            WHERE x.Status IN (1, 2)
+            GROUP BY x.DeviceID, x.FTN;
             """;
     }
 
@@ -438,7 +440,7 @@ public sealed partial class SqlMakinoReader
     private static async Task<Dictionary<(int DeviceId, int Ftn), int>?> UsableToolCountsAsync(
         Session s, IReadOnlyCollection<int> ftns, CancellationToken ct)
     {
-        s.Schema.Require(Itd, Ftd, Loc);
+        s.Schema.Require(Itd, Itc, Ftd, Loc);
         var counts = new Dictionary<(int, int), int>();
         foreach (var chunk in ftns.Distinct().Chunk(500))
         {

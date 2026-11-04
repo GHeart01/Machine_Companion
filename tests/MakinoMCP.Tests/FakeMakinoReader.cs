@@ -164,9 +164,14 @@ internal sealed class FakeMakinoReader : IMakinoReader
             new OrderProduction("ORDER-001", "CONTOSO-BRACKET", "active", 100)
             {
                 CompletedQty = 40, ScrapQty = 2, RemainingQty = 57, InProcessQty = 1, ClampedQty = 1, CompletedInWindow = 6,
-                ScrapInWindow = 0, Daily = [new DailyQty(new DateOnly(2026, 11, 1), 6, 0)],
+                ScrapInWindow = 0,
+                Daily = order is null && part is null ? null : [new DailyQty(new DateOnly(2026, 11, 1), 6, 0)],
             },
-        ]) { OtherActiveOrders = includeIdle ? null : 3 }, ct);
+        ])
+        {
+            OtherActiveOrders = includeIdle ? null : 3,
+            Daily = order is null && part is null ? [new DailyQty(new DateOnly(2026, 11, 1), 6, 0)] : null,
+        }, ct);
 
     public Task<AttentionList> GetAttentionAsync(bool includeParked, CancellationToken ct) =>
         Answer(() => new AttentionList(Now, false, new Dictionary<string, int> { ["recovery request"] = 1, ["machining suspended"] = 1 },

@@ -12,29 +12,43 @@ public sealed partial class SqlMakinoReader
     private const string FirstProcess = "pr.ProcessNumber = (SELECT MIN(p2.ProcessNumber) FROM Processes p2 WHERE p2.PartID = o.PartID)";
     private const string LaterProcess = "pr.ProcessNumber > (SELECT MIN(p2.ProcessNumber) FROM Processes p2 WHERE p2.PartID = o.PartID)";
 
+    /// <summary>An order's quantity columns and the words for those this cell can't give (selected as NULL).</summary>
+    internal sealed record OrderQuantities(IReadOnlyList<string> Columns, IReadOnlyList<string> Missing);
+
+    private const string NoCompleted = "completed quantity";
+    private const string NoScrap = "scrap quantity";
+    private const string NoRemaining = "remaining quantity";
+    private const string NoInProcess = "parts in process";
+    private const string NoClamped = "parts clamped on fixtures (in process includes them)";
+
     /// <summary>The select-list entries for an order's (alias o) quantities: CompletedQty, ScrapQty, RemainingQty and,
-    /// with <paramref name="inProcess"/>, ClampedQty and InProcessQty. From Quantities when readable, else from the
-    /// vendor's ViewOrders (by order name; no clamped count); null when neither is readable.</summary>
-    internal static List<string>? OrderQuantityColumns(SchemaInfo schema, bool inProcess)
+    /// with <paramref name="inProcess"/>, ClampedQty and InProcessQty, with the words for any this cell lacks. From
+    /// Quantities when readable, else from the vendor's ViewOrders (by order name; no clamped count); null when
+    /// neither is readable.</summary>
+    internal static OrderQuantities? OrderQuantityColumns(SchemaInfo schema, bool inProcess)
     {
         const string q = "Quantities";
         var fromTable = schema.HasTable(q) && schema.HasTable("Processes")
             && schema.Has(q, "OrderID") && schema.Has(q, "ProcessID")
             && schema.Has("Processes", "ProcessID") && schema.Has("Processes", "PartID") && schema.Has("Processes", "ProcessNumber");
+        var missing = new List<string>();
         if (fromTable)
         {
-            string Sum(string column, string where, string name) => schema.Has(q, column)
-                ? $"(SELECT SUM(q.{column}) FROM Quantities q {ProcessOf} WHERE q.OrderID = o.OrderID AND {where}) AS {name}"
-                : $"CAST(NULL AS int) AS {name}";
-            var cols = new List<string>
+            string Sum(string column, string where, string name, string words)
             {
-                Sum("NormalQuantity", LastProcess, "CompletedQty"),
-                schema.Has(q, "ScrapQuantity")
-                    ? "(SELECT SUM(q.ScrapQuantity) FROM Quantities q WHERE q.OrderID = o.OrderID) AS ScrapQty"
-                    : "CAST(NULL AS int) AS ScrapQty",
-                Sum("RemainingQuantity", FirstProcess, "RemainingQty"),
-            };
-            if (!inProcess) return cols;
+                if (schema.Has(q, column)) return $"(SELECT SUM(q.{column}) FROM Quantities q {ProcessOf} WHERE q.OrderID = o.OrderID AND {where}) AS {name}";
+                missing.Add(words);
+                return $"CAST(NULL AS int) AS {name}";
+            }
+            var cols = new List<string> { Sum("NormalQuantity", LastProcess, "CompletedQty", NoCompleted) };
+            if (schema.Has(q, "ScrapQuantity")) cols.Add("(SELECT SUM(q.ScrapQuantity) FROM Quantities q WHERE q.OrderID = o.OrderID) AS ScrapQty");
+            else
+            {
+                cols.Add("CAST(NULL AS int) AS ScrapQty");
+                missing.Add(NoScrap);
+            }
+            cols.Add(Sum("RemainingQuantity", FirstProcess, "RemainingQty", NoRemaining));
+            if (!inProcess) return new OrderQuantities(cols, missing);
 
             var clamped = schema.Has("FixtureQuantity", "ClampedQuantity") && schema.Has("FixtureQuantity", "PalletFixtureID")
                 && schema.Has("FixtureRun", "PalletFixtureID") && schema.Has("FixtureRun", "CurOrderID");
@@ -50,18 +64,30 @@ public sealed partial class SqlMakinoReader
             {
                 cols.Add("CAST(NULL AS int) AS ClampedQty");
                 cols.Add("CAST(NULL AS int) AS InProcessQty");
+                missing.Add(NoInProcess);
             }
-            return cols;
+            return new OrderQuantities(cols, missing);
         }
 
         if (schema.HasTable("ViewOrders") && schema.Has("ViewOrders", "OrderName"))
         {
-            string View(string column, string name) => schema.Has("ViewOrders", column)
-                ? $"(SELECT TOP 1 v.{column} FROM ViewOrders v WHERE v.OrderName = o.OrderName) AS {name}"
-                : $"CAST(NULL AS int) AS {name}";
-            var cols = new List<string> { View("NormalQty", "CompletedQty"), View("ScrapQty", "ScrapQty"), View("RemainQty", "RemainingQty") };
-            if (inProcess) cols.AddRange(["CAST(NULL AS int) AS ClampedQty", View("InProcQty", "InProcessQty")]);
-            return cols;
+            string View(string column, string name, string words)
+            {
+                if (schema.Has("ViewOrders", column)) return $"(SELECT TOP 1 v.{column} FROM ViewOrders v WHERE v.OrderName = o.OrderName) AS {name}";
+                missing.Add(words);
+                return $"CAST(NULL AS int) AS {name}";
+            }
+            var cols = new List<string>
+            {
+                View("NormalQty", "CompletedQty", NoCompleted), View("ScrapQty", "ScrapQty", NoScrap), View("RemainQty", "RemainingQty", NoRemaining),
+            };
+            if (inProcess)
+            {
+                cols.Add("CAST(NULL AS int) AS ClampedQty");
+                cols.Add(View("InProcQty", "InProcessQty", NoInProcess));
+                if (!missing.Contains(NoInProcess)) missing.Add(NoClamped);
+            }
+            return new OrderQuantities(cols, missing);
         }
         return null;
     }
@@ -93,9 +119,10 @@ public sealed partial class SqlMakinoReader
         $"OR (NOT EXISTS (SELECT 1 FROM {table} x WHERE UPPER(x.{column}) = UPPER(@{param})) " +
         $"AND UPPER({alias}.{column}) LIKE UPPER(@{param}Like) ESCAPE '\\'))";
 
-    /// <summary>Two result sets: the orders (cap + 1; active ones, or those named by @order / @part whatever their
-    /// status; most produced in the window first, then latest due) with their quantities and window sums, and their
-    /// daily counts since @from (cap + 1, newest first; days with nothing left out).</summary>
+    /// <summary>Three result sets: the orders (cap + 1; active ones, or those named by @order / @part whatever their
+    /// status; most produced in the window first, then latest due) with their quantities and window sums; the daily
+    /// counts since @from (cap + 1, newest first, days with nothing left out): one total per day across those orders
+    /// (OrderID NULL), or per order when an order or part is named; and the count of active orders left out.</summary>
     internal static string ProductionSql(SchemaInfo schema, bool byOrder, bool byPart, bool includeIdle)
     {
         var conditions = new List<string>();
@@ -132,21 +159,38 @@ public sealed partial class SqlMakinoReader
             Opt(schema, "Parts", "pa", "Revision", type: Text),
             Opt(schema, "Orders", "o", "Status"),
             Opt(schema, "Orders", "o", "Quantity"),
-            .. OrderQuantityColumns(schema, inProcess: true) ?? NoQuantityColumns(inProcess: true),
+            .. OrderQuantityColumns(schema, inProcess: true)?.Columns ?? NoQuantityColumns(inProcess: true),
             windowCompleted is null ? "CAST(NULL AS int) AS WindowCompleted" : $"{windowCompleted} AS WindowCompleted",
             windowScrap is null ? "CAST(NULL AS int) AS WindowScrap" : $"{windowScrap} AS WindowScrap",
         ];
         const string from = "FROM Orders o LEFT JOIN Parts pa ON pa.PartID = o.PartID";
         var picked = $"SELECT TOP (@take) o.OrderID {from} WHERE {where} ORDER BY {order}";
-        var daily = source switch
+        var perOrder = byOrder || byPart;
+        var daily = (source, perOrder) switch
         {
-            DailySource.Table => $"""
+            (DailySource.Table, false) => $"""
+                SELECT TOP (@take) CAST(NULL AS int) AS OrderID, d.ProductionDate, SUM(d.NormalQtyDay) AS NormalQtyDay, SUM(d.ScrapQtyDay) AS ScrapQtyDay
+                FROM OrderCompletedQtyResults d
+                WHERE d.ProductionDate >= @from AND d.OrderID IN ({picked})
+                GROUP BY d.ProductionDate
+                HAVING SUM(d.NormalQtyDay) <> 0 OR SUM(d.ScrapQtyDay) <> 0
+                ORDER BY d.ProductionDate DESC;
+                """,
+            (DailySource.View, false) => $"""
+                SELECT TOP (@take) CAST(NULL AS int) AS OrderID, d.ProductionDate, SUM(d.NormalQtyDay) AS NormalQtyDay, SUM(d.ScrapQtyDay) AS ScrapQtyDay
+                FROM ViewDayOrderCompletedQty d JOIN Orders od ON od.OrderName = d.OrderName
+                WHERE d.ProductionDate >= @from AND od.OrderID IN ({picked})
+                GROUP BY d.ProductionDate
+                HAVING SUM(d.NormalQtyDay) <> 0 OR SUM(d.ScrapQtyDay) <> 0
+                ORDER BY d.ProductionDate DESC;
+                """,
+            (DailySource.Table, true) => $"""
                 SELECT TOP (@take) d.OrderID, d.ProductionDate, d.NormalQtyDay, d.ScrapQtyDay
                 FROM OrderCompletedQtyResults d
                 WHERE d.ProductionDate >= @from AND (d.NormalQtyDay <> 0 OR d.ScrapQtyDay <> 0) AND d.OrderID IN ({picked})
                 ORDER BY d.ProductionDate DESC, d.OrderID;
                 """,
-            DailySource.View => $"""
+            (DailySource.View, true) => $"""
                 SELECT TOP (@take) od.OrderID, d.ProductionDate, d.NormalQtyDay, d.ScrapQtyDay
                 FROM ViewDayOrderCompletedQty d JOIN Orders od ON od.OrderName = d.OrderName
                 WHERE d.ProductionDate >= @from AND (d.NormalQtyDay <> 0 OR d.ScrapQtyDay <> 0) AND od.OrderID IN ({picked})
@@ -198,9 +242,7 @@ public sealed partial class SqlMakinoReader
         // The quantities are this tool's purpose: without the table or the vendor's view it is an error.
         var quantities = OrderQuantityColumns(schema, inProcess: true) ?? throw new CellSchemaException(["Quantities", "ViewOrders"]);
 
-        var notAvailable = new List<string>();
-        if (quantities.Contains("CAST(NULL AS int) AS InProcessQty")) notAvailable.Add("parts in process");
-        else if (quantities.Contains("CAST(NULL AS int) AS ClampedQty")) notAvailable.Add("parts clamped on fixtures (in process includes them)");
+        var notAvailable = new List<string>(quantities.Missing);
         if (Daily(schema) == DailySource.None) notAvailable.Add("daily quantities");
 
         using var cmd = Command(s.Connection, ProductionSql(schema, byOrder, byPart, includeIdle));
@@ -233,14 +275,20 @@ public sealed partial class SqlMakinoReader
 
         await r.NextResultAsync(ct);
         var daily = new Dictionary<int, List<DailyQty>>();
+        var totals = new List<DailyQty>();
         var dailyRows = 0;
         while (await r.ReadAsync(ct))
         {
             if (++dailyRows > _cap) break; // the cap + 1st row only says more existed
             if (Date(r, "ProductionDate") is not { } day) continue;
-            var id = Int(r, "OrderID") ?? 0;
+            var row = new DailyQty(DateOnly.FromDateTime(day), Int(r, "NormalQtyDay") ?? 0, Int(r, "ScrapQtyDay") ?? 0);
+            if (Int(r, "OrderID") is not { } id)
+            {
+                totals.Add(row);
+                continue;
+            }
             if (!daily.TryGetValue(id, out var list)) daily[id] = list = [];
-            list.Add(new DailyQty(DateOnly.FromDateTime(day), Int(r, "NormalQtyDay") ?? 0, Int(r, "ScrapQtyDay") ?? 0));
+            list.Add(row);
         }
 
         await r.NextResultAsync(ct);
@@ -248,8 +296,10 @@ public sealed partial class SqlMakinoReader
 
         var rows = orders.Select(o => o.Order with { Daily = daily.TryGetValue(o.Id, out var d) ? d : null }).ToList();
         var (shown, capped) = Cap(rows);
-        return new ProductionList(s.Now, capped || dailyRows > _cap, window, shown)
+        return new ProductionList(s.Now, capped, window, shown)
         {
+            Daily = byOrder || byPart || totals.Count == 0 ? null : totals,
+            DailyCapped = dailyRows > _cap ? true : null,
             NotAvailable = notAvailable.Count > 0 ? notAvailable : null,
             Note = ProductionNote(order, part, shown.Count),
             OtherActiveOrders = others,

@@ -222,14 +222,18 @@ public class ToolReaderTests
     {
         var sql = SqlMakinoReader.UsableToolsSql(SchemaWithout(), 3);
         Assert.NotNull(sql);
-        Assert.Contains("i.Status IN (1, 2)", sql);
+        // The status get_tools shows (an alarm bit makes a stored "ready" tool an alarm, so not usable).
+        Assert.Contains($"{SqlMakinoReader.DerivedStatusSql(SchemaWithout())} AS Status", sql);
+        Assert.Contains("x.Status IN (1, 2)", sql);
+        Assert.DoesNotContain("i.Status IN (1, 2)", sql);
         Assert.Contains("f.FTN IN (@ftn0, @ftn1, @ftn2)", sql);
-        Assert.Contains("GROUP BY l.CurrentDeviceID, f.FTN", sql);
+        Assert.Contains("GROUP BY x.DeviceID, x.FTN", sql);
         Assert.Throws<ArgumentOutOfRangeException>(() => SqlMakinoReader.UsableToolsSql(SchemaWithout(), 0));
         // Without the status or the location the count can't be made: null, not a wrong count.
         Assert.Null(SqlMakinoReader.UsableToolsSql(SchemaWithout("IndividualToolData.Status"), 3));
         Assert.Null(SqlMakinoReader.UsableToolsSql(SchemaWithout("ToolLocation.CurrentDeviceID"), 3));
         Assert.Null(SqlMakinoReader.UsableToolsSql(SchemaWithout("FunctionalToolData.FTN"), 3));
+        Assert.Null(SqlMakinoReader.UsableToolsSql(SchemaWithout("IndividualToolCutterData"), 3));
     }
 
     // --- get_tool_changes ---

@@ -433,7 +433,8 @@ public sealed record JobRoute(int Number, string Type)
     public IReadOnlyList<ProgramTool>? Tools { get; init; }
 }
 
-/// <summary>A tool type (FTN) the machining program needs, Needed of them. Ptn only when the program calls it by
+/// <summary>A tool type (FTN) the machining program needs, Needed of them (the program's ToolCount; 0 is never
+/// counted missing, as on the cell). Ptn only when the program calls it by
 /// another number. Cutting: how much life one run uses ("12.5 min", "40 count"). Usable: per feasible machine, the
 /// tools of this type there in status ready or life warning; MissingOn: the machines with fewer than Needed.</summary>
 public sealed record ProgramTool(int Ftn, int Needed)
@@ -454,9 +455,17 @@ public sealed record ProgramTool(int Ftn, int Needed)
     public IReadOnlyList<string>? MissingOn { get; init; }
 }
 
-/// <summary>Days: the window of the daily counts (today counts as one).</summary>
+/// <summary>Days: the window of the daily counts (today counts as one). Daily: good and scrap per production day
+/// summed over the listed orders (when no order or part is named; then each order has its own Daily instead).
+/// Capped: more orders than the row limit; DailyCapped: more day rows than the row limit (the oldest left out).</summary>
 public sealed record ProductionList(DateTime ServerTime, bool Capped, int Days, IReadOnlyList<OrderProduction> Orders)
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<DailyQty>? Daily { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? DailyCapped { get; init; }
+
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? NotAvailable { get; init; }
 
@@ -473,7 +482,8 @@ public sealed record ProductionList(DateTime ServerTime, bool Capped, int Days, 
 /// <summary>One order's counts, as the cell's own order screen counts them. Quantity: required. CompletedQty: good
 /// parts out of the last process; ScrapQty: scrapped in any process; RemainingQty: not started (first process);
 /// InProcessQty: started, not finished (ClampedQty clamped on fixtures now, plus parts waiting between processes).
-/// CompletedInWindow/ScrapInWindow and Daily: per production day in the window (days without any left out).</summary>
+/// CompletedInWindow/ScrapInWindow: in the window. Daily (only when an order or part is named): per production day in
+/// the window, days without any left out.</summary>
 public sealed record OrderProduction(string Name, string Part, string Status, int Quantity)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

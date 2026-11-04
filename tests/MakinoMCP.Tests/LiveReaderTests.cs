@@ -241,19 +241,70 @@ public class LiveReaderTests
             Assert.Equal(other.ScrapQty, o.ScrapQty);
             Assert.Equal(other.RemainingQty, o.RemainingQty);
             Assert.True(o.InProcessQty is null || o.ClampedQty is null || o.InProcessQty >= o.ClampedQty);
-            var daily = o.Daily ?? [];
-            var from = DateOnly.FromDateTime(production.ServerTime).AddDays(-6);
-            Assert.All(daily, d => Assert.True(d.Date >= from));
-            Assert.Equal(daily.OrderByDescending(d => d.Date).Select(d => d.Date), daily.Select(d => d.Date));
-            if (!production.Capped) Assert.Equal(o.CompletedInWindow ?? 0, daily.Sum(d => d.Completed));
+            Assert.Null(o.Daily); // per-order days only when an order or part is named
         }
+
+        // Default: one total per day across the listed orders, inside the window, newest first.
+        var totals = busy.Daily ?? [];
+        var from = DateOnly.FromDateTime(production.ServerTime).AddDays(-6);
+        Assert.True(totals.Count <= 7);
+        Assert.All(totals, d => Assert.True(d.Date >= from));
+        Assert.Equal(totals.OrderByDescending(d => d.Date).Select(d => d.Date), totals.Select(d => d.Date));
+        if (!busy.Capped && busy.DailyCapped != true)
+            Assert.Equal(busy.Orders.Sum(o => o.CompletedInWindow ?? 0), totals.Sum(d => d.Completed));
 
         Skip.If(production.Orders.Count < 2, "fewer than two active orders");
         var named = await Reader().GetProductionAsync(30, production.Orders[0].Name, null, false, ct);
         Assert.Contains(named.Orders, o => o.Name == production.Orders[0].Name);
+        Assert.Null(named.Daily);
+        foreach (var o in named.Orders)
+        {
+            var daily = o.Daily ?? [];
+            Assert.All(daily, d => Assert.True(d.Date >= DateOnly.FromDateTime(named.ServerTime).AddDays(-29)));
+            if (named.DailyCapped != true) Assert.Equal(o.CompletedInWindow ?? 0, daily.Sum(d => d.Completed));
+        }
         var capped = await Reader(1).GetProductionAsync(7, null, null, true, ct);
         Assert.True(capped.Capped);
         Assert.Single(capped.Orders);
+    }
+
+    [SkippableFact]
+    public async Task Live_quantities_equal_the_cells_own_order_view()
+    {
+        var ct = CancellationToken.None;
+        var s = LiveSettings();
+        var view = new Dictionary<string, (int? Normal, int? Scrap, int? Remain, int? InProc)>();
+        try
+        {
+            await using var connection = new Microsoft.Data.SqlClient.SqlConnection(s.Makino.ConnectionString());
+            await connection.OpenAsync(ct);
+            await using var cmd = connection.CreateCommand();
+            // The view's InProcQty also holds the parts a work-set station is about to clamp (WorkSetCommand), which
+            // the console's order screen (GetOrders_V2: clamped + waiting between processes) shows apart; add them here.
+            cmd.CommandText = SqlMakinoReader.Isolation + "SELECT v.OrderName, v.NormalQty, v.ScrapQty, v.RemainQty, " +
+                "v.InProcQty - ISNULL((SELECT SUM(c.ClampQuantity) FROM WorkSetCommand c JOIN Orders o ON o.OrderID = c.ClampOrderID " +
+                "WHERE o.OrderName = v.OrderName), 0) FROM ViewOrders v;";
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            static int? I(Microsoft.Data.SqlClient.SqlDataReader r, int i) => r.IsDBNull(i) ? null : Convert.ToInt32(r.GetValue(i));
+            while (await r.ReadAsync(ct)) view.TryAdd(r.GetString(0), (I(r, 1), I(r, 2), I(r, 3), I(r, 4)));
+        }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            Skip.If(true, "ViewOrders isn't readable by this login");
+        }
+
+        var production = await Reader(100000).GetProductionAsync(7, null, null, true, ct);
+        var orders = await Reader(100000).GetOrdersAsync(false, ct);
+        var compared = 0;
+        foreach (var o in production.Orders.Where(o => view.ContainsKey(o.Name)))
+        {
+            var v = view[o.Name];
+            Assert.Equal((v.Normal, v.Scrap, v.Remain, v.InProc), (o.CompletedQty, o.ScrapQty, o.RemainingQty, o.InProcessQty));
+            compared++;
+        }
+        foreach (var o in orders.Orders.Where(o => view.ContainsKey(o.Name)))
+            Assert.Equal((view[o.Name].Normal, view[o.Name].Scrap, view[o.Name].Remain), (o.CompletedQty, o.ScrapQty, o.RemainingQty));
+        Skip.If(compared == 0, "no active order in ViewOrders");
     }
 
     [SkippableFact]
