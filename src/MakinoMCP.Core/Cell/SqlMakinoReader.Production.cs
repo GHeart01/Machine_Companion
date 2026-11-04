@@ -217,6 +217,17 @@ public sealed partial class SqlMakinoReader
         return new ProductionList(s.Now, capped || dailyRows > _cap, window, shown)
         {
             NotAvailable = notAvailable.Count > 0 ? notAvailable : null,
+            Note = ProductionNote(order, part, shown.Count),
         };
+    }
+
+    /// <summary>When a named order or part found no orders: what was looked for; else null.</summary>
+    internal static string? ProductionNote(string? order, string? part, int found)
+    {
+        if (found > 0) return null;
+        var asked = new List<string>();
+        if (!string.IsNullOrWhiteSpace(order)) asked.Add($"order name is or contains '{order.Trim()}'");
+        if (!string.IsNullOrWhiteSpace(part)) asked.Add($"part name is or contains '{part.Trim()}'");
+        return asked.Count == 0 ? null : $"No order whose {string.Join(" and whose ", asked)}.";
     }
 }

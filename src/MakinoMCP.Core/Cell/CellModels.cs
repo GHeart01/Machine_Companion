@@ -459,6 +459,10 @@ public sealed record ProductionList(DateTime ServerTime, bool Capped, int Days, 
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? NotAvailable { get; init; }
+
+    /// <summary>Why the list is empty when an order or part was named.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Note { get; init; }
 }
 
 /// <summary>One order's counts, as the cell's own order screen counts them. Quantity: required. CompletedQty: good

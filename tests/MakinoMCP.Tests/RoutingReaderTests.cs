@@ -136,6 +136,7 @@ public class RoutingReaderTests
     {
         var sql = SqlMakinoReader.ProgramToolsSql(SchemaWithout());
         Assert.NotNull(sql);
+        Assert.Contains("TOP (@take)", sql);
         Assert.Contains("FROM MainProgramTools m", sql);
         Assert.Contains("m.CutterNo = 1", sql);
         Assert.Contains("pr.PartID = @partId", sql);

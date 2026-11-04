@@ -99,10 +99,13 @@ public class AttentionReaderTests
             new(3, 1) { PreMcSuspend = true, PreMcReason = 2 },
             new(4, 1) { Reclamp = 1 },
             new(5, 1) { Reclamp = 0, Damaged = true, Hold = true },
+            new(6, 1) { Reclamp = 2 },
+            new(7, 1) { Reclamp = 9 },
         ]));
 
         Assert.Equal(
-            ["pre-machining suspended (CSG error)", "reclamp timeout alarm", "damaged, work-set hold"],
+            ["pre-machining suspended (CSG error)", "reclamp timeout alarm", "damaged, work-set hold", "reclamp timeout warning",
+                "reclamp code 9"],
             list.Items.Select(i => i.What));
     }
 

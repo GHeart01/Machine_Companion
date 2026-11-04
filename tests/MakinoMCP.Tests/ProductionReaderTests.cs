@@ -101,6 +101,16 @@ public class ProductionReaderTests
     }
 
     [Fact]
+    public void A_named_order_or_part_that_matches_nothing_says_so()
+    {
+        Assert.Equal("No order whose order name is or contains 'ORDER-404'.", SqlMakinoReader.ProductionNote(" ORDER-404 ", null, 0));
+        Assert.Equal("No order whose order name is or contains 'A' and whose part name is or contains 'B'.",
+            SqlMakinoReader.ProductionNote("A", "B", 0));
+        Assert.Null(SqlMakinoReader.ProductionNote("ORDER-001", null, 1));
+        Assert.Null(SqlMakinoReader.ProductionNote(null, null, 0)); // active orders, none: nothing to explain
+    }
+
+    [Fact]
     public void Daily_quantities_fall_back_to_the_vendor_view_and_else_are_left_out()
     {
         var view = SqlMakinoReader.ProductionSql(SchemaWithout("OrderCompletedQtyResults"), false, false);

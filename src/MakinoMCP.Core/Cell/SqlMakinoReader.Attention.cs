@@ -20,6 +20,16 @@ public sealed partial class SqlMakinoReader
     private const int RankMaintenance = 6;
     private const int RankParked = 7;
 
+    // Code values compared against (meanings and words are in Codes).
+    private const int DashDown = 0;               // DeviceDashStatus: down
+    private const int DashError = 4;              // DeviceDashStatus: error
+    private const int ReclampTimeoutAlarm = 1;    // ReclampStatus
+    private const int ReclampTimeoutWarning = 2;  // ReclampStatus
+    private const int ToolAlarm = 4;              // ToolStatus (derived): alarm
+    private const int ToolOffsetError = 3;        // ToolStatus: offset error
+    private const int NoWorkSetOperation = 0;     // WorkSetStationOperationType: nothing
+    private const string ClosedTransports = "4, 5"; // ManualTransportStatus: finished, cancelled
+
     internal sealed record AttentionDevice(string Name, int Type)
     {
         public bool? Connected { get; init; }
@@ -62,9 +72,6 @@ public sealed partial class SqlMakinoReader
         public IReadOnlyDictionary<string, int>? FixtureCounts { get; init; }
     }
 
-    private static readonly string[] FixtureCountKeys =
-        ["damaged", "pre-machining suspended", "reclamp timeout alarm", "reclamp timeout warning", "lacking tools", "work-set hold", "machining suspended"];
-
     /// <summary>The items, most severe first (then newest first where the cell says since when), capped; the counts
     /// and each machine's tool status as context.</summary>
     internal static AttentionList BuildAttention(DateTime now, int cap, AttentionRows rows, IReadOnlyList<string> notAvailable)
@@ -83,8 +90,8 @@ public sealed partial class SqlMakinoReader
             if (d.Recovery == true) what.Add("recovery request");
             if (d.Emergency == true) what.Add("emergency stop");
             if (d.Connected == false) what.Add("disconnected");
-            else if (d.Status == 0) what.Add("down");
-            if (d.Status == 4) what.Add("error");
+            else if (d.Status == DashDown) what.Add(Codes.DeviceDashStatus(d.Status));
+            if (d.Status == DashError) what.Add(Codes.DeviceDashStatus(d.Status));
             foreach (var w in what) Count(w);
             if (d.Type == MachineType && d.OperatorCall is > 0)
             {
@@ -158,9 +165,11 @@ public sealed partial class SqlMakinoReader
                 var words = f.PreMcReason is > 0 ? $"pre-machining suspended ({Codes.PreMcSuspendReason(f.PreMcReason)})" : "pre-machining suspended";
                 conditions.Add((words, "pre-machining suspended", RankFixtureBlocked));
             }
-            if (f.Reclamp == 1) conditions.Add(("reclamp timeout alarm", "reclamp timeout alarm", RankFixtureBlocked));
-            else if (f.Reclamp == 2) conditions.Add(("reclamp timeout warning", "reclamp timeout warning", RankMaintenance));
-            else if (f.Reclamp is > 2) conditions.Add(($"reclamp {Codes.ReclampStatus(f.Reclamp)}", "reclamp", RankMaintenance));
+            if (f.Reclamp is > 0)
+            {
+                var words = $"reclamp {Codes.ReclampStatus(f.Reclamp)}";
+                conditions.Add((words, words, f.Reclamp == ReclampTimeoutAlarm ? RankFixtureBlocked : RankMaintenance));
+            }
             // A suspended or held fixture won't run, so its missing tools wait with it.
             if (f.LackingTool) conditions.Add(("lacking tools", "lacking tools", f.Suspend || f.Hold ? RankParked : RankLackingTools));
             if (f.Hold) conditions.Add(("work-set hold", "work-set hold", RankParked));
@@ -200,8 +209,8 @@ public sealed partial class SqlMakinoReader
     [
         ("Damaged", "pf.Damaged = 1", "damaged"),
         ("PreMcSuspend", "pf.PreMcSuspend = 1", "pre-machining suspended"),
-        ("ReclampStatus", "pf.ReclampStatus = 1", "reclamp timeout alarm"),
-        ("ReclampStatus", "pf.ReclampStatus = 2", "reclamp timeout warning"),
+        ("ReclampStatus", $"pf.ReclampStatus = {ReclampTimeoutAlarm}", $"reclamp {Codes.ReclampStatus(ReclampTimeoutAlarm)}"),
+        ("ReclampStatus", $"pf.ReclampStatus = {ReclampTimeoutWarning}", $"reclamp {Codes.ReclampStatus(ReclampTimeoutWarning)}"),
         ("LackingTool", "pf.LackingTool = 1", "lacking tools"),
         ("WorkSetHold", "pf.WorkSetHold = 1", "work-set hold"),
         ("Suspend", "pf.Suspend = 1", "machining suspended"),
@@ -221,12 +230,12 @@ public sealed partial class SqlMakinoReader
         if (Has("Damaged")) conditions.Add("pf.Damaged = 1");
         if (Has("PreMcSuspend")) conditions.Add("pf.PreMcSuspend = 1");
         if (Has("LackingTool")) conditions.Add("pf.LackingTool = 1");
-        if (Has("ReclampStatus")) conditions.Add("pf.ReclampStatus IN (1, 2)");
+        if (Has("ReclampStatus")) conditions.Add($"pf.ReclampStatus IN ({ReclampTimeoutAlarm}, {ReclampTimeoutWarning})");
 
         var blocked = new List<string>();
         if (Has("Damaged")) blocked.Add("pf.Damaged = 1");
         if (Has("PreMcSuspend")) blocked.Add("pf.PreMcSuspend = 1");
-        if (Has("ReclampStatus")) blocked.Add("pf.ReclampStatus = 1");
+        if (Has("ReclampStatus")) blocked.Add($"pf.ReclampStatus = {ReclampTimeoutAlarm}");
         var whens = new List<string>();
         if (blocked.Count > 0) whens.Add($"WHEN {string.Join(" OR ", blocked)} THEN 0");
         if (Has("LackingTool"))
@@ -304,7 +313,7 @@ public sealed partial class SqlMakinoReader
         return $"""
             SELECT TOP (@take) {cols}
             FROM WorkSetCommand c
-            WHERE c.OperationType <> 0
+            WHERE c.OperationType <> {NoWorkSetOperation}
             ORDER BY c.DeviceID{then};
             """;
     }
@@ -325,7 +334,7 @@ public sealed partial class SqlMakinoReader
         return $"""
             SELECT TOP (@take) {cols}
             FROM ManualTransport t
-            WHERE t.Status NOT IN (4, 5)
+            WHERE t.Status NOT IN ({ClosedTransports})
             ORDER BY {order};
             """;
     }
@@ -410,7 +419,12 @@ public sealed partial class SqlMakinoReader
                 if (!devices.TryGetValue(id, out var d) || d.Type != MachineType) continue;
                 var (alarm, offset) = perMachine.GetValueOrDefault(id);
                 var n = Int(r, "N") ?? 0;
-                perMachine[id] = Int(r, "Status") switch { 4 => (alarm + n, offset), 3 => (alarm, offset + n), _ => (alarm, offset) };
+                perMachine[id] = Int(r, "Status") switch
+                {
+                    ToolAlarm => (alarm + n, offset),
+                    ToolOffsetError => (alarm, offset + n),
+                    _ => (alarm, offset),
+                };
             }
             tools.AddRange(s.Devices.Where(d => perMachine.ContainsKey(d.Id))
                 .Select(d => new AttentionTools(d.Name, perMachine[d.Id].Alarm, perMachine[d.Id].Offset)));

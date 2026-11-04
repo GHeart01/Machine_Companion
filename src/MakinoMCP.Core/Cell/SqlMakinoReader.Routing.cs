@@ -31,6 +31,8 @@ public sealed partial class SqlMakinoReader
         var schema = s.Schema;
         schema.Require("Parts", "Processes", "Operations", "Jobs", "MachineJobs", "WorkSetJobs", "JobFeasibleDevices", "NCProgramFiles");
         var withRevision = rev is not null && schema.Has("Parts", "Revision");
+        var notAvailable = new List<string>();
+        if (rev is not null && !withRevision) notAvailable.Add("revision filter (this cell keeps no part revisions)");
 
         var found = new List<PartMatch>();
         using (var cmd = Command(s.Connection, PartSearchSql(schema, withRevision)))
@@ -52,12 +54,16 @@ public sealed partial class SqlMakinoReader
             {
                 Candidates = candidates.Select(c => new PartCandidate(c.Name, c.ProcessCount) { Revision = NonEmpty(c.Revision) }).ToList(),
                 Note = candidates.Count > 0 ? SeveralPartsNote : $"No part name is or contains {asked}.",
+                NotAvailable = notAvailable.Count > 0 ? notAvailable : null,
             };
         }
 
-        var notAvailable = new List<string>();
         var (route, programs) = await ReadRouteAsync(s, chosen, notAvailable, ct);
-        if (includeTools) route = await AddToolsAsync(s, chosen.Id, route, programs, notAvailable, ct);
+        if (includeTools)
+        {
+            var (withTools, toolsCapped) = await AddToolsAsync(s, chosen.Id, route, programs, notAvailable, ct);
+            (route, capped) = (withTools, capped || toolsCapped);
+        }
         return new PartRouting(s.Now, wanted, capped)
         {
             Part = route,
@@ -324,7 +330,8 @@ public sealed partial class SqlMakinoReader
     // --- tools a machining program needs ---
 
     /// <summary>The tool types (first cutter rows) of every main program this part's machining jobs use (@partId),
-    /// with the FTN's comment. Null when the cell has no MainProgramTools (or it lacks the program/FTN columns).</summary>
+    /// with the FTN's comment, cap + 1. Null when the cell has no MainProgramTools (or it lacks the program/FTN
+    /// columns).</summary>
     internal static string? ProgramToolsSql(SchemaInfo schema)
     {
         const string t = "MainProgramTools";
@@ -344,7 +351,7 @@ public sealed partial class SqlMakinoReader
         var cutter = schema.Has(t, "CutterNo") ? "m.CutterNo = 1 AND " : "";
         var order = schema.Has(t, "ProgramToolNumber") ? "m.NCProgramFileID, m.ProgramToolNumber, m.FTN" : "m.NCProgramFileID, m.FTN";
         return $"""
-            SELECT {cols}
+            SELECT TOP (@take) {cols}
             FROM MainProgramTools m
             WHERE {cutter}m.NCProgramFileID IN (
                 SELECT mj.NCProgramFileID FROM MachineJobs mj JOIN Jobs j ON j.JobID = mj.JobID
@@ -377,19 +384,22 @@ public sealed partial class SqlMakinoReader
         return (usable, missing.Count > 0 ? missing : null);
     }
 
-    private static async Task<PartRoute> AddToolsAsync(
+    /// <summary>The route with each machining job's tools; Capped when the part's programs list more tool rows than
+    /// the row limit (the rest are left out).</summary>
+    private async Task<(PartRoute Route, bool Capped)> AddToolsAsync(
         Session s, int partId, PartRoute route, List<List<int?>> programs, List<string> notAvailable, CancellationToken ct)
     {
         if (ProgramToolsSql(s.Schema) is not { } sql)
         {
             notAvailable.Add("tools each program needs");
-            return route;
+            return (route, false);
         }
         var settings = await ToolSettingsAsync(s, ct);
 
         var rows = new List<(int Program, int Ftn, int? Ptn, int Needed, string? Cutting, string Name)>();
         using (var cmd = Command(s.Connection, sql))
         {
+            AddTake(cmd);
             cmd.Parameters.Add("@partId", System.Data.SqlDbType.Int).Value = partId;
             using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
@@ -401,6 +411,8 @@ public sealed partial class SqlMakinoReader
                     Str(r, "FTNComment")));
             }
         }
+        var toolsCapped = rows.Count > _cap;
+        if (toolsCapped) rows.RemoveRange(_cap, rows.Count - _cap);
 
         // Usable counts need the tool tables; on a cell where they aren't readable (a remote tool crib that is down)
         // the counts are "not available", never zero.
@@ -433,6 +445,6 @@ public sealed partial class SqlMakinoReader
                 return tools.Count > 0 ? job with { Tools = tools } : job;
             }).ToList(),
         }).ToList();
-        return route with { Processes = processes };
+        return (route with { Processes = processes }, toolsCapped);
     }
 }
