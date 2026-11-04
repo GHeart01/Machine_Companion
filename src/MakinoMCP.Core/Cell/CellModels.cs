@@ -135,24 +135,38 @@ public sealed record OrderList(DateTime ServerTime, bool Capped, IReadOnlyList<O
 }
 
 /// <summary>Quantity is the order's required quantity; Completed the time it completed. CompletedQty: good parts out
-/// of the last process; ScrapQty: scrapped in any process; RemainingQty: not started yet (first process).</summary>
+/// of the last process; ScrapQty: scrapped in any process; RemainingQty: not started yet (first process). get_orders
+/// lists the whole queue, so the JSON leaves out fields at their default: Suspended when false, Due and Completed when
+/// null, a quantity of 0 (the properties themselves keep 0, so code reading them can tell 0 from not available).</summary>
 public sealed record OrderInfo(
     string Name,
     string Part,
     string Status,
-    int Quantity,
-    bool Suspended,
-    DateTime? Due,
-    DateTime? Completed)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int Quantity,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool Suspended,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTime? Due,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTime? Completed)
 {
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [JsonIgnore]
     public int? CompletedQty { get; init; }
 
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [JsonIgnore]
     public int? ScrapQty { get; init; }
 
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [JsonIgnore]
     public int? RemainingQty { get; init; }
+
+    // What the JSON shows: the quantities, 0 left out.
+    [JsonPropertyName("completedQty"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? CompletedQtyShown => NonZero(CompletedQty);
+
+    [JsonPropertyName("scrapQty"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ScrapQtyShown => NonZero(ScrapQty);
+
+    [JsonPropertyName("remainingQty"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? RemainingQtyShown => NonZero(RemainingQty);
+
+    private static int? NonZero(int? n) => n is 0 ? null : n;
 }
 
 public sealed record PalletList(DateTime ServerTime, bool Capped, IReadOnlyList<PalletInfo> Pallets);

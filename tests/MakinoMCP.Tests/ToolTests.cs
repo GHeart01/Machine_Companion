@@ -333,6 +333,18 @@ public sealed class ToolTests : IDisposable
 
         var orders = Parse(await CellTools.GetOrders(context, ct: CancellationToken.None));
         Assert.Equal(40, orders.GetProperty("orders")[0].GetProperty("completedQty").GetInt32());
+        // The queue lists every active order, so fields at their default are left out: suspended only when true,
+        // completed only once set, quantities of 0 left out.
+        var first = orders.GetProperty("orders")[0];
+        Assert.False(first.TryGetProperty("suspended", out _));
+        Assert.False(first.TryGetProperty("completed", out _));
+        Assert.True(first.TryGetProperty("due", out _));
+        var idleOrder = orders.GetProperty("orders")[1];
+        Assert.True(idleOrder.GetProperty("suspended").GetBoolean());
+        Assert.False(idleOrder.TryGetProperty("completedQty", out _));
+        Assert.False(idleOrder.TryGetProperty("scrapQty", out _));
+        Assert.Equal(5, idleOrder.GetProperty("remainingQty").GetInt32());
+        Assert.False(idleOrder.TryGetProperty("due", out _));
 
         Assert.Equal(3, production.GetProperty("otherActiveOrders").GetInt32());
         var idle = Parse(await CellTools.GetProduction(context, includeIdle: true, ct: CancellationToken.None));
@@ -441,6 +453,12 @@ public sealed class ToolTests : IDisposable
             Assert.Contains("matched against both ITNs (physical tools) and FTNs (tool types)", DescriptionOf(tool, "tool"));
         Assert.Contains("the device filter applies, the tool filter and tool number don't", DescriptionOf("GetTools"));
         Assert.Contains("lifeWarningTransitions", DescriptionOf("GetToolChanges"));
+        // Tool changes look back 3 days by default (a busy cell logs ~30 changes a day); the other logs 7.
+        Assert.Equal(3, typeof(CellTools).GetMethod("GetToolChanges")!.GetParameters().Single(p => p.Name == "days").DefaultValue);
+        Assert.Contains("Default 3.", DescriptionOf("GetToolChanges", "days"));
+        Assert.Contains("Default: the last 3 days", DescriptionOf("GetToolChanges"));
+        Assert.Equal(7, typeof(CellTools).GetMethod("GetToolAlarms")!.GetParameters().Single(p => p.Name == "days").DefaultValue);
+        Assert.Contains("left out", DescriptionOf("GetOrders"));
         Assert.Contains("instructions set at a work-set station", DescriptionOf("GetAttention"));
         Assert.DoesNotContain("waits for the operator", DescriptionOf("GetAttention"));
         Assert.Contains("CNC alarms are limited to about the last 200 regardless", DescriptionOf("GetCellOverview"));

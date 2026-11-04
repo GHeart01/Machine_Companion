@@ -80,7 +80,9 @@ public static class CellTools
     [McpServerTool(Name = "get_orders", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("Is there work queued in the cell, and what has finished? Orders, latest due first: name, part, " +
                  "status, quantity (required), completedQty (good parts out of the last process), scrapQty, " +
-                 "remainingQty (not started yet), suspended, due and completed time. Default: active orders only (not " +
+                 "remainingQty (not started yet), suspended, due and completed time. It lists the whole queue, so fields " +
+                 "at their default are left out: suspended only when true, due and completed only when set, a quantity of " +
+                 "0 (notAvailable says when the quantities can't be read). Default: active orders only (not " +
                  "complete, cancelled or undefined); activeOnly=false includes finished ones too. get_production adds " +
                  "parts in process and the counts per day.")]
     public static Task<string> GetOrders(
@@ -102,6 +104,8 @@ public static class CellTools
         "match a tool and a tool type at once; each row carries both itn and ftn. Leave empty for every tool.";
 
     private const string DaysParam = "How many days back to look, from serverTime. Default 7.";
+
+    private const string ChangeDaysParam = "How many days back to look, from serverTime. Default 3.";
 
     [McpServerTool(Name = "get_tools", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("Which tools need attention, and where is a tool? summary: each device's tool count by status " +
@@ -136,10 +140,10 @@ public static class CellTools
                  "routine updates are left out (lifeUpdatesLeftOut): the life-count ticks after each use, and rows in " +
                  "which a tool only stepped to life warning (routine wear), counted in lifeWarningTransitions; " +
                  "includeLifeUpdates=true lists both. notAvailable names what this cell's log can't tell apart. " +
-                 "Default: the last 7 days, every device and tool.")]
+                 "Default: the last 3 days (a busy cell logs dozens of changes a day), every device and tool.")]
     public static Task<string> GetToolChanges(
         ToolContext context,
-        [Description(DaysParam)] int days = 7,
+        [Description(ChangeDaysParam)] int days = 3,
         [Description(DeviceParam)] string? device = null,
         [Description(ToolParam)] int? tool = null,
         [Description("true: also the routine updates: life-count ticks after each use and steps to life warning (many rows). Default false.")] bool includeLifeUpdates = false,

@@ -74,6 +74,10 @@ internal sealed class FakeMakinoReader : IMakinoReader
             {
                 CompletedQty = 40, ScrapQty = 2, RemainingQty = 57,
             },
+            new OrderInfo("ORDER-002", "FABRIKAM-PLATE", "in progress", 5, true, null, null)
+            {
+                CompletedQty = 0, ScrapQty = 0, RemainingQty = 5,
+            },
         ]), ct);
 
     public Task<PalletList> GetPalletsAsync(CancellationToken ct) =>

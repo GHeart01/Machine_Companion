@@ -48,10 +48,13 @@ Machine-specific notes (which share it is published to, the live-test settings, 
   `ViewVehicleStatus`; `Quantities` → `ViewOrders`; `OrderCompletedQtyResults` → `ViewDayOrderCompletedQty`;
   `ToolAlarmHistory` → the alarm-bit changes in `PresetResults`. Only when neither works is the section
   `notAvailable` (or, for a tool's own table, an error).
-- **Outputs stay compact** (defaults aim at about 15 KB on a busy cell). Big lists are counted by default, with a flag
-  to list them (`includeLifeUpdates`: life ticks and steps to life warning, counted in `lifeWarningTransitions`;
-  `includeParked`; `includeIdle`); `includeTools` on get_part_routing is an opt-out (default true). Per-day
-  production totals have their own `dailyCapped`; a routing's fixtures and tools share its `capped`.
+- **Outputs stay compact** (defaults aim at about 15 KB on a busy cell; get_tool_changes looks back 3 days for that,
+  the other logs 7). Big lists are counted by default, with a flag to list them (`includeLifeUpdates`: life ticks and
+  steps to life warning, counted in `lifeWarningTransitions`; `includeParked`; `includeIdle`); `includeTools` on
+  get_part_routing is an opt-out (default true). Per-day production totals have their own `dailyCapped`; a routing's
+  fixtures and tools share its `capped`. get_orders is the one tool allowed above the target, because it is the
+  whole queue: it lists every active order and leaves out fields at their default instead (false `suspended`, null
+  dates, quantities of 0).
 - **Public repo hygiene.** Nothing specific to any one company in tracked files: examples use `MAKINO-CELL-PC`,
   `your-login`, `\\server\Tools`; test data is sample data. `scripts/check-private.ps1` (and CI, via the
   `PRIVATE_PATTERNS` secret) fails on private names. `docs/superpowers/`, `.superpowers/` and real settings files are

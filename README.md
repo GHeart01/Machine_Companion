@@ -114,7 +114,7 @@ yet. `publish.ps1` replaces the launcher only when it changed, renaming the old 
 | `get_orders` | Queued and finished orders with part, status, quantity, completed, scrap and remaining quantities, and due time. |
 | `get_pallets` | Each pallet's status, location and fixtures. |
 | `get_tools` | Which tools need attention and where a tool is: status per device, life used and remaining, measured length and diameter. |
-| `get_tool_changes` | What changed in the tool data (measurements, imports, edits, alarms), newest first; routine life-count updates and tools that only reached their life warning are counted, and listed only on request. |
+| `get_tool_changes` | What changed in the tool data (measurements, imports, edits, alarms), newest first; routine life-count updates and tools that only reached their life warning are counted, and listed only on request. Default: the last 3 days. |
 | `get_tool_alarms` | Which tools alarmed lately (worn out, broken, ...), with the tool's life and size then. |
 | `get_tool_movements` | Tools put into or taken out of the machines, with who and why. |
 | `get_part_routing` | How a part is made: processes, jobs, programs and fixtures, and whether the tools each program needs are on the machines. The tool check is approximate: main program only, subprograms not followed, remaining life not checked. |
