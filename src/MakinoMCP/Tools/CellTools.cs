@@ -102,7 +102,8 @@ public static class CellTools
     [Description("Which tools need attention, and where is a tool? summary: every device's tool count by status " +
                  "(ready, life warning, offset error, alarm, unknown), always over all tools. tools: the tools the filter " +
                  "picks, most severe first: itn (the physical tool), ftn (its tool type), name (the FTN comment), kind, " +
-                 "location (machine and pot, or the tool crib / presetter), status, flags (alarm tool, prohibited, " +
+                 "location (machine and pot, or the tool crib / presetter), status (derived as the System Console " +
+                 "shows it: an alarm bit set means alarm even if the stored status still says ready), flags (alarm tool, prohibited, " +
                  "absent), movingTo (during a tool in/out), and per cutter: status, alarms, life and measured length/" +
                  "diameter (in lengthUnit, mm or inch as the cell keeps them). life: unit (min, count, m or inch), limit, " +
                  "warnAtUsed, used, remaining " +
@@ -110,7 +111,8 @@ public static class CellTools
                  "true means the cell doesn't say and up was assumed); note \"not life-managed\" means the tool has no " +
                  "life limit, so no percentage. Filters: problems (default: status life warning, offset error or alarm, " +
                  "an alarm/absent/prohibited flag, or 90 % or more of its life used), near_end (80 % used or past its " +
-                 "warning), alarm, absent, all. Giving a tool number without a filter shows that tool whatever its state.")]
+                 "warning), alarm, absent, all. Giving a tool number without a filter shows that tool whatever its state. " +
+                 "notAvailable says when this cell lacks what a filter needs, so it couldn't be applied.")]
     public static Task<string> GetTools(
         ToolContext context,
         [Description(DeviceParam)] string? device = null,

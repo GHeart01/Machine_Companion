@@ -127,8 +127,8 @@ public class ToolReaderTests
     {
         Assert.Equal(101.234, SqlMakinoReader.Length(10123400, "mm"));
         Assert.Equal(-0.001, SqlMakinoReader.Length(-80, "mm")); // 3 decimals in mm
-        Assert.Equal(0.375, SqlMakinoReader.Length(37500, "inch"));
-        Assert.Equal(4.9976, SqlMakinoReader.Length(499760, "inch")); // 4 decimals in inch
+        Assert.Equal(0.625, SqlMakinoReader.Length(62500, "inch"));
+        Assert.Equal(3.1234, SqlMakinoReader.Length(312340, "inch")); // 4 decimals in inch
         Assert.Null(SqlMakinoReader.Length(0, "mm"));
         Assert.Null(SqlMakinoReader.Length(null, "inch"));
     }
@@ -171,7 +171,7 @@ public class ToolReaderTests
         Assert.Equal(2, sql.Split("SELECT TOP (@take) i.ITNID").Length - 1); // tools, and the cutters of those tools
         Assert.Contains("(@device IS NULL OR l.CurrentDeviceID = @device)", sql);
         Assert.Contains("(@tool IS NULL OR i.ITN = @tool OR f.FTN = @tool)", sql);
-        Assert.Contains("i.Status IN (2, 3, 4)", sql);
+        Assert.Contains(SqlMakinoReader.DerivedStatusSql(SchemaWithout()) + " IN (2, 3, 4)", sql);
         Assert.Contains("i.AbsentTool = 1", sql);
         Assert.Contains("i.ProhibitTool = 1", sql);
         Assert.Contains("c.BTSAlarm = 1", sql);
@@ -186,11 +186,11 @@ public class ToolReaderTests
         Assert.DoesNotContain("* 100 >= 90 *", nearEnd);
 
         var alarm = SqlMakinoReader.ToolsSql(SchemaWithout(), "alarm");
-        Assert.Contains("i.Status = 4", alarm);
+        Assert.Contains(SqlMakinoReader.DerivedStatusSql(SchemaWithout()) + " = 4", alarm);
         Assert.DoesNotContain("c.TLWarning = 1", alarm); // a life warning is not an alarm
 
         Assert.Contains("i.AbsentTool = 1", SqlMakinoReader.ToolsSql(SchemaWithout(), "absent"));
-        Assert.DoesNotContain("i.Status IN", SqlMakinoReader.ToolsSql(SchemaWithout(), "all"));
+        Assert.DoesNotContain(" IN (2, 3, 4)", SqlMakinoReader.ToolsSql(SchemaWithout(), "all"));
     }
 
     [Fact]
@@ -210,7 +210,9 @@ public class ToolReaderTests
     public void Tool_summary_counts_every_tool_per_device_and_status()
     {
         var sql = SqlMakinoReader.ToolSummarySql(SchemaWithout());
-        Assert.Contains("GROUP BY l.CurrentDeviceID, i.Status", sql);
+        Assert.Contains($"{SqlMakinoReader.DerivedStatusSql(SchemaWithout())} AS Status", sql);
+        Assert.Contains("GROUP BY DeviceID, Status", sql);
+        Assert.Contains("OUTER APPLY", sql);
         Assert.Contains("(@device IS NULL OR l.CurrentDeviceID = @device)", sql);
         Assert.DoesNotContain("@tool", sql);
     }
@@ -218,11 +220,16 @@ public class ToolReaderTests
     [Fact]
     public void Usable_tools_are_status_ready_or_life_warning_per_device_and_ftn()
     {
-        var sql = SqlMakinoReader.UsableToolsSql(3);
+        var sql = SqlMakinoReader.UsableToolsSql(SchemaWithout(), 3);
+        Assert.NotNull(sql);
         Assert.Contains("i.Status IN (1, 2)", sql);
         Assert.Contains("f.FTN IN (@ftn0, @ftn1, @ftn2)", sql);
         Assert.Contains("GROUP BY l.CurrentDeviceID, f.FTN", sql);
-        Assert.Throws<ArgumentOutOfRangeException>(() => SqlMakinoReader.UsableToolsSql(0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => SqlMakinoReader.UsableToolsSql(SchemaWithout(), 0));
+        // Without the status or the location the count can't be made: null, not a wrong count.
+        Assert.Null(SqlMakinoReader.UsableToolsSql(SchemaWithout("IndividualToolData.Status"), 3));
+        Assert.Null(SqlMakinoReader.UsableToolsSql(SchemaWithout("ToolLocation.CurrentDeviceID"), 3));
+        Assert.Null(SqlMakinoReader.UsableToolsSql(SchemaWithout("FunctionalToolData.FTN"), 3));
     }
 
     // --- get_tool_changes ---
@@ -344,6 +351,86 @@ public class ToolReaderTests
         Assert.Contains("ORDER BY t.InOutDateTime DESC", sql);
         Assert.Contains("CAST(NULL AS varchar(4000)) AS ToolOutReason",
             SqlMakinoReader.ToolMovementsSql(SchemaWithout("ToolInputOutputResults.ToolOutReason")));
+    }
+
+    // --- derived status (as the System Console shows it) ---
+
+    [Fact]
+    public void Status_is_derived_from_the_alarm_bits_like_the_console()
+    {
+        // A stale stored "ready" with an alarm bit set is an alarm; a warning bit alone is a life warning.
+        Assert.Equal(4, SqlMakinoReader.DerivedStatus(alarm: true, stored: 1, warning: false));
+        Assert.Equal(2, SqlMakinoReader.DerivedStatus(alarm: false, stored: 1, warning: true));
+        Assert.Equal(3, SqlMakinoReader.DerivedStatus(alarm: false, stored: 3, warning: true)); // stored non-ready kept
+        Assert.Equal(4, SqlMakinoReader.DerivedStatus(alarm: true, stored: 3, warning: false)); // alarm wins
+        Assert.Equal(1, SqlMakinoReader.DerivedStatus(alarm: false, stored: 1, warning: false));
+        Assert.Equal(0, SqlMakinoReader.DerivedStatus(alarm: false, stored: null, warning: false));
+    }
+
+    [Fact]
+    public void Derived_status_sql_puts_alarm_bits_first_and_is_used_to_count_and_sort()
+    {
+        var derived = SqlMakinoReader.DerivedStatusSql(SchemaWithout());
+        Assert.StartsWith("CASE WHEN i.AlarmTool = 1 OR cb.AnyAlarm = 1 THEN 4", derived);
+        Assert.Contains("WHEN i.Status <> 1 THEN i.Status", derived);
+        Assert.Contains("WHEN cb.AnyWarning = 1 THEN 2", derived);
+        Assert.True(derived.IndexOf("THEN 4", StringComparison.Ordinal) < derived.IndexOf("i.Status <> 1", StringComparison.Ordinal));
+
+        var tools = SqlMakinoReader.ToolsSql(SchemaWithout(), "all");
+        Assert.Contains($"{derived} AS Status", tools);
+        Assert.Contains($"ORDER BY CASE {derived} WHEN 4 THEN 0", tools);
+        // Every cutter alarm bit but the warning counts as an alarm; missing bit columns are left out.
+        Assert.Contains("ca.BTSAlarm = 1", tools);
+        Assert.Contains("ca.STSNotOK = 1", tools);
+        Assert.Contains("CASE WHEN ca.TLWarning = 1 THEN 1 ELSE 0 END", tools);
+        Assert.DoesNotContain("ca.STSNotOK", SqlMakinoReader.ToolsSql(SchemaWithout("IndividualToolCutterData.STSNotOK"), "all"));
+
+        // Nothing to derive from: unknown, never a made-up "ready".
+        var bare = SqlMakinoReader.DerivedStatusSql(SchemaWithout(
+            ["IndividualToolData.Status", "IndividualToolData.AlarmTool", .. AlarmBits.Select(b => "IndividualToolCutterData." + b)]));
+        Assert.Equal("0", bare);
+    }
+
+    // --- filters that can't be applied ---
+
+    [Fact]
+    public void Filter_without_any_of_its_columns_is_reported_not_silently_empty()
+    {
+        var schema = SchemaWithout("IndividualToolData.AbsentTool");
+        Assert.Null(SqlMakinoReader.ToolFilterSql(schema, "absent"));
+        Assert.Contains("1 = 0", SqlMakinoReader.ToolsSql(schema, "absent"));
+        Assert.Equal("absent flag (the absent filter couldn't be applied)", SqlMakinoReader.FilterNotAvailable("absent"));
+        Assert.NotNull(SqlMakinoReader.ToolFilterSql(SchemaWithout(), "absent"));
+        Assert.NotNull(SqlMakinoReader.ToolFilterSql(schema, "problems")); // other columns still serve
+    }
+
+    // --- change words: never empty, unknown types and values ---
+
+    [Fact]
+    public void Change_words_are_never_empty_for_a_kept_row()
+    {
+        // Nothing shown changed (a rewrite with the same values, kept with includeLifeUpdates).
+        var same = new Dictionary<string, int?> { ["LengthOld"] = 100, ["LengthNew"] = 100 };
+        Assert.Equal(["tool data updated"],
+            SqlMakinoReader.ChangeWords(SchemaWithout(), c => same.GetValueOrDefault(c), lifeType: 3, remain: false, "mm"));
+
+        // A reset on another life kind than the row's type is still shown, in that kind's unit.
+        var other = new Dictionary<string, int?> { ["ActualToolLifeCountOld"] = 40, ["ActualToolLifeCountNew"] = 0 };
+        Assert.Equal(["life used 40 → 0 count (reset)"],
+            SqlMakinoReader.ChangeWords(SchemaWithout(), c => other.GetValueOrDefault(c), lifeType: 3, remain: false, "mm"));
+    }
+
+    [Fact]
+    public void Change_words_show_an_unknown_life_type_as_code_and_a_missing_old_value_as_unknown()
+    {
+        var odd = new Dictionary<string, int?> { ["ActualToolLifeSecondOld"] = 120, ["ActualToolLifeSecondNew"] = 0 };
+        Assert.Equal(["life used 120 → 0 code -1 (reset)"],
+            SqlMakinoReader.ChangeWords(SchemaWithout(), c => odd.GetValueOrDefault(c), lifeType: -1, remain: false, "mm"));
+        Assert.Equal("code -1", SqlMakinoReader.Life(-1, 500, 0, 50, false)!.Unit); // the same word Life() uses
+
+        var fresh = new Dictionary<string, int?> { ["StatusOld"] = null, ["StatusNew"] = 1, ["LengthOld"] = null, ["LengthNew"] = 10000000 };
+        Assert.Equal(["status unknown → ready", "length unknown → 100.000 mm"],
+            SqlMakinoReader.ChangeWords(SchemaWithout(), c => fresh.GetValueOrDefault(c), lifeType: 3, remain: false, "mm"));
     }
 
     [Fact]

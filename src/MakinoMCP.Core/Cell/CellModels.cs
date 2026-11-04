@@ -163,14 +163,21 @@ public sealed record ToolList(
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? LengthUnitAssumed { get; init; }
+
+    /// <summary>What this cell lacks for the chosen filter, which then couldn't be applied (Tools is empty).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? NotAvailable { get; init; }
 }
 
 /// <summary>How many tools sit on a device, and how many of them are in each status (statuses with none left out).</summary>
 public sealed record DeviceToolCount(string Device, int Tools, IReadOnlyDictionary<string, int> ByStatus);
 
 /// <summary>One physical tool (ITN) of a tool type (FTN). Name is the FTN's comment, Location the device and pot
-/// ("MC1 pot 20", "CRIB1 (tool crib)"), MovingTo the place reserved for it during a tool in/out. Flags: alarm tool,
-/// prohibited, absent. LastUsed and LastUsedProgram are the CNC's raw values (format not confirmed).</summary>
+/// ("MC1 pot 20", "CRIB1 (tool crib)"), MovingTo the place reserved for it during a tool in/out. Status (and each
+/// cutter's) is derived as the System Console shows it: an alarm bit (AlarmTool or a cutter's) → alarm; else a stored
+/// status other than ready; else a life warning bit → life warning; else ready. Flags: alarm tool, prohibited, absent.
+/// LastUsed is the CNC's raw value (format not confirmed); LastUsedProgram the O-number of the program that last used
+/// the tool.</summary>
 public sealed record ToolInfo(int Itn, int? Ftn, string Name, string Location, string Status, IReadOnlyList<CutterInfo> Cutters)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

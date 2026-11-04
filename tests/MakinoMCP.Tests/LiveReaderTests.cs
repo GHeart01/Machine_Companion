@@ -141,8 +141,22 @@ public class LiveReaderTests
 
         var ftns = all.Tools.Select(t => t.Ftn).OfType<int>().Distinct().Take(20).ToList();
         var usable = await Reader().GetUsableToolCountsAsync(ftns, ct);
+        Assert.NotNull(usable);
         Assert.All(usable, u => Assert.Contains(u.Key.Ftn, ftns));
         Assert.All(usable.Values, n => Assert.True(n > 0));
+
+        // The summary counts the same derived status the list shows: every tool, uncapped, matches it per device.
+        var everything = await Reader(100000).GetToolsAsync(null, "all", null, ct);
+        Assert.False(everything.Capped);
+        foreach (var d in everything.Summary)
+        {
+            var mine = everything.Tools.Where(t => t.Location == d.Device || t.Location.StartsWith(d.Device + " ", StringComparison.Ordinal));
+            foreach (var (status, n) in d.ByStatus) Assert.Equal(n, mine.Count(t => t.Status == status));
+        }
+        // An alarm bit always reads as alarm, whatever the stored status says.
+        Assert.All(everything.Tools.Where(t => (t.Flags?.Contains("alarm tool") ?? false)
+                                               || t.Cutters.Any(c => c.Alarms?.Any(a => a != "tool life warning") ?? false)),
+            t => Assert.Equal("alarm", t.Status));
 
         foreach (var filter in new[] { "near_end", "alarm", "absent" })
             Assert.Equal(filter, (await Reader().GetToolsAsync(null, filter, null, ct)).Filter);

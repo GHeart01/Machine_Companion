@@ -223,7 +223,7 @@ public static class Codes
         [0] = "seconds",
         [1] = "distance",
         [2] = "count",
-        [3] = "tenths of a second",
+        [3] = "seconds (the control counts tenths)",
     };
 
     // FunctionalToolCutterData.Kind (ToolKind).

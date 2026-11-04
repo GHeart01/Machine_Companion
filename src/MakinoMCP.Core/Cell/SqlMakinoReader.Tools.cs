@@ -19,8 +19,6 @@ public sealed partial class SqlMakinoReader
     private const string AlarmHistory = "ToolAlarmHistory";
     private const string InOut = "ToolInputOutputResults";
 
-    private const string ToolFrom =
-        "IndividualToolData i LEFT JOIN FunctionalToolData f ON f.FTNID = i.FTNID LEFT JOIN ToolLocation l ON l.ITNID = i.ITNID";
 
     // ToolAlarmHistory's alarm bit columns: the cutter's columns, except that the long broken-tool bit is BT2Alarm.
     private static readonly (string Column, int Flag)[] HistoryAlarmColumns =
@@ -158,6 +156,44 @@ public sealed partial class SqlMakinoReader
         return list.Count == 0 ? "1 = 0" : string.Join(" OR ", list);
     }
 
+    // --- status as the System Console shows it ---
+
+    // The cutter alarm bits that make a cutter (and its tool) an alarm: every one but the life warning.
+    private static IEnumerable<string> CutterAlarmBits(SchemaInfo schema) =>
+        Codes.ToolAlarmColumns.Select(c => c.Column).Where(c => c is not ("AlarmTool" or "TLWarning") && schema.Has(Itc, c));
+
+    /// <summary>A status derived the way the System Console shows it, not just the stored one: an alarm bit set →
+    /// alarm (4); else a stored status other than ready is kept (offset error, alarm, life warning, unknown); else the
+    /// life warning bit → life warning (2); else the stored status (ready), or 0 unknown when there is none.</summary>
+    internal static int DerivedStatus(bool alarm, int? stored, bool warning) =>
+        alarm ? 4 : stored is { } kept && kept != 1 ? kept : warning ? 2 : stored ?? 0;
+
+    /// <summary><see cref="DerivedStatus"/> for a tool (alias i) in SQL: AlarmTool or any cutter alarm bit (cb, the
+    /// OUTER APPLY in <see cref="ToolFromSql"/>) first. "0" (unknown) when this cell has none of the columns.</summary>
+    internal static string DerivedStatusSql(SchemaInfo schema)
+    {
+        var status = schema.Has(Itd, "Status");
+        var alarm = new List<string>();
+        if (schema.Has(Itd, "AlarmTool")) alarm.Add("i.AlarmTool = 1");
+        if (CutterAlarmBits(schema).Any()) alarm.Add("cb.AnyAlarm = 1");
+        var whens = new List<string>();
+        if (alarm.Count > 0) whens.Add($"WHEN {string.Join(" OR ", alarm)} THEN 4");
+        if (status) whens.Add("WHEN i.Status <> 1 THEN i.Status");
+        if (schema.Has(Itc, "TLWarning")) whens.Add("WHEN cb.AnyWarning = 1 THEN 2");
+        return whens.Count == 0 ? "0" : $"CASE {string.Join(" ", whens)} ELSE {(status ? "ISNULL(i.Status, 0)" : "0")} END";
+    }
+
+    /// <summary>The tools with their tool type, place and (cb) whether any cutter has an alarm or a life warning bit.</summary>
+    private static string ToolFromSql(SchemaInfo schema)
+    {
+        var alarm = Any(CutterAlarmBits(schema).Select(b => $"ca.{b} = 1"));
+        var warning = schema.Has(Itc, "TLWarning") ? "ca.TLWarning = 1" : "1 = 0";
+        return "IndividualToolData i LEFT JOIN FunctionalToolData f ON f.FTNID = i.FTNID LEFT JOIN ToolLocation l ON l.ITNID = i.ITNID"
+               + $" OUTER APPLY (SELECT MAX(CASE WHEN {alarm} THEN 1 ELSE 0 END) AS AnyAlarm,"
+               + $" MAX(CASE WHEN {warning} THEN 1 ELSE 0 END) AS AnyWarning"
+               + " FROM IndividualToolCutterData ca WHERE ca.ITNID = i.ITNID) cb";
+    }
+
     // --- get_tools ---
 
     public async Task<ToolList> GetToolsAsync(string? device, string? filter, int? tool, CancellationToken ct)
@@ -210,7 +246,8 @@ public sealed partial class SqlMakinoReader
                 if (column != "AlarmTool" && Bool(r, column) == true) flags |= flag;
             }
             var alarms = Codes.ToolAlarms(flags);
-            var cutter = new CutterInfo(Int(r, "CutterNo") ?? 0, Codes.ToolStatus(Int(r, "CutterStatus")))
+            var status = DerivedStatus((flags & ~0x4) != 0, Int(r, "CutterStatus"), (flags & 0x4) != 0); // 0x4: life warning
+            var cutter = new CutterInfo(Int(r, "CutterNo") ?? 0, Codes.ToolStatus(status))
             {
                 Alarms = alarms.Count > 0 ? alarms : null,
                 Life = Life(Int(r, "ToolLifeType"), Int(r, "ToolLife"), Int(r, "ToolLifeWarning"), Int(r, "ActualToolLife"),
@@ -233,6 +270,7 @@ public sealed partial class SqlMakinoReader
         return new ToolList(s.Now, capped, chosen, settings.LengthUnit, Summary(s, counts), shown)
         {
             LifeDirectionAssumed = Assumed(settings.LifeAssumed), LengthUnitAssumed = Assumed(settings.UnitAssumed),
+            NotAvailable = ToolFilterSql(s.Schema, chosen) is null ? [FilterNotAvailable(chosen)] : null,
         };
     }
 
@@ -255,26 +293,24 @@ public sealed partial class SqlMakinoReader
             .ToList();
     }
 
-    /// <summary>Every tool counted per device (its current place) and status; the device filter applies, the tool
-    /// filter doesn't. At most devices × statuses rows.</summary>
-    internal static string ToolSummarySql(SchemaInfo schema)
-    {
-        var status = schema.Has(Itd, "Status");
-        return $"""
-            SELECT l.CurrentDeviceID AS DeviceID, {(status ? "i.Status" : "CAST(NULL AS int)")} AS Status, COUNT(*) AS N
-            FROM IndividualToolData i LEFT JOIN ToolLocation l ON l.ITNID = i.ITNID
-            WHERE (@device IS NULL OR l.CurrentDeviceID = @device)
-            GROUP BY l.CurrentDeviceID{(status ? ", i.Status" : "")};
-            """;
-    }
+    /// <summary>Every tool counted per device (its current place) and derived status; the device filter applies, the
+    /// tool filter doesn't. At most devices × statuses rows.</summary>
+    internal static string ToolSummarySql(SchemaInfo schema) => $"""
+        SELECT DeviceID, Status, COUNT(*) AS N FROM (
+            SELECT l.CurrentDeviceID AS DeviceID, {DerivedStatusSql(schema)} AS Status
+            FROM {ToolFromSql(schema)}
+            WHERE (@device IS NULL OR l.CurrentDeviceID = @device)) x
+        GROUP BY DeviceID, Status;
+        """;
 
     /// <summary>Two result sets: the tools <paramref name="filter"/> picks (cap + 1, most severe first, then by place),
     /// and the cutters of exactly those tools. Expects @take, @device, @tool and @remain (1: the cell counts life down).</summary>
     internal static string ToolsSql(SchemaInfo schema, string filter)
     {
         var where = "(@device IS NULL OR l.CurrentDeviceID = @device) AND (@tool IS NULL OR i.ITN = @tool OR f.FTN = @tool)"
-                    + $" AND ({ToolFilterSql(schema, filter)})";
-        var status = schema.Has(Itd, "Status") ? "i.Status" : "0";
+                    + $" AND ({ToolFilterSql(schema, filter) ?? "1 = 0"})";
+        var status = DerivedStatusSql(schema);
+        var from = ToolFromSql(schema);
         var pot = schema.Has(Loc, "CurrentPot") ? "l.CurrentPot" : "0";
         var order = $"CASE {status} WHEN 4 THEN 0 WHEN 3 THEN 1 WHEN 2 THEN 2 ELSE 3 END, l.CurrentDeviceID, {pot}, i.ITN, i.ITNID";
 
@@ -282,7 +318,7 @@ public sealed partial class SqlMakinoReader
             "i.ITNID", "i.ITN", "f.FTN",
             Opt(schema, Ftd, "f", "FTNComment", type: Text),
             Opt(schema, Itd, "i", "ITNComment", type: Text),
-            Opt(schema, Itd, "i", "Status"),
+            $"{status} AS Status",
             Opt(schema, Itd, "i", "AlarmTool", type: "bit"),
             Opt(schema, Itd, "i", "ProhibitTool", type: "bit"),
             Opt(schema, Itd, "i", "AbsentTool", type: "bit"),
@@ -308,23 +344,34 @@ public sealed partial class SqlMakinoReader
             ]);
         return $"""
             SELECT TOP (@take) {toolColumns}
-            FROM {ToolFrom}
+            FROM {from}
             WHERE {where}
             ORDER BY {order};
             SELECT {cutterColumns}
             FROM IndividualToolCutterData cu
             JOIN IndividualToolData it ON it.ITNID = cu.ITNID
             LEFT JOIN FunctionalToolCutterData cf ON cf.FTNID = it.FTNID AND cf.CutterNo = cu.CutterNo
-            WHERE cu.ITNID IN (SELECT TOP (@take) i.ITNID FROM {ToolFrom} WHERE {where} ORDER BY {order})
+            WHERE cu.ITNID IN (SELECT TOP (@take) i.ITNID FROM {from} WHERE {where} ORDER BY {order})
             ORDER BY cu.ITNID, cu.CutterNo;
             """;
     }
 
-    /// <summary>The WHERE condition for a get_tools filter, over the tool (alias i) and, through EXISTS, its cutters
-    /// (c, with their FTN cutter data fc). Conditions on columns this cell lacks are left out.</summary>
-    internal static string ToolFilterSql(SchemaInfo schema, string filter)
+    /// <summary>What a filter needs that this cell lacks, for NotAvailable when <see cref="ToolFilterSql"/> is null.</summary>
+    internal static string FilterNotAvailable(string filter) => filter switch
     {
-        var status = schema.Has(Itd, "Status");
+        "absent" => "absent flag",
+        "alarm" => "tool status and alarm columns",
+        "near_end" => "tool status and life columns",
+        _ => "tool status, flag and alarm columns",
+    } + $" (the {filter} filter couldn't be applied)";
+
+    /// <summary>The WHERE condition for a get_tools filter, over the tool (alias i, its derived status) and, through
+    /// EXISTS, its cutters (c, with their FTN cutter data fc). Conditions on columns this cell lacks are left out; null
+    /// when none is left (the filter can't be applied on this cell).</summary>
+    internal static string? ToolFilterSql(SchemaInfo schema, string filter)
+    {
+        var derived = DerivedStatusSql(schema);
+        var status = derived != "0";
         var cutterStatus = schema.Has(Itc, "CutterStatus");
         var bits = Codes.ToolAlarmColumns.Select(c => c.Column).Where(c => c != "AlarmTool" && schema.Has(Itc, c)).ToList();
         var life = schema.Has(Itc, "ActualToolLife") && schema.Has(Ftc, "ToolLife");
@@ -344,32 +391,36 @@ public sealed partial class SqlMakinoReader
                   + $"ON fc.FTNID = i.FTNID AND fc.CutterNo = c.CutterNo WHERE c.ITNID = i.ITNID AND ({any}))";
         }
 
-        return filter switch
+        var condition = filter switch
         {
             "all" => "1 = 1",
             "absent" => Any([ToolBit("AbsentTool")]),
-            "alarm" => Any([
-                status ? "i.Status = 4" : null, ToolBit("AlarmTool"),
-                Cutter([cutterStatus ? "c.CutterStatus = 4" : null, .. bits.Where(b => b != "TLWarning").Select(b => $"c.{b} = 1")]),
-            ]),
+            "alarm" => Any([status ? $"{derived} = 4" : null]),
             "near_end" => Any([
-                status ? "i.Status = 2" : null,
+                status ? $"{derived} = 2" : null,
                 Cutter([cutterStatus ? "c.CutterStatus = 2" : null, bits.Contains("TLWarning") ? "c.TLWarning = 1" : null,
                     Worn(80), pastWarning]),
             ]),
             "problems" => Any([
-                status ? "i.Status IN (2, 3, 4)" : null, ToolBit("AlarmTool"), ToolBit("AbsentTool"), ToolBit("ProhibitTool"),
+                status ? $"{derived} IN (2, 3, 4)" : null, ToolBit("AlarmTool"), ToolBit("AbsentTool"), ToolBit("ProhibitTool"),
                 Cutter([cutterStatus ? "c.CutterStatus IN (2, 3, 4)" : null, .. bits.Select(b => $"c.{b} = 1"), Worn(90)]),
             ]),
             _ => throw new ArgumentOutOfRangeException(nameof(filter), filter, "not a tool filter"),
         };
+        return condition == "1 = 0" ? null : condition;
     }
 
-    /// <summary>For get_part_routing: how many usable tools (status ready or life warning, the rule the cell's own
-    /// lacking-tool check uses) of each of the FTNs <c>@ftn0 … @ftn{n-1}</c> sit on each device.</summary>
-    internal static string UsableToolsSql(int ftnCount)
+    /// <summary>For get_part_routing: how many usable tools (stored status ready or life warning, the rule the cell's
+    /// own lacking-tool check uses) of each of the FTNs <c>@ftn0 … @ftn{n-1}</c> sit on each device. Null when this cell
+    /// lacks a column the count needs (it can't be made, rather than made wrong).</summary>
+    internal static string? UsableToolsSql(SchemaInfo schema, int ftnCount)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(ftnCount, 1);
+        (string Table, string Column)[] needed =
+        [
+            (Itd, "ITNID"), (Itd, "FTNID"), (Itd, "Status"), (Ftd, "FTNID"), (Ftd, "FTN"), (Loc, "ITNID"), (Loc, "CurrentDeviceID"),
+        ];
+        if (needed.Any(n => !schema.Has(n.Table, n.Column))) return null;
         var names = string.Join(", ", Enumerable.Range(0, ftnCount).Select(n => $"@ftn{n}"));
         return $"""
             SELECT l.CurrentDeviceID AS DeviceID, f.FTN, COUNT(*) AS Usable
@@ -382,15 +433,17 @@ public sealed partial class SqlMakinoReader
     }
 
     /// <summary>Usable tools (see <see cref="UsableToolsSql"/>) per (device id, FTN) for the given FTNs, on the
-    /// session's connection; FTNs with none anywhere are absent from the result.</summary>
-    private static async Task<Dictionary<(int DeviceId, int Ftn), int>> UsableToolCountsAsync(
+    /// session's connection; FTNs with none anywhere are absent from the result. Null when the count can't be made on
+    /// this cell (a column missing).</summary>
+    private static async Task<Dictionary<(int DeviceId, int Ftn), int>?> UsableToolCountsAsync(
         Session s, IReadOnlyCollection<int> ftns, CancellationToken ct)
     {
         s.Schema.Require(Itd, Ftd, Loc);
         var counts = new Dictionary<(int, int), int>();
         foreach (var chunk in ftns.Distinct().Chunk(500))
         {
-            using var cmd = Command(s.Connection, UsableToolsSql(chunk.Length));
+            if (UsableToolsSql(s.Schema, chunk.Length) is not { } sql) return null;
+            using var cmd = Command(s.Connection, sql);
             for (var n = 0; n < chunk.Length; n++) cmd.Parameters.Add($"@ftn{n}", System.Data.SqlDbType.Int).Value = chunk[n];
             using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
@@ -400,7 +453,7 @@ public sealed partial class SqlMakinoReader
     }
 
     /// <summary>The same, on a connection of its own (for tests and callers outside a session).</summary>
-    internal async Task<Dictionary<(int DeviceId, int Ftn), int>> GetUsableToolCountsAsync(
+    internal async Task<Dictionary<(int DeviceId, int Ftn), int>?> GetUsableToolCountsAsync(
         IReadOnlyCollection<int> ftns, CancellationToken ct)
     {
         await using var s = await OpenAsync(ct);
@@ -478,11 +531,15 @@ public sealed partial class SqlMakinoReader
     }
 
     /// <summary>What changed in one PresetResults row, in words: status, lengths and offsets (in
-    /// <paramref name="lengthUnit"/>), alarm bits (on/off) and the life count in its unit, marked "(reset)" when it
+    /// <paramref name="lengthUnit"/>), alarm bits (on/off) and each life count in its unit, marked "(reset)" when it
     /// moved against its counting direction; a routine tick (with the counting direction) is left out when something
-    /// else changed too. Only pairs this cell has are read, through <paramref name="value"/> (column name → value).</summary>
+    /// else changed too. A missing old or new value reads "unknown"; an unknown life type shows raw numbers with
+    /// "code N", as <see cref="Life"/> does. Never empty: a row with nothing shown changed reads "tool data updated".
+    /// Only pairs this cell has are read, through <paramref name="value"/> (column name → value).</summary>
     internal static List<string> ChangeWords(SchemaInfo schema, Func<string, int?> value, int? lifeType, bool remain, string lengthUnit)
     {
+        static string Shown(int? v, Func<int?, string> text) => v is null ? "unknown" : text(v);
+
         var words = new List<string>();
         foreach (var (label, column, kind) in ChangePairs)
         {
@@ -491,27 +548,33 @@ public sealed partial class SqlMakinoReader
             if (old == now) continue;
             words.Add(kind switch
             {
-                PairKind.Status => $"{label} {Codes.ToolStatus(old)} → {Codes.ToolStatus(now)}",
-                PairKind.Mm => $"{label} {LengthText(old, lengthUnit)} → {LengthText(now, lengthUnit)} {lengthUnit}",
+                PairKind.Status => $"{label} {Shown(old, v => Codes.ToolStatus(v))} → {Shown(now, v => Codes.ToolStatus(v))}",
+                PairKind.Mm =>
+                    $"{label} {Shown(old, v => LengthText(v, lengthUnit))} → {Shown(now, v => LengthText(v, lengthUnit))} {lengthUnit}",
                 _ => $"{label} {(now == 1 ? "on" : "off")}",
             });
         }
 
-        var life = $"ActualToolLife{LifeKind(lifeType)}";
-        if (HasPair(schema, life))
+        var others = words.Count;
+        var unknownType = lifeType is not null and not (>= 0 and <= 3);
+        foreach (var kind in LifeKinds)
         {
-            int? old = value(life + "Old"), now = value(life + "New");
+            var column = $"ActualToolLife{kind}";
+            if (!HasPair(schema, column)) continue;
+            int? old = value(column + "Old"), now = value(column + "New");
+            if (old == now) continue;
             var reset = remain ? now > old : now < old;
-            if (old != now && (reset || words.Count == 0))
-            {
-                var time = LifeKind(lifeType) == "Second";
-                string Text(int? v) => time
-                    ? ((v ?? 0) / 60.0).ToString("0.0", CultureInfo.InvariantCulture)
-                    : (v ?? 0).ToString(CultureInfo.InvariantCulture);
-                var unit = time ? "min" : lifeType == 2 ? "count" : lengthUnit == "inch" ? "inch" : "m";
-                words.Add($"life {(remain ? "remaining" : "used")} {Text(old)} → {Text(now)} {unit}{(reset ? " (reset)" : "")}");
-            }
+            if (!reset && others > 0) continue;
+
+            var minutes = kind == "Second" && !unknownType;
+            var unit = unknownType ? CodeText(lifeType)
+                : kind switch { "Second" => "min", "Count" => "count", _ => lengthUnit == "inch" ? "inch" : "m" };
+            string Text(int? v) => Shown(v, x => minutes
+                ? (x!.Value / 60.0).ToString("0.0", CultureInfo.InvariantCulture)
+                : x!.Value.ToString(CultureInfo.InvariantCulture));
+            words.Add($"life {(remain ? "remaining" : "used")} {Text(old)} → {Text(now)} {unit}{(reset ? " (reset)" : "")}");
         }
+        if (words.Count == 0) words.Add("tool data updated");
         return words;
     }
 

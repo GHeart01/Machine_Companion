@@ -90,7 +90,7 @@ public class CodesTests
     public static TheoryData<string, int, string> NewTables => new()
     {
         { "ToolStatus", 2, "life warning" },
-        { "ToolLifeType", 3, "tenths of a second" },
+        { "ToolLifeType", 3, "seconds (the control counts tenths)" },
         { "ToolKind", 9, "face mill" },
         { "DevicePositionStatus", 3, "processing" },
         { "DeviceDashStatus", 4, "error" },
