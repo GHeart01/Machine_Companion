@@ -72,6 +72,11 @@ public static class CoworkConfig
         JsonNode? node;
         try
         {
+            // JsonNode accepts a name twice and only fails later, when the object is used: refuse it here.
+            using (var doc = JsonDocument.Parse(json))
+            {
+                if (HasDuplicateName(doc.RootElement)) throw new InvalidCoworkConfigException("it lists a name twice");
+            }
             node = JsonNode.Parse(json);
         }
         catch (JsonException e)
@@ -79,6 +84,23 @@ public static class CoworkConfig
             throw new InvalidCoworkConfigException("it isn't valid JSON", e);
         }
         return node as JsonObject ?? throw new InvalidCoworkConfigException("it isn't a JSON object");
+    }
+
+    /// <summary>True when any object, at any depth, has the same name twice (names are case-sensitive in JSON).</summary>
+    private static bool HasDuplicateName(JsonElement e)
+    {
+        switch (e.ValueKind)
+        {
+            case JsonValueKind.Object:
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var p in e.EnumerateObject())
+                    if (!seen.Add(p.Name) || HasDuplicateName(p.Value)) return true;
+                return false;
+            case JsonValueKind.Array:
+                return e.EnumerateArray().Any(HasDuplicateName);
+            default:
+                return false;
+        }
     }
 
     private static JsonObject? ServersOf(JsonObject root, bool create)

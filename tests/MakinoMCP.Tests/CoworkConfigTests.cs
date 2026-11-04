@@ -113,7 +113,45 @@ public class CoworkConfigTests
         Assert.Throws<InvalidCoworkConfigException>(() => CoworkConfig.Remove(json));
     }
 
+    [Theory]
+    [InlineData("""{ "a": 1, "a": 2 }""")]
+    [InlineData("""{ "mcpServers": { "x": { "command": "a" }, "x": { "command": "b" } } }""")]
+    [InlineData("""{ "mcpServers": { "makino": { "command": "a", "command": "b" } } }""")]
+    [InlineData("""{ "p": [ { "deep": { "k": 1, "k": 2 } } ] }""")]
+    public void A_name_listed_twice_is_refused_in_plain_words(string json)
+    {
+        var e = Assert.Throws<InvalidCoworkConfigException>(() => CoworkConfig.Add(json, Launcher));
+        Assert.Equal("it lists a name twice", e.Message);
+        Assert.Throws<InvalidCoworkConfigException>(() => CoworkConfig.Remove(json));
+        Assert.False(CoworkConfig.HasEntry(json));
+    }
+
+    [Fact]
+    public void Names_differing_only_in_case_are_different_names()
+    {
+        Assert.NotNull(CoworkConfig.Add("""{ "a": 1, "A": 2 }""", Launcher));
+    }
+
     // ------------------------------------------------------------------ files
+
+    [Fact]
+    public void A_file_with_a_name_listed_twice_is_left_untouched()
+    {
+        using var dir = new TempDir();
+        var path = Path.Combine(dir.Path, CoworkConfig.FileName);
+        const string twice = """{ "mcpServers": { "makino": { "command": "x" }, "makino": { "command": "y" } } }""";
+        File.WriteAllText(path, twice);
+
+        var add = CoworkConfig.AddToFile(path, Launcher, Now);
+        var remove = CoworkConfig.RemoveFromFile(path, Now);
+
+        Assert.Equal(FileChange.Invalid, add.Change);
+        Assert.Equal($"{path} wasn't changed: it lists a name twice.", add.Problem);
+        Assert.Equal(FileChange.Invalid, remove.Change);
+        Assert.Equal(twice, File.ReadAllText(path));
+        Assert.Single(Directory.GetFiles(dir.Path));
+        Assert.False(CoworkConfig.AnyHasEntry([path]));
+    }
 
     private static readonly DateTime Now = new(2026, 11, 3, 14, 5, 9);
 

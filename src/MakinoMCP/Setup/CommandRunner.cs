@@ -10,6 +10,10 @@ public sealed record CommandResult(int ExitCode, string Output, string Error, bo
     public string AllText => Error.Length == 0 ? Output : Output.Length == 0 ? Error : Output + "\n" + Error;
 }
 
+/// <summary>An argument that cmd.exe would change (%, !, a quote or a line break), so it can't be passed to a .cmd.</summary>
+public sealed class CmdArgumentException() : Exception(
+    "This folder's name can't be passed to the npm install of Claude Code; use the install line below or Claude Code's own installer.");
+
 /// <summary>Runs a program and captures what it prints. Injectable so tests never run the real Claude CLI.</summary>
 public interface ICommandRunner
 {
@@ -62,28 +66,38 @@ public sealed class ProcessCommandRunner(string workingDirectory) : ICommandRunn
 /// <summary>Windows command-line quoting, the rules programs use to split their arguments (CommandLineToArgvW).</summary>
 public static class CommandLine
 {
-    /// <summary>The file to start and its argument string. A .cmd or .bat (an npm install of Claude Code) goes
-    /// through cmd.exe, with AutoRun off (/d) and the whole line quoted once more for /s.</summary>
-    public static (string FileName, string Arguments) For(string program, IReadOnlyList<string> args)
+    /// <summary>True for a .cmd or .bat (an npm install of Claude Code), which Windows runs through cmd.exe.</summary>
+    public static bool RunsThroughCmd(string program)
     {
         var ext = Path.GetExtension(program);
-        if (ext.Equals(".cmd", StringComparison.OrdinalIgnoreCase) || ext.Equals(".bat", StringComparison.OrdinalIgnoreCase))
-        {
-            var cmd = Environment.GetEnvironmentVariable("ComSpec") is { Length: > 0 } comSpec
-                ? comSpec
-                : Path.Combine(Environment.SystemDirectory, "cmd.exe");
-            return (cmd, $"/d /s /c \"\"{program}\" {Join(args)}\"");
-        }
-        return (program, Join(args));
+        return ext.Equals(".cmd", StringComparison.OrdinalIgnoreCase) || ext.Equals(".bat", StringComparison.OrdinalIgnoreCase);
     }
 
-    public static string Join(IEnumerable<string> args) => string.Join(" ", args.Select(Quote));
+    /// <summary>True when cmd.exe would change the text even inside quotes: % and ! expand variables, a quote ends
+    /// the quoting, a line break ends the command. (&amp; ^ | &lt; &gt; and parentheses are safe inside quotes.)</summary>
+    public static bool ChangedByCmd(string arg) => arg.IndexOfAny(['%', '!', '"', '\n', '\r']) >= 0;
 
-    /// <summary>One argument, quoted only when it needs it. Backslashes are doubled only where they precede a quote
-    /// (inside the argument or the closing one), so paths stay as they are.</summary>
-    public static string Quote(string arg)
+    /// <summary>The file to start and its argument string. A .cmd or .bat goes through cmd.exe with AutoRun off
+    /// (/d), every argument quoted (so &amp; and ^ stay literal) and the whole line quoted once more for /s. Throws
+    /// <see cref="CmdArgumentException"/> for text cmd.exe would change anyway.</summary>
+    public static (string FileName, string Arguments) For(string program, IReadOnlyList<string> args)
     {
-        if (arg.Length > 0 && arg.IndexOfAny([' ', '\t', '\n', '\v', '"']) < 0) return arg;
+        if (!RunsThroughCmd(program)) return (program, Join(args));
+
+        if (ChangedByCmd(program) || args.Any(ChangedByCmd)) throw new CmdArgumentException();
+        var cmd = Environment.GetEnvironmentVariable("ComSpec") is { Length: > 0 } comSpec
+            ? comSpec
+            : Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        return (cmd, $"/d /s /c \"\"{program}\" {string.Join(" ", args.Select(a => Quote(a, always: true)))}\"");
+    }
+
+    public static string Join(IEnumerable<string> args) => string.Join(" ", args.Select(a => Quote(a)));
+
+    /// <summary>One argument, quoted when it needs it (or <paramref name="always"/>). Backslashes are doubled only where
+    /// they precede a quote (inside the argument or the closing one), so paths stay as they are.</summary>
+    public static string Quote(string arg, bool always = false)
+    {
+        if (!always && arg.Length > 0 && arg.IndexOfAny([' ', '\t', '\n', '\v', '"']) < 0) return arg;
 
         var b = new StringBuilder(arg.Length + 2).Append('"');
         var slashes = 0;

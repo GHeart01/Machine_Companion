@@ -7,7 +7,7 @@ namespace MakinoMCP.Tests;
 internal sealed class FakeRunner : ICommandRunner
 {
     private readonly Queue<CommandResult> _answers = new();
-    public List<(string Program, IReadOnlyList<string> Args)> Calls { get; } = [];
+    public List<(string Program, IReadOnlyList<string> Args, CancellationToken Ct)> Calls { get; } = [];
 
     public FakeRunner Then(int exitCode, string output = "", string error = "", bool timedOut = false)
     {
@@ -17,7 +17,7 @@ internal sealed class FakeRunner : ICommandRunner
 
     public Task<CommandResult> RunAsync(string program, IReadOnlyList<string> args, TimeSpan timeout, CancellationToken ct)
     {
-        Calls.Add((program, args.ToList()));
+        Calls.Add((program, args.ToList(), ct));
         if (_answers.Count == 0) throw new InvalidOperationException($"Unexpected call: {program} {string.Join(' ', args)}");
         return Task.FromResult(_answers.Dequeue());
     }
@@ -27,6 +27,7 @@ public class ClaudeRegistrationTests
 {
     private const string Claude = @"C:\Users\someone\AppData\Local\Programs\claude\claude.exe";
     private const string ShareLauncher = @"\\server\Tools\MakinoMCP\MakinoMCP.exe";
+    private static readonly ClaudeStatus Off = new(RegistrationState.Off);
     private const string SpacedLauncher = @"C:\Program Files\X Y\MakinoMCP.exe";
 
     // Shapes captured from claude mcp get / list (Claude Code 2.x). Paths are sample paths.
@@ -93,37 +94,72 @@ public class ClaudeRegistrationTests
 
     // ------------------------------------------------------------------ finding claude
 
-    [Fact]
-    public void PickClaude_takes_the_first_runnable_line()
+    private sealed class TempDir : IDisposable
     {
-        var where = "C:\\Users\\someone\\AppData\\Roaming\\npm\\claude\r\nC:\\Users\\someone\\AppData\\Roaming\\npm\\claude.cmd\r\n" +
-                    "C:\\Tools\\claude.exe\r\n";
-        Assert.Equal(@"C:\Users\someone\AppData\Roaming\npm\claude.cmd", ClaudeRegistration.PickClaude(where));
+        public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "makinomcp-find-" + Guid.NewGuid().ToString("N"));
+        public TempDir() => Directory.CreateDirectory(Path);
+        public string Sub(string name)
+        {
+            var d = System.IO.Path.Combine(Path, name);
+            Directory.CreateDirectory(d);
+            return d;
+        }
+        public void Dispose()
+        {
+            try { Directory.Delete(Path, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    private const string PathExt = ".COM;.EXE;.BAT;.CMD;.VBS;.JS";
+
+    [Fact]
+    public void Find_searches_path_in_order_including_non_ascii_folders()
+    {
+        using var t = new TempDir();
+        var empty = t.Sub("empty");
+        var npm = t.Sub("Jos\u00e9 R\u00f8d\\npm");
+        var later = t.Sub("later");
+        File.WriteAllText(System.IO.Path.Combine(npm, "claude.cmd"), "");
+        File.WriteAllText(System.IO.Path.Combine(later, "claude.exe"), "");
+
+        var found = ClaudeRegistration.Find($"{empty};\"{npm}\";{later}", PathExt);
+
+        Assert.Equal(System.IO.Path.Combine(npm, "claude.cmd"), found);
     }
 
     [Fact]
-    public void PickClaude_exe()
+    public void Find_prefers_exe_over_cmd_in_one_folder_by_pathext_order()
     {
-        Assert.Equal(Claude, ClaudeRegistration.PickClaude(Claude + "\r\n"));
+        using var t = new TempDir();
+        var dir = t.Sub("both");
+        File.WriteAllText(System.IO.Path.Combine(dir, "claude.cmd"), "");
+        File.WriteAllText(System.IO.Path.Combine(dir, "claude.exe"), "");
+        File.WriteAllText(System.IO.Path.Combine(dir, "claude"), ""); // the npm shell script: not runnable here
+
+        Assert.Equal(System.IO.Path.Combine(dir, "claude.exe"), ClaudeRegistration.Find(dir, PathExt));
+        Assert.Equal(System.IO.Path.Combine(dir, "claude.cmd"), ClaudeRegistration.Find(dir, ".CMD;.EXE"));
     }
 
     [Fact]
-    public void PickClaude_none_when_where_finds_nothing()
+    public void Find_ignores_relative_entries_and_other_extensions()
     {
-        Assert.Null(ClaudeRegistration.PickClaude(""));
-        Assert.Null(ClaudeRegistration.PickClaude("INFO: Could not find files for the given pattern(s).\r\n"));
+        using var t = new TempDir();
+        var dir = t.Sub("scripts");
+        File.WriteAllText(System.IO.Path.Combine(dir, "claude.vbs"), "");
+        File.WriteAllText(System.IO.Path.Combine(dir, "claude.com"), "");
+
+        Assert.Null(ClaudeRegistration.Find($".;bin;{dir}", PathExt));
+        Assert.Null(ClaudeRegistration.Find(null, PathExt));
+        Assert.Null(ClaudeRegistration.Find("", null));
     }
 
     [Fact]
-    public async Task FindAsync_runs_where_and_ignores_a_failure()
+    public void Find_uses_default_extensions_when_pathext_is_missing()
     {
-        var found = new FakeRunner().Then(0, Claude + "\r\n");
-        Assert.Equal(Claude, await ClaudeRegistration.FindAsync(found, CancellationToken.None));
-        Assert.Equal("where.exe", found.Calls[0].Program);
-        Assert.Equal(["claude"], found.Calls[0].Args);
-
-        var missing = new FakeRunner().Then(1, "", "INFO: Could not find files for the given pattern(s).");
-        Assert.Null(await ClaudeRegistration.FindAsync(missing, CancellationToken.None));
+        using var t = new TempDir();
+        var dir = t.Sub("d");
+        File.WriteAllText(System.IO.Path.Combine(dir, "claude.cmd"), "");
+        Assert.Equal(System.IO.Path.Combine(dir, "claude.cmd"), ClaudeRegistration.Find(dir, null));
     }
 
     // ------------------------------------------------------------------ status parsing
@@ -189,7 +225,10 @@ public class ClaudeRegistrationTests
     [Fact]
     public void ParseList_finds_makino_among_other_servers()
     {
-        Assert.Equal(RegistrationState.On, ClaudeRegistration.ParseList(ListWithMakino).State);
+        // list can't say which scope a makino line is in: that is Unknown, not On.
+        var listed = ClaudeRegistration.ParseList(ListWithMakino);
+        Assert.Equal(RegistrationState.Unknown, listed.State);
+        Assert.NotNull(listed.Problem);
         Assert.Equal(RegistrationState.Off, ClaudeRegistration.ParseList(ListWithoutMakino).State);
         Assert.Equal(RegistrationState.Off, ClaudeRegistration.ParseList(ListEmpty).State);
         Assert.Equal(RegistrationState.Unknown, ClaudeRegistration.ParseList("Error: config is broken\n").State);
@@ -211,10 +250,19 @@ public class ClaudeRegistrationTests
     [Fact]
     public async Task Status_falls_back_to_list_when_get_is_unrecognised()
     {
+        var r = new FakeRunner().Then(1, "", "Error: unexpected\n").Then(0, ListWithoutMakino);
+        var s = await new ClaudeRegistration(r, Claude).GetStatusAsync(CancellationToken.None);
+        Assert.Equal(RegistrationState.Off, s.State);
+        Assert.Equal(["mcp", "list"], r.Calls[1].Args);
+    }
+
+    [Fact]
+    public async Task Status_from_list_with_a_makino_line_is_unknown_and_says_why()
+    {
         var r = new FakeRunner().Then(1, "", "Error: unexpected\n").Then(0, ListWithMakino);
         var s = await new ClaudeRegistration(r, Claude).GetStatusAsync(CancellationToken.None);
-        Assert.Equal(RegistrationState.On, s.State);
-        Assert.Equal(["mcp", "list"], r.Calls[1].Args);
+        Assert.Equal(RegistrationState.Unknown, s.State);
+        Assert.Equal("Claude Code lists a MakinoMCP entry but didn't say whether it is for all your projects.", s.Problem);
     }
 
     [Fact]
@@ -239,41 +287,69 @@ public class ClaudeRegistrationTests
     [Fact]
     public async Task TurnOn_adds_when_missing()
     {
-        var r = new FakeRunner().Then(1, "", GetMissingNone)
-            .Then(0, $"Added stdio MCP server makino with command: {SpacedLauncher} serve to user config\n");
-        var result = await new ClaudeRegistration(r, Claude).TurnOnAsync(SpacedLauncher, CancellationToken.None);
+        // The state already read is passed in: no second claude mcp get.
+        var r = new FakeRunner().Then(0, $"Added stdio MCP server makino with command: {SpacedLauncher} serve to user config\n");
+        var result = await new ClaudeRegistration(r, Claude).TurnOnAsync(SpacedLauncher, Off, CancellationToken.None);
         Assert.True(result.Ok);
-        Assert.Equal(2, r.Calls.Count);
-        Assert.Equal(ClaudeRegistration.AddArgs(SpacedLauncher), r.Calls[1].Args);
+        Assert.Single(r.Calls);
+        Assert.Equal(ClaudeRegistration.AddArgs(SpacedLauncher), r.Calls[0].Args);
+    }
+
+    [Fact]
+    public async Task TurnOn_reads_the_state_when_it_is_not_known()
+    {
+        foreach (var known in new ClaudeStatus?[] { null, new(RegistrationState.Unknown, Problem: "timed out") })
+        {
+            var r = new FakeRunner().Then(1, "", GetMissingNone).Then(0, "Added\n");
+            var result = await new ClaudeRegistration(r, Claude).TurnOnAsync(SpacedLauncher, known, CancellationToken.None);
+            Assert.True(result.Ok);
+            Assert.Equal(ClaudeRegistration.GetArgs, r.Calls[0].Args);
+            Assert.Equal(ClaudeRegistration.AddArgs(SpacedLauncher), r.Calls[1].Args);
+        }
+    }
+
+    [Fact]
+    public async Task Changes_are_never_cancelled_half_way()
+    {
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
+        var r = new FakeRunner().Then(0, "Removed\n").Then(0, "Added\n").Then(0, "Removed\n");
+        var reg = new ClaudeRegistration(r, Claude);
+
+        Assert.True((await reg.TurnOnAsync(ShareLauncher, ClaudeRegistration.ParseGet(GetUserFailed), cancelled.Token)).Ok);
+        Assert.True((await reg.TurnOffAsync(null, cancelled.Token)).Ok);
+
+        Assert.Equal(3, r.Calls.Count);
+        Assert.All(r.Calls, c => Assert.False(c.Ct.CanBeCanceled));
     }
 
     [Fact]
     public async Task TurnOn_does_nothing_when_the_same_entry_exists()
     {
-        var r = new FakeRunner().Then(0, GetUserConnected);
-        var result = await new ClaudeRegistration(r, Claude).TurnOnAsync(ShareLauncher, CancellationToken.None);
+        var r = new FakeRunner();
+        var result = await new ClaudeRegistration(r, Claude).TurnOnAsync(ShareLauncher, ClaudeRegistration.ParseGet(GetUserConnected), CancellationToken.None);
         Assert.True(result.Ok);
-        Assert.Single(r.Calls);
+        Assert.Empty(r.Calls);
     }
 
     [Fact]
     public async Task TurnOn_replaces_an_entry_with_a_different_command()
     {
-        var r = new FakeRunner().Then(0, GetUserFailed)
+        var r = new FakeRunner()
             .Then(0, "Removed MCP server makino from user config\n")
             .Then(0, "Added stdio MCP server makino\n");
-        var result = await new ClaudeRegistration(r, Claude).TurnOnAsync(ShareLauncher, CancellationToken.None);
+        var result = await new ClaudeRegistration(r, Claude).TurnOnAsync(ShareLauncher, ClaudeRegistration.ParseGet(GetUserFailed), CancellationToken.None);
         Assert.True(result.Ok);
-        Assert.Equal(ClaudeRegistration.RemoveArgs, r.Calls[1].Args);
-        Assert.Equal(ClaudeRegistration.AddArgs(ShareLauncher), r.Calls[2].Args);
+        Assert.Equal(ClaudeRegistration.RemoveArgs, r.Calls[0].Args);
+        Assert.Equal(ClaudeRegistration.AddArgs(ShareLauncher), r.Calls[1].Args);
     }
 
     [Fact]
     public async Task TurnOn_failure_is_one_plain_line()
     {
-        var r = new FakeRunner().Then(1, "", GetMissingNone)
+        var r = new FakeRunner()
             .Then(1, "", "Error: could not write the config file\n    at Object.writeFile (node:fs:1:1)\n");
-        var result = await new ClaudeRegistration(r, Claude).TurnOnAsync(ShareLauncher, CancellationToken.None);
+        var result = await new ClaudeRegistration(r, Claude).TurnOnAsync(ShareLauncher, Off, CancellationToken.None);
         Assert.False(result.Ok);
         Assert.Equal("Claude Code couldn't add MakinoMCP: Error: could not write the config file", result.Message);
     }
@@ -282,16 +358,46 @@ public class ClaudeRegistrationTests
     public async Task TurnOff_removes_and_accepts_already_gone()
     {
         var removed = new FakeRunner().Then(0, "Removed MCP server makino from user config\n");
-        Assert.True((await new ClaudeRegistration(removed, Claude).TurnOffAsync(CancellationToken.None)).Ok);
+        Assert.True((await new ClaudeRegistration(removed, Claude).TurnOffAsync(ClaudeRegistration.ParseGet(GetUserConnected), CancellationToken.None)).Ok);
         Assert.Equal(ClaudeRegistration.RemoveArgs, removed.Calls[0].Args);
 
         var gone = new FakeRunner().Then(1, "", "No MCP server named \"makino\" in user scope\n");
-        Assert.True((await new ClaudeRegistration(gone, Claude).TurnOffAsync(CancellationToken.None)).Ok);
+        Assert.True((await new ClaudeRegistration(gone, Claude).TurnOffAsync(null, CancellationToken.None)).Ok);
 
         var broken = new FakeRunner().Then(1, "", "Error: permission denied\n");
-        var result = await new ClaudeRegistration(broken, Claude).TurnOffAsync(CancellationToken.None);
+        var result = await new ClaudeRegistration(broken, Claude).TurnOffAsync(null, CancellationToken.None);
         Assert.False(result.Ok);
         Assert.Equal("Claude Code couldn't remove MakinoMCP: Error: permission denied", result.Message);
+    }
+
+    [Fact]
+    public async Task TurnOff_skips_claude_code_when_it_is_known_to_be_off()
+    {
+        var r = new FakeRunner();
+        Assert.True((await new ClaudeRegistration(r, Claude).TurnOffAsync(Off, CancellationToken.None)).Ok);
+        Assert.Empty(r.Calls);
+    }
+
+    [Theory]
+    [InlineData(@"\\server\Make%PATH%\MakinoMCP.exe")]
+    [InlineData(@"C:\Wow!\MakinoMCP.exe")]
+    public async Task A_name_cmd_would_change_is_refused_for_the_npm_install(string launcher)
+    {
+        var r = new FakeRunner();
+        var result = await new ClaudeRegistration(r, @"C:\Users\someone\AppData\Roaming\npm\claude.cmd")
+            .TurnOnAsync(launcher, Off, CancellationToken.None);
+        Assert.False(result.Ok);
+        Assert.Equal("Claude Code couldn't add MakinoMCP: This folder's name can't be passed to the npm install of Claude Code; " +
+                     "use the install line below or Claude Code's own installer.", result.Message);
+        Assert.Empty(r.Calls);
+    }
+
+    [Fact]
+    public async Task The_same_names_are_fine_for_claude_exe()
+    {
+        var r = new FakeRunner().Then(0, "Added\n");
+        var result = await new ClaudeRegistration(r, Claude).TurnOnAsync(@"C:\Wow!\R&D 100%\MakinoMCP.exe", Off, CancellationToken.None);
+        Assert.True(result.Ok);
     }
 
     [Fact]
@@ -355,7 +461,34 @@ public class CommandLineTests
         var (file, arguments) = CommandLine.For(@"C:\Users\some one\npm\claude.cmd",
             ClaudeRegistration.AddArgs(@"\\server\Make It\MakinoMCP.exe"));
         Assert.Equal("cmd.exe", Path.GetFileName(file), ignoreCase: true);
-        Assert.Equal(@"/d /s /c """"C:\Users\some one\npm\claude.cmd"" mcp add --scope user makino -- ""\\server\Make It\MakinoMCP.exe"" serve""",
+        Assert.Equal(@"/d /s /c """"C:\Users\some one\npm\claude.cmd"" ""mcp"" ""add"" ""--scope"" ""user"" ""makino"" ""--"" ""\\server\Make It\MakinoMCP.exe"" ""serve""""",
             arguments);
+    }
+
+    [Theory]
+    [InlineData(@"\\server\R&D\MakinoMCP.exe")]
+    [InlineData(@"C:\A^B\MakinoMCP.exe")]
+    [InlineData(@"C:\Tools(x86)\a|b<c>d\MakinoMCP.exe")]
+    public void On_the_cmd_route_special_characters_are_always_quoted(string path)
+    {
+        var (_, arguments) = CommandLine.For(@"C:\npm\claude.cmd", ClaudeRegistration.AddArgs(path));
+        Assert.Contains($"\"{path}\"", arguments);
+        Assert.False(CommandLine.ChangedByCmd(path));
+    }
+
+    [Theory]
+    [InlineData(@"C:\100%\MakinoMCP.exe")]
+    [InlineData(@"C:\%USERNAME%\MakinoMCP.exe")]
+    [InlineData(@"C:\Wow!\MakinoMCP.exe")]
+    [InlineData("C:\\a\"b\\MakinoMCP.exe")]
+    [InlineData("C:\\a\nb\\MakinoMCP.exe")]
+    [InlineData("C:\\a\rb\\MakinoMCP.exe")]
+    public void On_the_cmd_route_what_cmd_would_change_is_refused(string path)
+    {
+        Assert.True(CommandLine.ChangedByCmd(path));
+        Assert.Throws<CmdArgumentException>(() => CommandLine.For(@"C:\npm\claude.cmd", ClaudeRegistration.AddArgs(path)));
+        // claude.exe gets it unchanged.
+        Assert.Equal(["claude", .. ClaudeRegistration.AddArgs(path)],
+            CommandLine.Split("claude " + CommandLine.For(@"C:\x\claude.exe", ClaudeRegistration.AddArgs(path)).Arguments));
     }
 }

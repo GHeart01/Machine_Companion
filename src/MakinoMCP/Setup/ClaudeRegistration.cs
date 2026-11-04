@@ -43,26 +43,37 @@ public sealed partial class ClaudeRegistration(ICommandRunner runner, string cla
 
     // ------------------------------------------------------------------ finding claude
 
-    /// <summary>The <c>claude</c> on this PC's PATH (claude.exe, or claude.cmd from npm), or null.</summary>
-    public static async Task<string?> FindAsync(ICommandRunner runner, CancellationToken ct)
+    /// <summary>The <c>claude</c> this Windows user would run from a terminal: each PATH folder in order, and in
+    /// each folder the PATHEXT extensions in order (so claude.exe before an npm claude.cmd beside it). Only full
+    /// paths are searched (never the current or the app's folder), and only .exe, .cmd and .bat count.</summary>
+    public static string? Find(string? path, string? pathExt)
     {
-        try
+        if (string.IsNullOrWhiteSpace(path)) return null;
+        var extensions = (string.IsNullOrWhiteSpace(pathExt) ? ".COM;.EXE;.BAT;.CMD" : pathExt)
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(e => e.ToLowerInvariant() is ".exe" or ".cmd" or ".bat")
+            .ToList();
+
+        foreach (var entry in path.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            var r = await runner.RunAsync("where.exe", ["claude"], Timeout, ct);
-            return r.TimedOut || r.ExitCode != 0 ? null : PickClaude(r.Output);
+            var folder = entry.Trim('"');
+            if (folder.Length == 0 || !Path.IsPathFullyQualified(folder)) continue;
+            foreach (var ext in extensions)
+            {
+                try
+                {
+                    var candidate = Path.Combine(folder, "claude" + ext.ToLowerInvariant());
+                    if (File.Exists(candidate)) return candidate;
+                }
+                catch (ArgumentException) { /* a PATH entry with characters a path can't have */ }
+            }
         }
-        catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
-        {
-            return null;
-        }
+        return null;
     }
 
-    /// <summary>The first line of where.exe's answer that Windows can run directly.</summary>
-    public static string? PickClaude(string whereOutput) =>
-        Lines(whereOutput)
-            .Select(l => l.Trim())
-            .FirstOrDefault(l => Path.IsPathFullyQualified(l)
-                && Path.GetExtension(l).ToLowerInvariant() is ".exe" or ".cmd" or ".bat");
+    /// <summary><see cref="Find"/> with this process's PATH and PATHEXT.</summary>
+    public static string? FindForThisUser() =>
+        Find(Environment.GetEnvironmentVariable("PATH"), Environment.GetEnvironmentVariable("PATHEXT"));
 
     // ------------------------------------------------------------------ reading the state
 
@@ -76,7 +87,8 @@ public sealed partial class ClaudeRegistration(ICommandRunner runner, string cla
 
         // An answer get doesn't recognise (a newer Claude Code?): list shows every server by name.
         var list = await RunAsync(ListArgs, ct);
-        if (list.Problem is null && ParseList(list.Result!.AllText) is { State: not RegistrationState.Unknown } listed) return listed;
+        if (list.Problem is null && ParseList(list.Result!.AllText) is { } listed
+            && (listed.State != RegistrationState.Unknown || listed.Problem is not null)) return listed;
         return new ClaudeStatus(RegistrationState.Unknown,
             Problem: $"Claude Code gave an unexpected answer: {FirstLine(get.Result!.AllText) ?? "nothing"}");
     }
@@ -117,7 +129,10 @@ public sealed partial class ClaudeRegistration(ICommandRunner runner, string cla
     public static ClaudeStatus ParseList(string output)
     {
         var lines = Lines(output);
-        if (lines.Any(l => l.StartsWith(ServerName + ": ", StringComparison.Ordinal))) return new ClaudeStatus(RegistrationState.On);
+        // list doesn't show the scope: a makino line may be a project-only entry, so the state stays unknown.
+        if (lines.Any(l => l.StartsWith(ServerName + ": ", StringComparison.Ordinal)))
+            return new ClaudeStatus(RegistrationState.Unknown,
+                Problem: "Claude Code lists a MakinoMCP entry but didn't say whether it is for all your projects.");
         if (lines.Any(l => l.StartsWith("No MCP servers configured", StringComparison.Ordinal)
                 || l.StartsWith("Checking MCP server health", StringComparison.Ordinal)))
             return new ClaudeStatus(RegistrationState.Off);
@@ -127,30 +142,35 @@ public sealed partial class ClaudeRegistration(ICommandRunner runner, string cla
     // ------------------------------------------------------------------ changing it
 
     /// <summary>Adds the user-scope entry for <paramref name="launcher"/>; an entry for another path is replaced,
-    /// one for this path is left as it is.</summary>
-    public async Task<StepResult> TurnOnAsync(string launcher, CancellationToken ct)
+    /// one for this path is left as it is. <paramref name="current"/> is the state already read (read again only when
+    /// it is missing or Unknown). Only that read can be cancelled: a change, once started, runs to its end (or the
+    /// 30 second limit), so Claude Code is never left half-written.</summary>
+    public async Task<StepResult> TurnOnAsync(string launcher, ClaudeStatus? current, CancellationToken ct)
     {
-        var status = await GetStatusAsync(ct);
+        var status = current is { State: not RegistrationState.Unknown } ? current : await GetStatusAsync(ct);
         if (status.State == RegistrationState.Unknown) return new StepResult(false, $"Couldn't check Claude Code: {status.Problem}");
         if (status.Matches(launcher)) return StepResult.Done;
         if (status.State == RegistrationState.On)
         {
-            var removed = await RemoveAsync(ct);
+            var removed = await RemoveAsync();
             if (!removed.Ok) return removed;
         }
 
-        var add = await RunAsync(AddArgs(launcher), ct);
+        var add = await RunAsync(AddArgs(launcher), CancellationToken.None);
         if (add.Problem is { } problem) return new StepResult(false, $"Claude Code couldn't add MakinoMCP: {problem}");
         return add.Result!.ExitCode == 0
             ? StepResult.Done
             : new StepResult(false, $"Claude Code couldn't add MakinoMCP: {FirstLine(add.Result.AllText) ?? $"it stopped with code {add.Result.ExitCode}."}");
     }
 
-    public Task<StepResult> TurnOffAsync(CancellationToken ct) => RemoveAsync(ct);
+    /// <summary>Removes the user-scope entry; nothing to do when <paramref name="current"/> already says Off. Never
+    /// cancelled half way (<paramref name="ct"/> is not passed on).</summary>
+    public Task<StepResult> TurnOffAsync(ClaudeStatus? current, CancellationToken ct) =>
+        current?.State == RegistrationState.Off ? Task.FromResult(StepResult.Done) : RemoveAsync();
 
-    private async Task<StepResult> RemoveAsync(CancellationToken ct)
+    private async Task<StepResult> RemoveAsync()
     {
-        var remove = await RunAsync(RemoveArgs, ct);
+        var remove = await RunAsync(RemoveArgs, CancellationToken.None);
         if (remove.Problem is { } problem) return new StepResult(false, $"Claude Code couldn't remove MakinoMCP: {problem}");
         var r = remove.Result!;
         // Already gone counts as removed.
@@ -162,10 +182,17 @@ public sealed partial class ClaudeRegistration(ICommandRunner runner, string cla
 
     private async Task<(CommandResult? Result, string? Problem)> RunAsync(IReadOnlyList<string> args, CancellationToken ct)
     {
+        // An npm install runs through cmd.exe, which would change some names even inside quotes: refuse them here.
+        if (CommandLine.RunsThroughCmd(claudePath) && (CommandLine.ChangedByCmd(claudePath) || args.Any(CommandLine.ChangedByCmd)))
+            return (null, new CmdArgumentException().Message);
         try
         {
             var r = await runner.RunAsync(claudePath, args, Timeout, ct);
             return r.TimedOut ? (null, TimeoutText) : (r, null);
+        }
+        catch (CmdArgumentException e)
+        {
+            return (null, e.Message);
         }
         catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException or IOException
             or UnauthorizedAccessException)

@@ -50,8 +50,11 @@ internal sealed class SetupForm : Form
     };
     private readonly StatusView _claudeStatus = new();
     private readonly Label _claudeNote = Wrapping("");
+    private readonly Button _checkAgain = ActionButton("Check a&gain");
     private SwitchFacts? _switchFacts;
+    private ClaudeSwitch? _switch;
     private bool _switchBusy;
+    private bool? _changingTo; // set while turning on (true) or off (false): closing waits for it
     private readonly Label _connectHint = Wrapping("Save first: the commands that connect Claude to MakinoMCP appear here.");
     private readonly TableLayoutPanel _snippets = new();
     private readonly TextBox _claudeCode = SnippetBox("Claude Code command");
@@ -107,6 +110,10 @@ internal sealed class SetupForm : Form
         _copyCowork.Click += (_, _) => Copy(_cowork, _copyCowork);
         _save.Click += OnSaveClick;
         _useInClaude.Click += OnUseInClaudeClick;
+        _checkAgain.Click += async (_, _) =>
+        {
+            if (!_switchBusy) await RefreshSwitchAsync();
+        };
         // Close() rather than DialogResult: the window runs modeless (Application.Run), where DialogResult closes nothing.
         _close.Click += (_, _) => Close();
 
@@ -190,7 +197,24 @@ internal sealed class SetupForm : Form
     private void BuildConnectClaude(TableLayoutPanel root)
     {
         Add(root, Heading("Connect Claude"));
-        Add(root, _useInClaude);
+        var switchRow = new TableLayoutPanel
+        {
+            ColumnCount = 2,
+            AutoSize = true,
+            Anchor = AnchorStyles.Left | AnchorStyles.Right,
+            Margin = Padding.Empty,
+        };
+        switchRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        switchRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _useInClaude.Anchor = AnchorStyles.Left;
+        _checkAgain.Anchor = AnchorStyles.Right;
+        _checkAgain.Margin = new Padding(3, 6, 0, 0);
+        _checkAgain.AccessibleDescription = "Reads again whether Claude uses MakinoMCP on this PC.";
+        switchRow.Controls.Add(_useInClaude);
+        switchRow.Controls.Add(_checkAgain);
+        Add(root, switchRow);
+        NextTab(_useInClaude);
+        NextTab(_checkAgain);
         _claudeStatus.Margin = new Padding(0, 6, 0, 0);
         Add(root, _claudeStatus);
         _claudeNote.Visible = false;
@@ -599,7 +623,7 @@ internal sealed class SetupForm : Form
             // An empty folder of its own: no project there whose local or .mcp.json entry could hide the user one.
             Directory.CreateDirectory(ClaudeWorkingFolder);
             var runner = new ProcessCommandRunner(ClaudeWorkingFolder);
-            var claudePath = await ClaudeRegistration.FindAsync(runner, ct);
+            var claudePath = ClaudeRegistration.FindForThisUser();
             var registration = claudePath is null ? null : new ClaudeRegistration(runner, claudePath);
             var status = registration is null ? null : await registration.GetStatusAsync(ct);
             var cowork = CoworkConfig.FilesForThisUser();
@@ -608,16 +632,16 @@ internal sealed class SetupForm : Form
         }, ct);
     }
 
-    /// <summary>Reads the state afresh and shows it; <paramref name="result"/>, when given, replaces the status line
-    /// (the outcome of a change says more than the state alone).</summary>
-    private async Task RefreshSwitchAsync(StatusLine? result = null)
+    /// <summary>Reads the state afresh and shows it. After a change, <paramref name="outcome"/> replaces the status
+    /// line (it says more than the state alone), and if the state can't be read the box follows the outcome.</summary>
+    private async Task RefreshSwitchAsync(StatusLine? outcome = null, bool turnedOn = false, bool wasChecked = false)
     {
         SetSwitchBusy(true);
-        if (result is null) _claudeStatus.Set(new StatusLine(StatusKind.Info, "Checking whether Claude uses MakinoMCP…"));
+        if (outcome is null) _claudeStatus.Set(new StatusLine(StatusKind.Info, "Checking whether Claude uses MakinoMCP…"));
         SwitchFacts facts;
         try
         {
-            (facts, _) = await ReadSwitchAsync(_closing.Token);
+            (facts, _switch) = await ReadSwitchAsync(_closing.Token);
         }
         catch (OperationCanceledException)
         {
@@ -632,7 +656,8 @@ internal sealed class SetupForm : Form
 
         SetSwitchBusy(false);
         // Saved now, not when the read began: Save may have been pressed while claude was answering.
-        ShowSwitch(facts with { SettingsSaved = File.Exists(_settingsPath) }, result);
+        facts = facts with { SettingsSaved = File.Exists(_settingsPath) };
+        ShowSwitch(facts, outcome is null ? null : ClaudeSwitch.DescribeAfterChange(facts, outcome, turnedOn, wasChecked));
     }
 
     /// <summary>While busy the box stays enabled, so the keyboard focus stays on it (disabling would move the focus
@@ -640,23 +665,23 @@ internal sealed class SetupForm : Form
     private void SetSwitchBusy(bool busy)
     {
         _switchBusy = busy;
-        _useInClaude.Cursor = busy ? Cursors.AppStarting : Cursors.Default;
+        _useInClaude.Cursor = _checkAgain.Cursor = busy ? Cursors.AppStarting : Cursors.Default;
     }
 
-    private void ShowSwitch(SwitchFacts facts, StatusLine? result = null)
+    private void ShowSwitch(SwitchFacts facts, SwitchView? view = null)
     {
         _switchFacts = facts;
-        var view = ClaudeSwitch.Describe(facts);
+        view ??= ClaudeSwitch.Describe(facts);
         _useInClaude.Checked = view.Checked;
         _useInClaude.Enabled = view.Enabled;
-        _claudeStatus.Set(result ?? view.Status);
+        _claudeStatus.Set(view.Status);
         _claudeNote.Text = view.Note ?? "";
         _claudeNote.Visible = view.Note is not null;
     }
 
     private async void OnUseInClaudeClick(object? sender, EventArgs e)
     {
-        if (_switchBusy || !_useInClaude.Enabled) return;
+        if (_switchBusy || !_useInClaude.Enabled || _switch is not { } sw) return;
         var turnOn = !_useInClaude.Checked;
         if (!turnOn)
         {
@@ -666,29 +691,31 @@ internal sealed class SetupForm : Form
             if (answer != DialogResult.Yes) return;
         }
 
+        var wasChecked = _useInClaude.Checked;
+        var current = _switchFacts?.Claude; // the state shown: no second claude mcp get
+        var launcher = Launcher();
         SetSwitchBusy(true);
+        _changingTo = turnOn;
         _claudeStatus.Set(new StatusLine(StatusKind.Info, turnOn ? "Turning on…" : "Turning off and stopping MakinoMCP…"));
-        StatusLine result;
+        StatusLine outcome;
         try
         {
-            // A fresh switch: Claude Code may have been installed or changed since the window opened.
-            var (_, sw) = await ReadSwitchAsync(_closing.Token);
-            var launcher = Launcher();
-            var ct = _closing.Token;
-            // Off the UI thread, starting the claude processes included.
-            result = await Task.Run(() => turnOn ? sw.TurnOnAsync(launcher, ct) : sw.TurnOffAsync(ct), ct);
-        }
-        catch (OperationCanceledException)
-        {
-            return;
+            // Off the UI thread, and never cancelled: stopping half way could leave Claude Code and Cowork out of step.
+            outcome = await Task.Run(() => turnOn
+                ? sw.TurnOnAsync(launcher, current, CancellationToken.None)
+                : sw.TurnOffAsync(current, CancellationToken.None));
         }
         catch (Exception ex) // never a crash or a stack trace: the message in plain words
         {
-            result = new StatusLine(StatusKind.Error, $"Couldn't turn {(turnOn ? "on" : "off")} MakinoMCP for Claude: {ex.Message}");
+            outcome = new StatusLine(StatusKind.Error, $"Couldn't turn {(turnOn ? "on" : "off")} MakinoMCP for Claude: {ex.Message}");
+        }
+        finally
+        {
+            _changingTo = null;
         }
         if (IsDisposed || _closing.IsCancellationRequested) return;
 
-        await RefreshSwitchAsync(result);
+        await RefreshSwitchAsync(outcome, turnOn, wasChecked);
     }
 
     // ------------------------------------------------------------------ opening and closing
@@ -713,6 +740,13 @@ internal sealed class SetupForm : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
+        if (_changingTo is { } on && e.CloseReason == CloseReason.UserClosing)
+        {
+            e.Cancel = true;
+            MessageBox.Show(this, $"Wait until MakinoMCP finishes turning {(on ? "on" : "off")}.", Title,
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
         if (_dirty && e.CloseReason == CloseReason.UserClosing)
         {
             var answer = MessageBox.Show(this, "Your changes aren't saved. Close without saving them?", Title,

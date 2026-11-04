@@ -88,18 +88,79 @@ public class ClaudeSwitchTests
         var off = ClaudeSwitch.Describe(Facts(null, coworkFolder: true));
         Assert.True(off.Enabled);
         Assert.False(off.Checked);
-        Assert.Contains("Cowork", off.Note);
+        Assert.Equal("Claude Code isn't installed on this PC — use the install lines below. " +
+                     "The switch sets up Cowork (Claude desktop, not yet tested) only.", off.Note);
 
         var on = ClaudeSwitch.Describe(Facts(null, coworkFolder: true, coworkEntry: true));
         Assert.True(on.Checked);
         Assert.Equal(new StatusLine(StatusKind.Success, "On — Cowork will start MakinoMCP."), on.Status);
     }
 
+    [Fact]
+    public void Says_when_claude_code_and_cowork_disagree()
+    {
+        var onWithout = ClaudeSwitch.Describe(Facts(On(), coworkFolder: true, coworkEntry: false));
+        Assert.True(onWithout.Checked);
+        Assert.Equal(new StatusLine(StatusKind.Success,
+            "On — Claude Code will start MakinoMCP. Cowork doesn't have it: turn this off and on again to add it."), onWithout.Status);
+
+        var offWith = ClaudeSwitch.Describe(Facts(new ClaudeStatus(RegistrationState.Off), coworkFolder: true, coworkEntry: true));
+        Assert.False(offWith.Checked);
+        Assert.Equal(new StatusLine(StatusKind.Info,
+            "Off — Claude won't start MakinoMCP on this PC. Cowork still has it: turn this on and off again to remove it."), offWith.Status);
+
+        // In step: nothing added.
+        Assert.Equal("On — Claude Code will start MakinoMCP.",
+            ClaudeSwitch.Describe(Facts(On(), coworkFolder: true, coworkEntry: true)).Status.Text);
+        Assert.Equal(ClaudeSwitch.OffText,
+            ClaudeSwitch.Describe(Facts(new ClaudeStatus(RegistrationState.Off), coworkFolder: true)).Status.Text);
+    }
+
+    // ------------------------------------------------------------------ after a change
+
+    private static readonly StatusLine TurnedOn = new(StatusKind.Success, "On — Claude Code will start MakinoMCP. Restart Claude to see the MakinoMCP tools.");
+    private static readonly StatusLine TurnedOff = new(StatusKind.Success, "Off — Claude won't start MakinoMCP on this PC.");
+    private static readonly ClaudeStatus Unreadable = new(RegistrationState.Unknown, Problem: "Claude Code didn't answer within 30 seconds.");
+
+    [Fact]
+    public void After_a_change_the_outcome_is_shown_with_the_fresh_state()
+    {
+        var v = ClaudeSwitch.DescribeAfterChange(Facts(On()), TurnedOn, turnedOn: true, wasChecked: false);
+        Assert.True(v.Checked);
+        Assert.True(v.Enabled);
+        Assert.Equal(TurnedOn, v.Status);
+    }
+
+    [Fact]
+    public void After_a_change_that_cannot_be_checked_again_the_box_follows_the_outcome()
+    {
+        var on = ClaudeSwitch.DescribeAfterChange(Facts(Unreadable), TurnedOn, turnedOn: true, wasChecked: false);
+        Assert.True(on.Checked);
+        Assert.True(on.Enabled);
+        Assert.Equal(new StatusLine(StatusKind.Warning,
+            "On — Claude Code will start MakinoMCP. Restart Claude to see the MakinoMCP tools. " +
+            "Couldn't check again: Claude Code didn't answer within 30 seconds."), on.Status);
+
+        var off = ClaudeSwitch.DescribeAfterChange(Facts(Unreadable), TurnedOff, turnedOn: false, wasChecked: true);
+        Assert.False(off.Checked);
+    }
+
+    [Fact]
+    public void A_failed_change_that_cannot_be_checked_keeps_the_old_state()
+    {
+        var failed = new StatusLine(StatusKind.Error, "Claude Code couldn't add MakinoMCP: Error: permission denied");
+        var v = ClaudeSwitch.DescribeAfterChange(Facts(Unreadable), failed, turnedOn: true, wasChecked: false);
+        Assert.False(v.Checked);
+        Assert.Equal(new StatusLine(StatusKind.Error,
+            "Claude Code couldn't add MakinoMCP: Error: permission denied. Couldn't check again: Claude Code didn't answer within 30 seconds."),
+            v.Status);
+    }
+
     // ------------------------------------------------------------------ turning on and off
 
     private static readonly DateTime Now = new(2026, 11, 3, 14, 5, 9);
     private const string Claude = @"C:\Tools\claude.exe";
-    private const string Missing = "No MCP server named \"makino\". Run `claude mcp add` to add one.\n";
+    private static readonly ClaudeStatus OffStatus = new(RegistrationState.Off);
 
     private sealed class Cowork : IDisposable
     {
@@ -120,11 +181,11 @@ public class ClaudeSwitchTests
     public async Task TurnOn_adds_to_claude_code_and_cowork_then_asks_for_a_restart()
     {
         using var cowork = new Cowork("{}");
-        var runner = new FakeRunner().Then(1, "", Missing).Then(0, "Added stdio MCP server makino\n");
+        var runner = new FakeRunner().Then(0, "Added stdio MCP server makino\n");
         var stops = 0;
         var sw = new ClaudeSwitch(new ClaudeRegistration(runner, Claude), [cowork.File], () => { stops++; return new StopResult(0, 0); }, () => Now);
 
-        var line = await sw.TurnOnAsync(Launcher, CancellationToken.None);
+        var line = await sw.TurnOnAsync(Launcher, OffStatus, CancellationToken.None);
 
         Assert.Equal(new StatusLine(StatusKind.Success, "On — Claude Code will start MakinoMCP. Restart Claude to see the MakinoMCP tools."), line);
         Assert.True(CoworkConfig.HasEntry(System.IO.File.ReadAllText(cowork.File)));
@@ -135,10 +196,10 @@ public class ClaudeSwitchTests
     public async Task TurnOn_says_when_a_cowork_file_was_left_alone()
     {
         using var cowork = new Cowork("{ broken");
-        var runner = new FakeRunner().Then(1, "", Missing).Then(0, "Added\n");
+        var runner = new FakeRunner().Then(0, "Added\n");
         var sw = new ClaudeSwitch(new ClaudeRegistration(runner, Claude), [cowork.File], () => new StopResult(0, 0), () => Now);
 
-        var line = await sw.TurnOnAsync(Launcher, CancellationToken.None);
+        var line = await sw.TurnOnAsync(Launcher, OffStatus, CancellationToken.None);
 
         Assert.Equal(StatusKind.Warning, line.Kind);
         Assert.Contains(cowork.File, line.Text);
@@ -153,7 +214,7 @@ public class ClaudeSwitchTests
         using var cowork = new Cowork();
         var sw = new ClaudeSwitch(null, [cowork.File], () => new StopResult(0, 0), () => Now);
 
-        var line = await sw.TurnOnAsync(Launcher, CancellationToken.None);
+        var line = await sw.TurnOnAsync(Launcher, OffStatus, CancellationToken.None);
 
         Assert.Equal(new StatusLine(StatusKind.Success, "On — Cowork will start MakinoMCP. Restart Claude to see the MakinoMCP tools."), line);
         Assert.True(CoworkConfig.HasEntry(System.IO.File.ReadAllText(cowork.File)));
@@ -167,7 +228,7 @@ public class ClaudeSwitchTests
         var stops = 0;
         var sw = new ClaudeSwitch(new ClaudeRegistration(runner, Claude), [cowork.File], () => { stops++; return new StopResult(2, 0); }, () => Now);
 
-        var line = await sw.TurnOffAsync(CancellationToken.None);
+        var line = await sw.TurnOffAsync(null, CancellationToken.None);
 
         Assert.Equal(new StatusLine(StatusKind.Success, "Off — Claude won't start MakinoMCP on this PC. Stopped 2 running MakinoMCP processes."), line);
         Assert.Equal(1, stops);
@@ -184,7 +245,7 @@ public class ClaudeSwitchTests
         var stops = 0;
         var sw = new ClaudeSwitch(new ClaudeRegistration(runner, Claude), [cowork.File], () => { stops++; return new StopResult(0, 0); }, () => Now);
 
-        var line = await sw.TurnOffAsync(CancellationToken.None);
+        var line = await sw.TurnOffAsync(null, CancellationToken.None);
 
         Assert.Equal(new StatusLine(StatusKind.Error, "Claude Code couldn't remove MakinoMCP: Error: permission denied"), line);
         Assert.Equal(0, stops);
@@ -194,9 +255,29 @@ public class ClaudeSwitchTests
     public async Task TurnOff_reports_processes_it_could_not_stop()
     {
         var sw = new ClaudeSwitch(null, [], () => new StopResult(0, 1), () => Now);
-        var line = await sw.TurnOffAsync(CancellationToken.None);
+        var line = await sw.TurnOffAsync(null, CancellationToken.None);
         Assert.Equal(StatusKind.Warning, line.Kind);
         Assert.Contains("Couldn't stop 1 running MakinoMCP process", line.Text);
+    }
+
+    [Fact]
+    public async Task A_cancelled_token_never_stops_a_change_half_way()
+    {
+        using var cowork = new Cowork("{}");
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
+        var runner = new FakeRunner().Then(0, "Added\n").Then(0, "Removed\n");
+        var stops = 0;
+        var sw = new ClaudeSwitch(new ClaudeRegistration(runner, Claude), [cowork.File], () => { stops++; return new StopResult(1, 0); }, () => Now);
+
+        var on = await sw.TurnOnAsync(Launcher, OffStatus, cancelled.Token);
+        Assert.Equal(StatusKind.Success, on.Kind);
+        Assert.True(CoworkConfig.HasEntry(System.IO.File.ReadAllText(cowork.File)));
+
+        var off = await sw.TurnOffAsync(null, cancelled.Token);
+        Assert.Equal(StatusKind.Success, off.Kind);
+        Assert.False(CoworkConfig.HasEntry(System.IO.File.ReadAllText(cowork.File)));
+        Assert.Equal(1, stops);
     }
 
     [Fact]
