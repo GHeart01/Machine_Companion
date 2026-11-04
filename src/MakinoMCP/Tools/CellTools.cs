@@ -17,7 +17,7 @@ public static class CellTools
                  "pallets on it with each position's state (\"next …\" spots are pallets reserved to come there next), " +
                  "how many alarms and warnings are open, and when it last finished something (lastActivity). Machines " +
                  "also show toolStatus (ready, lacking tools, tool alarm, …), cncRun, operatorCall, runJob and program " +
-                 "(main and executing O-number); the vehicle shows its command, transportFrom/transportTo and the " +
+                 "(main and executing O-number); the vehicle shows its transport command (in action), transportFrom/transportTo and the " +
                  "pallets on its buffers. historyDays is how many days the cell keeps alarm and result history (null " +
                  "when it doesn't say). lastActivity looks back 30 days: null means nothing finished in that time, not " +
                  "that it never did. Status values carry no timestamp, so compare lastActivity with serverTime to " +
