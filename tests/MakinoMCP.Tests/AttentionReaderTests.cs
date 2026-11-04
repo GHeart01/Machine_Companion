@@ -208,6 +208,16 @@ public class AttentionReaderTests
         var list = Build(Rows(commands: [new("WSS1", 4, 1, Operation: 2, Status: 2, Order: null, Quantity: 0)]));
 
         Assert.Equal("status code 2", Assert.Single(list.Items).Detail);
+        // Set at the station, not known to be waiting on the operator: the count says no more than that.
+        Assert.Equal(1, list.Counts["work-set instructions"]);
+
+        // Rows cut at the cap still count the cell's total.
+        var cut = Build(Rows(commands: [new("WSS1", 4, 1, 2, null, null, null)], transports: [new(7, "", 1, null)]) with
+        {
+            CommandTotal = 9, TransportTotal = 6,
+        });
+        Assert.Equal(9, cut.Counts["work-set instructions"]);
+        Assert.Equal(6, cut.Counts["manual transports open"]);
     }
 
     [Fact]
@@ -299,6 +309,9 @@ public class AttentionReaderTests
         var bare = SqlMakinoReader.AttentionFixturesSql(SchemaWithout("PalletFixtures.Suspend", "PalletFixtures.WorkSetHold",
             "PalletFixtures.Damaged", "PalletFixtures.PreMcSuspend", "PalletFixtures.LackingTool", "PalletFixtures.ReclampStatus"), false);
         Assert.Contains("WHERE 1 = 0", bare);
+        // An integer constant in ORDER BY is a column position (SQL Server error 108), so no "ORDER BY 0".
+        Assert.DoesNotContain("ORDER BY 0", bare);
+        Assert.Contains("ORDER BY (SELECT 0)", bare);
     }
 
     [Fact]
@@ -328,6 +341,9 @@ public class AttentionReaderTests
         Assert.Contains("TOP (@take)", transports);
         Assert.Contains("t.Status NOT IN (4, 5)", transports);
         Assert.Contains("ORDER BY t.EntryDate DESC", transports);
+        // Each carries the total past the row cap, so counts stay whole when the list is cut.
+        Assert.Contains("COUNT(*) OVER () AS Total", commands);
+        Assert.Contains("COUNT(*) OVER () AS Total", transports);
 
         var limits = SqlMakinoReader.CycleLimitSql(SchemaWithout());
         Assert.Contains("ParameterName = 'WarningCycleCount'", limits);

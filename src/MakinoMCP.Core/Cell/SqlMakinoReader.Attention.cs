@@ -3,7 +3,7 @@ using Microsoft.Data.SqlClient;
 namespace MakinoMCP.Core.Cell;
 
 // Attention: what waits on a person. Devices (MachineStatus, WorkSetStatus, the vehicle: recovery request, error,
-// emergency stop, disconnected, a machine's operator call), work-set instructions waiting at a station
+// emergency stop, disconnected, a machine's operator call), instructions set at a work-set station
 // (WorkSetCommand), manual transports not finished (ManualTransport), fixtures that are damaged, suspended, on hold or
 // lacking tools (PalletFixtures with the current order from FixtureRun), tools in alarm on each machine, and stations or
 // the vehicle past their maintenance cycle count (DeviceParameters.WarningCycleCount). A section whose table this cell
@@ -73,6 +73,12 @@ public sealed partial class SqlMakinoReader
 
         /// <summary>The parked fixtures grouped by place and condition (see <see cref="AttentionParkedSql"/>).</summary>
         public IReadOnlyList<ParkedGroup>? Parked { get; init; }
+
+        /// <summary>The cell's number of work-set instructions and open manual transports (past the row cap); null →
+        /// counted from <see cref="Commands"/> / <see cref="Transports"/>.</summary>
+        public int? CommandTotal { get; init; }
+
+        public int? TransportTotal { get; init; }
     }
 
     /// <summary>Parked: suspended or on hold, and nothing else wrong with it (lacking tools aside).</summary>
@@ -89,6 +95,11 @@ public sealed partial class SqlMakinoReader
         void Count(string key, int n = 1)
         {
             if (n > 0) counts[key] = counts.GetValueOrDefault(key) + n;
+        }
+        void Total(string key, int n)
+        {
+            if (n > 0) counts[key] = n;
+            else counts.Remove(key);
         }
 
         var toolStatus = new Dictionary<string, string>();
@@ -137,8 +148,9 @@ public sealed partial class SqlMakinoReader
                 Device = c.Device, Pallet = c.Pallet, Fixture = c.Fixture, Order = c.Order,
                 Detail = detail.Count > 0 ? string.Join(", ", detail) : null,
             }));
-            Count("work-set instructions waiting");
+            Count("work-set instructions");
         }
+        if (rows.CommandTotal is { } commandTotal) Total("work-set instructions", commandTotal);
 
         foreach (var t in rows.Transports)
         {
@@ -148,6 +160,7 @@ public sealed partial class SqlMakinoReader
             }));
             Count("manual transports open");
         }
+        if (rows.TransportTotal is { } transportTotal) Total("manual transports open", transportTotal);
 
         foreach (var t in rows.Tools)
         {
@@ -327,7 +340,9 @@ public sealed partial class SqlMakinoReader
         }
         // Parked fixtures last (3), so the cap drops them before anything still waiting (a reclamp warning is 2).
         if (ParkedCondition(schema) is { } parkedLast) whens.Add($"WHEN {parkedLast} THEN 3");
-        var severity = whens.Count > 0 ? $"CASE {string.Join(" ", whens)} ELSE 2 END" : "0";
+        // Without any condition column there are no rows to sort; "(SELECT 0)", since a bare 0 in ORDER BY is a column
+        // position and an error.
+        var severity = whens.Count > 0 ? $"CASE {string.Join(" ", whens)} ELSE 2 END" : "(SELECT 0)";
 
         var run = schema.HasTable("FixtureRun") && schema.Has("FixtureRun", "PalletFixtureID") && Has("PalletFixtureID");
         var withOrder = run && schema.Has("FixtureRun", "CurOrderID") && schema.HasTable("Orders");
@@ -405,7 +420,7 @@ public sealed partial class SqlMakinoReader
         return sums.Count == 0 ? null : $"SELECT {string.Join(", ", sums)} FROM PalletFixtures pf;";
     }
 
-    /// <summary>Instructions a work-set station is waiting for the operator to carry out (cap + 1). Null without the
+    /// <summary>Instructions set at a work-set station (cap + 1). Null without the
     /// OperationType column.</summary>
     internal static string? WorkSetCommandsSql(SchemaInfo schema)
     {
@@ -426,7 +441,7 @@ public sealed partial class SqlMakinoReader
             ? $"(SELECT TOP 1 o.OrderName FROM Orders o WHERE o.OrderID = {orderId}) AS OrderName"
             : $"CAST(NULL AS {Text}) AS OrderName";
         var cols = string.Join(", ",
-            "c.DeviceID", pallet,
+            "c.DeviceID", pallet, "COUNT(*) OVER () AS Total",
             Opt(schema, t, "c", "FixtureNumber"),
             Opt(schema, t, "c", "OperationType"),
             Opt(schema, t, "c", "OperationStatus"),
@@ -448,6 +463,7 @@ public sealed partial class SqlMakinoReader
         if (!schema.Has(t, "Status")) return null;
         var cols = string.Join(", ",
             schema.Has(t, "PalletID") ? PalletNumberSql(schema, "t.PalletID", "PalletNumber") : "CAST(NULL AS int) AS PalletNumber",
+            "COUNT(*) OVER () AS Total",
             Opt(schema, t, "t", "DestDeviceType"),
             Opt(schema, t, "t", "DestDeviceNumber"),
             Opt(schema, t, "t", "DestDevicePosition"),
@@ -606,6 +622,7 @@ public sealed partial class SqlMakinoReader
         else notAvailable.Add("fixtures (suspended, damaged, lacking tools, …)");
 
         var commands = new List<AttentionCommand>();
+        int? commandTotal = null, transportTotal = null;
         if (schema.HasTable("WorkSetCommand") && WorkSetCommandsSql(schema) is { } commandSql)
         {
             using var cmd = Command(s.Connection, commandSql);
@@ -613,11 +630,12 @@ public sealed partial class SqlMakinoReader
             using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
             {
+                commandTotal = Int(r, "Total");
                 commands.Add(new AttentionCommand(DeviceName(s, Int(r, "DeviceID")), Int(r, "PalletNumber"), Int(r, "FixtureNumber"),
                     Int(r, "OperationType"), Int(r, "OperationStatus"), NonEmpty(Str(r, "OrderName")), Int(r, "ClampQuantity")));
             }
         }
-        else notAvailable.Add("work-set instructions waiting");
+        else notAvailable.Add("work-set instructions");
 
         var transports = new List<AttentionTransport>();
         if (schema.HasTable("ManualTransport") && ManualTransportsSql(schema) is { } transportSql)
@@ -627,6 +645,7 @@ public sealed partial class SqlMakinoReader
             using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
             {
+                transportTotal = Int(r, "Total");
                 var to = Location(s, Int(r, "DestDeviceType"), Int(r, "DestDeviceNumber"), Int(r, "DestDevicePosition"));
                 transports.Add(new AttentionTransport(Int(r, "PalletNumber"), to == "unknown" ? "" : to, Int(r, "Status"), Date(r, "EntryDate")));
             }
@@ -635,7 +654,7 @@ public sealed partial class SqlMakinoReader
 
         var rows = new AttentionRows(s.Devices.Select(d => devices[d.Id]).ToList(), fixtures, commands, transports, tools)
         {
-            FixtureCounts = fixtureCounts, Parked = parked,
+            FixtureCounts = fixtureCounts, Parked = parked, CommandTotal = commandTotal, TransportTotal = transportTotal,
         };
         return BuildAttention(s.Now, _cap, rows, notAvailable, includeParked);
     }

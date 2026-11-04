@@ -58,13 +58,13 @@ public sealed partial class SqlMakinoReader
             };
         }
 
-        // The search's cap only matters for candidates; a picked part's routing is capped only by its own tool rows.
-        capped = false;
-        var (route, programs) = await ReadRouteAsync(s, chosen, notAvailable, ct);
+        // The search's cap only matters for candidates; a picked part's routing is capped by its own fixture and tool rows.
+        var (route, programs, fixturesCapped) = await ReadRouteAsync(s, chosen, notAvailable, ct);
+        capped = fixturesCapped;
         if (includeTools)
         {
             var (withTools, toolsCapped) = await AddToolsAsync(s, chosen.Id, route, programs, notAvailable, ct);
-            (route, capped) = (withTools, toolsCapped);
+            (route, capped) = (withTools, capped || toolsCapped);
         }
         return new PartRouting(s.Now, wanted, capped)
         {
@@ -117,8 +117,8 @@ public sealed partial class SqlMakinoReader
     }
 
     /// <summary>Six result sets for one part (@partId): the part, its processes, their operations, their jobs (with the
-    /// machining and work-set detail), the jobs' feasible devices, and the fixtures that can hold each process (an
-    /// empty set when the cell has no FixtureProcesses).</summary>
+    /// machining and work-set detail), the jobs' feasible devices, and the fixtures that can hold each process (every
+    /// pallet place, so cap + 1 rows; an empty set when the cell has no FixtureProcesses).</summary>
     internal static string RoutingSql(SchemaInfo schema)
     {
         var sql = new StringBuilder();
@@ -192,7 +192,7 @@ public sealed partial class SqlMakinoReader
             var joins = (named ? " LEFT JOIN Fixtures fx ON fx.FixtureID = fp.FixtureID" : "")
                         + (onPallets ? " LEFT JOIN PalletFixtures pf ON pf.FixtureID = fp.FixtureID" : "");
             sql.AppendLine($"""
-                SELECT {fixtureCols}
+                SELECT TOP (@take) {fixtureCols}
                 FROM FixtureProcesses fp JOIN Processes pr ON pr.ProcessID = fp.ProcessID{joins}
                 WHERE pr.PartID = @partId ORDER BY fp.ProcessID, FixturePriority, PalletNumber, FixtureNumber, fp.FixtureID;
                 """);
@@ -209,15 +209,16 @@ public sealed partial class SqlMakinoReader
 
     private sealed record JobRow(int ProcessId, int JobId, JobRoute Job, int? ProgramId);
 
-    /// <summary>The part's route, and per process (in the same order) the program id of each of its jobs (null for jobs
-    /// that aren't machining).</summary>
-    private static async Task<(PartRoute Route, List<List<int?>> Programs)> ReadRouteAsync(
+    /// <summary>The part's route, per process (in the same order) the program id of each of its jobs (null for jobs
+    /// that aren't machining), and whether the fixtures list was cut at the row limit.</summary>
+    private async Task<(PartRoute Route, List<List<int?>> Programs, bool FixturesCapped)> ReadRouteAsync(
         Session s, PartMatch part, List<string> notAvailable, CancellationToken ct)
     {
         if (!s.Schema.HasTable("FixtureProcesses")) notAvailable.Add("fixtures for each process");
         if (!s.Schema.HasTable("InformationFiles")) notAvailable.Add("work instruction file names");
 
         using var cmd = Command(s.Connection, RoutingSql(s.Schema));
+        AddTake(cmd);
         cmd.Parameters.Add("@partId", System.Data.SqlDbType.Int).Value = part.Id;
         using var r = await cmd.ExecuteReaderAsync(ct);
 
@@ -274,8 +275,10 @@ public sealed partial class SqlMakinoReader
 
         await r.NextResultAsync(ct);
         var fixtures = new Dictionary<int, List<string>>();
+        var fixtureRows = 0;
         while (await r.ReadAsync(ct))
         {
+            if (++fixtureRows > _cap) break; // the row past the cap only shows that more existed
             var processId = Int(r, "ProcessID") ?? 0;
             if (!fixtures.TryGetValue(processId, out var list)) fixtures[processId] = list = [];
             list.Add(FixturePlace(Int(r, "PalletNumber"), Int(r, "FixtureNumber"), Str(r, "FixtureName"), Int(r, "FixtureID") ?? 0,
@@ -311,7 +314,7 @@ public sealed partial class SqlMakinoReader
             Revision = NonEmpty(part.Revision), Comment = NonEmpty(comment),
         };
         var programs = processes.Select(p => jobs.Where(j => j.ProcessId == p.Id).Select(j => j.ProgramId).ToList()).ToList();
-        return (route, programs);
+        return (route, programs, fixtureRows > _cap);
     }
 
     /// <summary>Planned seconds as minutes with one decimal; 0 or none is null.</summary>

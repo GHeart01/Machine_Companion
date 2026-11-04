@@ -123,6 +123,8 @@ public class RoutingReaderTests
         Assert.Contains("i.Name AS InfoFileName", full);
         Assert.Contains("FROM FixtureProcesses fp", full);
         Assert.Contains("FROM JobFeasibleDevices", full);
+        // The fixtures list is the one part of a routing that grows with the cell (every pallet place), so it is capped.
+        Assert.Contains("SELECT TOP (@take) fp.ProcessID, fp.FixtureID", full);
 
         var old = SqlMakinoReader.RoutingSql(SchemaWithout("InformationFiles", "FixtureProcesses", "Processes.MaxFixtures"));
         Assert.Contains("CAST(NULL AS varchar(4000)) AS InfoFileName", old);
