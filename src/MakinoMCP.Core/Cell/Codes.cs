@@ -27,6 +27,8 @@ public static class Codes
         [18] = "oil dump",
     };
 
+    // The cell's in-memory pallet states (PalletStatus). The Pallets table stores dashboard codes instead: see
+    // PalletDisplayStatuses.
     private static readonly Dictionary<int, string> PalletStatuses = new()
     {
         [0] = "undefined",
@@ -203,6 +205,304 @@ public static class Codes
         [0x8000000] = "work vacuum",
     };
 
+    // IndividualToolData.Status and IndividualToolCutterData.CutterStatus (ToolStatus).
+    private static readonly Dictionary<int, string> ToolStatuses = new()
+    {
+        [0] = "unknown",
+        [1] = "ready",
+        [2] = "life warning",
+        [3] = "offset error",
+        [4] = "alarm",
+    };
+
+    // FunctionalToolCutterData.ToolLifeType and the life columns that follow it (ToolLife). Times are raw: 0 counts
+    // seconds, 3 tenths of a second.
+    private static readonly Dictionary<int, string> ToolLifeTypes = new()
+    {
+        [-1] = "undefined",
+        [0] = "seconds",
+        [1] = "distance",
+        [2] = "count",
+        [3] = "tenths of a second",
+    };
+
+    // FunctionalToolCutterData.Kind (ToolKind).
+    private static readonly Dictionary<int, string> ToolKinds = new()
+    {
+        [0] = "undefined",
+        [1] = "drill",
+        [2] = "ball end mill",
+        [3] = "end mill",
+        [4] = "boring bar",
+        [5] = "spring tool 1",
+        [6] = "spring tool 2",
+        [7] = "tap",
+        [8] = "reamer",
+        [9] = "face mill",
+        [10] = "probe",
+        [11] = "grinding tool",
+        [12] = "grinding dresser",
+        [14] = "limited tool",
+        [15] = "air turbine",
+        [16] = "NT attachment",
+        [17] = "angle head",
+        [18] = "INCS Nakanishi",
+        [19] = "air turbine (fixed)",
+        [21] = "turning tool",
+        [22] = "chamfer tool",
+        [23] = "radius end mill",
+        [24] = "reference tool",
+        [25] = "calibration tool",
+        [26] = "setup tool",
+        [27] = "special tool 1",
+        [28] = "special tool 2",
+        [29] = "drill speed-up cycle",
+    };
+
+    // Cutter alarm flags (ToolAlarmStatus); each bit stands for one alarm bit column of a cutter row.
+    private static readonly Dictionary<int, string> ToolAlarmBits = new()
+    {
+        [0x1] = "alarm tool",
+        [0x2] = "tool life alarm",
+        [0x4] = "tool life warning",
+        [0x8] = "broken tool (short)",
+        [0x10] = "broken tool (long)",
+        [0x20] = "adaptive control",
+        [0x40] = "spindle load",
+        [0x80] = "spindle load low",
+        [0x100] = "tool ID alarm",
+        [0x200] = "not inspected",
+        [0x400] = "STS not OK",
+    };
+
+    /// <summary>The bit column behind each <see cref="ToolAlarms"/> flag: AlarmTool sits on IndividualToolData, the
+    /// rest on IndividualToolCutterData (and as Old/New pairs on PresetResults).</summary>
+    public static readonly IReadOnlyList<(string Column, int Flag)> ToolAlarmColumns =
+    [
+        ("AlarmTool", 0x1),
+        ("TLAlarm", 0x2),
+        ("TLWarning", 0x4),
+        ("BTSAlarm", 0x8),
+        ("BT2AlarmLong", 0x10),
+        ("ACAlarm", 0x20),
+        ("SLAlarm", 0x40),
+        ("SLLowAlarm", 0x80),
+        ("ToolIDAlarm", 0x100),
+        ("NotInspected", 0x200),
+        ("STSNotOK", 0x400),
+    ];
+
+    // MachineStatus/WorkSetStatus Table/Front/BackStatus (DevicePositionStatus).
+    private static readonly Dictionary<int, string> DevicePositionStatuses = new()
+    {
+        [0] = "empty",
+        [1] = "reserved",
+        [2] = "waiting for processing",
+        [3] = "processing",
+        [4] = "finished",
+        [5] = "load after",
+        [6] = "unload before",
+    };
+
+    // The dashboard Status of MachineStatus, WorkSetStatus and VehicleStatus: the same buckets as the day summaries.
+    private static readonly Dictionary<int, string> DeviceDashStatuses = new()
+    {
+        [0] = "down",
+        [1] = "idle",
+        [2] = "busy",
+        [3] = "manual",
+        [4] = "error",
+    };
+
+    // MachineStatus.ToolStatus: the machine's tool set for its current work, as the cell server writes it.
+    private static readonly Dictionary<int, string> MachineToolStatuses = new()
+    {
+        [0] = "unknown",
+        [1] = "ready",
+        [2] = "lacking tools",
+        [3] = "tool alarm",
+        [4] = "tool life warning",
+        [5] = "offset error",
+    };
+
+    // MachineStatus.CNCRun (CNCRunStatus).
+    private static readonly Dictionary<int, string> CncRuns = new()
+    {
+        [0] = "reset",
+        [1] = "stop",
+        [2] = "hold",
+        [3] = "run",
+    };
+
+    // MachineStatus.OperatorCall (OperatorCallStatus).
+    private static readonly Dictionary<int, string> OperatorCalls = new()
+    {
+        [0] = "released",
+        [1] = "M code",
+        [2] = "PMC",
+    };
+
+    // MachineStatus.RunJob: what the machine's current job is.
+    private static readonly Dictionary<int, string> RunJobs = new()
+    {
+        [0] = "none",
+        [1] = "machining",
+        [2] = "pallet change",
+        [3] = "other preparation",
+        [4] = "manual transport",
+    };
+
+    // Pallets.PalletStatus as the cell's dashboard procedure rewrites it (not the in-memory PalletStatus list above).
+    private static readonly Dictionary<int, string> PalletDisplayStatuses = new()
+    {
+        [0] = "idle",
+        [1] = "machining",
+        [2] = "work setting",
+        [3] = "in another device",
+        [4] = "waiting for machining",
+        [5] = "waiting for work setting",
+        [6] = "waiting for work setting",
+        [7] = "waiting for an auxiliary device",
+        [8] = "machining suspended",
+        [9] = "work setting suspended",
+        [10] = "work setting suspended",
+        [11] = "auxiliary device suspended",
+        [12] = "transport",
+        [13] = "damaged",
+        [14] = "pallet active",
+    };
+
+    // Pallets.WorkStatus as the same procedure rewrites it; 0 is the raw "undefined" it leaves in place when there is
+    // no work to report (idle, transport, damaged).
+    private static readonly Dictionary<int, string> PalletWorkStatuses = new()
+    {
+        [0] = "none",
+        [1] = "not completed",
+        [2] = "normal",
+        [3] = "abnormal",
+        [4] = "cancel",
+    };
+
+    // VehicleStatus.VHCMode (VehicleMode): a list of values, not flags.
+    private static readonly Dictionary<int, string> VehicleModes = new()
+    {
+        [0] = "system",
+        [1] = "from-to",
+        [2] = "jog 1",
+        [4] = "jog 2",
+        [16] = "maintenance",
+        [32] = "not system",
+        [48] = "manual interrupt",
+    };
+
+    // Jobs.JobType (ProcessJobType).
+    private static readonly Dictionary<int, string> JobTypes = new()
+    {
+        [0] = "undefined",
+        [1] = "work setting",
+        [2] = "machining",
+        [3] = "cleaning",
+        [4] = "turning",
+        [5] = "deburring",
+        [6] = "measuring",
+    };
+
+    // Processes.Status (ProcessStatus).
+    private static readonly Dictionary<int, string> ProcessStatuses = new()
+    {
+        [-1] = "varied",
+        [0] = "undefined",
+        [1] = "ready",
+        [2] = "suspended",
+        [3] = "cancelled",
+    };
+
+    // FixtureRun.CurJobStatus (FixtureJobStatus).
+    private static readonly Dictionary<int, string> FixtureJobStatuses = new()
+    {
+        [0] = "nothing",
+        [1] = "waiting for processing",
+        [2] = "processing",
+        [3] = "normal finish",
+        [4] = "abnormal finish",
+    };
+
+    // FixtureRun.WorkStatus (WorkStatus).
+    private static readonly Dictionary<int, string> FixtureWorkStatuses = new()
+    {
+        [0] = "undefined",
+        [1] = "normal",
+        [2] = "scrap",
+        [3] = "process cancelled",
+        [4] = "order cancelled",
+        [5] = "abnormal work set",
+        [6] = "seating error",
+        [7] = "unclamp NG",
+    };
+
+    // PalletFixtures.PreMcSuspendReason (PreMcSuspendReasonType).
+    private static readonly Dictionary<int, string> PreMcSuspendReasons = new()
+    {
+        [0] = "none",
+        [1] = "operator suspended",
+        [2] = "CSG error",
+    };
+
+    // PalletFixtures.ReclampStatus (ReclampStatus).
+    private static readonly Dictionary<int, string> ReclampStatuses = new()
+    {
+        [0] = "normal",
+        [1] = "timeout alarm",
+        [2] = "timeout warning",
+    };
+
+    // WorkSetCommand.OperationType (WorkSetStationOperationType): what the station asks the operator to do. A different
+    // list from WorkSetResults.OperationStatus above.
+    private static readonly Dictionary<int, string> WorkSetCommandOperations = new()
+    {
+        [0] = "nothing",
+        [1] = "clamp",
+        [2] = "unclamp and clamp",
+        [3] = "unclamp and clamp (scrap)",
+        [4] = "unclamp",
+        [5] = "unclamp (scrap)",
+        [6] = "other",
+        [7] = "input",
+        [8] = "output",
+        [9] = "stay on table",
+        [10] = "inspection",
+        [11] = "exchange fixture",
+        [12] = "stay at front",
+        [13] = "hand change",
+        [14] = "other, unclamp and clamp",
+        [15] = "material input",
+        [16] = "material output",
+        [17] = "reclamp",
+        [18] = "exchange",
+        [19] = "material work set",
+        [20] = "fixture change",
+        [21] = "check fixtures",
+    };
+
+    // ManualTransport.Status (ManualTransportStatus).
+    private static readonly Dictionary<int, string> ManualTransportStatuses = new()
+    {
+        [0] = "undefined",
+        [1] = "waiting for transport",
+        [2] = "transporting",
+        [3] = "waiting to finish",
+        [4] = "finished",
+        [5] = "cancelled",
+    };
+
+    // InformationFiles.InfoType (InformationFileType).
+    private static readonly Dictionary<int, string> InfoFileTypes = new()
+    {
+        [0] = "undefined",
+        [1] = "work setting",
+        [2] = "tool setting",
+    };
+
     public static string DeviceType(int? value) => Lookup(value, DeviceTypes);
 
     public static string PalletStatus(int? value) => Lookup(value, PalletStatuses);
@@ -225,19 +525,71 @@ public static class Codes
 
     public static string MachiningFinish(int? value) => Flags(value, MachiningFinishBits, "normal");
 
+    public static string ToolStatus(int? value) => Lookup(value, ToolStatuses);
+
+    public static string ToolLifeType(int? value) => Lookup(value, ToolLifeTypes);
+
+    public static string ToolKind(int? value) => Lookup(value, ToolKinds);
+
+    /// <summary>One entry per alarm flag set (see <see cref="ToolAlarmColumns"/>), leftover bits as one "code N";
+    /// empty for none or NULL.</summary>
+    public static IReadOnlyList<string> ToolAlarms(int? flags) => FlagList(flags, ToolAlarmBits);
+
+    public static string DevicePositionStatus(int? value) => Lookup(value, DevicePositionStatuses);
+
+    public static string DeviceDashStatus(int? value) => Lookup(value, DeviceDashStatuses);
+
+    public static string MachineToolStatus(int? value) => Lookup(value, MachineToolStatuses);
+
+    public static string CncRun(int? value) => Lookup(value, CncRuns);
+
+    public static string OperatorCall(int? value) => Lookup(value, OperatorCalls);
+
+    public static string RunJob(int? value) => Lookup(value, RunJobs);
+
+    public static string PalletDisplayStatus(int? value) => Lookup(value, PalletDisplayStatuses);
+
+    public static string PalletWorkStatus(int? value) => Lookup(value, PalletWorkStatuses);
+
+    public static string VehicleMode(int? value) => Lookup(value, VehicleModes);
+
+    public static string JobType(int? value) => Lookup(value, JobTypes);
+
+    public static string ProcessStatus(int? value) => Lookup(value, ProcessStatuses);
+
+    public static string FixtureJobStatus(int? value) => Lookup(value, FixtureJobStatuses);
+
+    public static string FixtureWorkStatus(int? value) => Lookup(value, FixtureWorkStatuses);
+
+    public static string PreMcSuspendReason(int? value) => Lookup(value, PreMcSuspendReasons);
+
+    public static string ReclampStatus(int? value) => Lookup(value, ReclampStatuses);
+
+    public static string WorkSetCommandOperation(int? value) => Lookup(value, WorkSetCommandOperations);
+
+    public static string ManualTransportStatus(int? value) => Lookup(value, ManualTransportStatuses);
+
+    public static string InfoFileType(int? value) => Lookup(value, InfoFileTypes);
+
     private static string Lookup(int? value, IReadOnlyDictionary<int, string> map)
     {
         if (value is null) return "";
         return map.TryGetValue(value.Value, out var words) ? words : $"code {value.Value}";
     }
 
-    // Splits a flag value into its known bits, rendered in ascending bit order, then any leftover bits as one code.
+    // A flag value as one string; zero has its own words.
     private static string Flags(int? value, IReadOnlyDictionary<int, string> bits, string zeroWords)
     {
         if (value is null) return "";
         if (value.Value == 0) return zeroWords;
+        return string.Join(", ", FlagList(value, bits));
+    }
 
+    // Splits a flag value into its known bits, in ascending bit order, then any leftover bits as one code.
+    private static List<string> FlagList(int? value, IReadOnlyDictionary<int, string> bits)
+    {
         var words = new List<string>();
+        if (value is null or 0) return words;
         foreach (var (bit, name) in bits.OrderBy(pair => pair.Key))
         {
             if ((value.Value & bit) != 0) words.Add(name);
@@ -246,7 +598,6 @@ public static class Codes
         var knownMask = bits.Keys.Aggregate(0, (mask, bit) => mask | bit);
         var leftover = value.Value & ~knownMask;
         if (leftover != 0) words.Add($"code {leftover}");
-
-        return string.Join(", ", words);
+        return words;
     }
 }

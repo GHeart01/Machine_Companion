@@ -86,6 +86,90 @@ public class CodesTests
         Assert.Equal("maintenance", Codes.WssMode(16));
     }
 
+    // 0.2 tables: one known value and one unknown value each.
+    public static TheoryData<string, int, string> NewTables => new()
+    {
+        { "ToolStatus", 2, "life warning" },
+        { "ToolLifeType", 3, "tenths of a second" },
+        { "ToolKind", 9, "face mill" },
+        { "DevicePositionStatus", 3, "processing" },
+        { "DeviceDashStatus", 4, "error" },
+        { "MachineToolStatus", 2, "lacking tools" },
+        { "CncRun", 2, "hold" },
+        { "OperatorCall", 1, "M code" },
+        { "RunJob", 2, "pallet change" },
+        { "PalletDisplayStatus", 4, "waiting for machining" },
+        { "PalletWorkStatus", 3, "abnormal" },
+        { "VehicleMode", 48, "manual interrupt" },
+        { "JobType", 2, "machining" },
+        { "ProcessStatus", -1, "varied" },
+        { "FixtureJobStatus", 4, "abnormal finish" },
+        { "FixtureWorkStatus", 6, "seating error" },
+        { "PreMcSuspendReason", 2, "CSG error" },
+        { "ReclampStatus", 1, "timeout alarm" },
+        { "WorkSetCommandOperation", 21, "check fixtures" },
+        { "ManualTransportStatus", 3, "waiting to finish" },
+        { "InfoFileType", 2, "tool setting" },
+    };
+
+    private static Func<int?, string> Table(string name) =>
+        (Func<int?, string>)typeof(Codes).GetMethod(name, [typeof(int?)])!.CreateDelegate(typeof(Func<int?, string>));
+
+    [Theory]
+    [MemberData(nameof(NewTables))]
+    public void New_tables_map_known_and_unknown_values(string table, int known, string expected)
+    {
+        var words = Table(table);
+        Assert.Equal(expected, words(known));
+        Assert.Equal("code 999", words(999));
+        Assert.Equal("", words(null));
+    }
+
+    [Fact]
+    public void Tool_and_device_tables_spot_checks()
+    {
+        Assert.Equal("ready", Codes.ToolStatus(1));
+        Assert.Equal("alarm", Codes.ToolStatus(4));
+        Assert.Equal("offset error", Codes.ToolStatus(3));
+        Assert.Equal("undefined", Codes.ToolLifeType(-1));
+        Assert.Equal("seconds", Codes.ToolLifeType(0));
+        Assert.Equal("count", Codes.ToolLifeType(2));
+        Assert.Equal("code 13", Codes.ToolKind(13)); // a gap in the enum
+        Assert.Equal("drill speed-up cycle", Codes.ToolKind(29));
+        Assert.Equal("empty", Codes.DevicePositionStatus(0));
+        Assert.Equal("unload before", Codes.DevicePositionStatus(6));
+        Assert.Equal("down", Codes.DeviceDashStatus(0));
+        Assert.Equal("offset error", Codes.MachineToolStatus(5));
+        Assert.Equal("run", Codes.CncRun(3));
+        Assert.Equal("released", Codes.OperatorCall(0));
+        Assert.Equal("manual transport", Codes.RunJob(4));
+        Assert.Equal("idle", Codes.PalletDisplayStatus(0));
+        Assert.Equal("pallet active", Codes.PalletDisplayStatus(14));
+        Assert.Equal("none", Codes.PalletWorkStatus(0));
+        Assert.Equal("cancel", Codes.PalletWorkStatus(4));
+        Assert.Equal("system", Codes.VehicleMode(0));
+        Assert.Equal("code 3", Codes.VehicleMode(3)); // a lookup, not flags
+    }
+
+    [Fact]
+    public void ToolAlarms_lists_each_flag_and_leftover_bits()
+    {
+        Assert.Empty(Codes.ToolAlarms(0));
+        Assert.Empty(Codes.ToolAlarms(null));
+        Assert.Equal(["tool life alarm", "broken tool (short)"], Codes.ToolAlarms(2 | 8));
+        Assert.Equal(["STS not OK", "code 2048"], Codes.ToolAlarms(0x400 | 0x800));
+    }
+
+    [Fact]
+    public void ToolAlarm_columns_map_one_bit_each()
+    {
+        var columns = Codes.ToolAlarmColumns;
+        Assert.Contains(columns, c => c.Column == "TLAlarm" && c.Flag == 2);
+        Assert.Contains(columns, c => c.Column == "BT2AlarmLong" && c.Flag == 0x10);
+        Assert.Equal(columns.Count, columns.Select(c => c.Flag).Distinct().Count());
+        Assert.All(columns, c => Assert.Single(Codes.ToolAlarms(c.Flag)));
+    }
+
     [Fact]
     public void Unknown_values_are_code_N_in_every_mapped_method()
     {
