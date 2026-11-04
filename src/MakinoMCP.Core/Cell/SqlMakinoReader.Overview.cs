@@ -342,11 +342,15 @@ public sealed partial class SqlMakinoReader
     }
 
     /// <summary>How long the cell keeps its history (days); null when SystemParameters or its columns are missing.</summary>
-    internal static string? HistoryDaysSql(SchemaInfo schema)
+    internal static string? HistoryDaysSql(SchemaInfo schema) => SystemParameterSql(schema, "PreserveResults");
+
+    /// <summary>One SystemParameters value (column ParameterValue); null when the table or its columns are missing.
+    /// <paramref name="name"/> is always a constant from this code, never user input.</summary>
+    private static string? SystemParameterSql(SchemaInfo schema, string name)
     {
         if (!schema.Has("SystemParameters", "ParameterName") || !schema.Has("SystemParameters", "ParameterValue")) return null;
         var order = schema.Has("SystemParameters", "SystemID") ? " ORDER BY SystemID" : "";
-        return $"SELECT TOP 1 ParameterValue FROM SystemParameters WHERE ParameterName = 'PreserveResults'{order};";
+        return $"SELECT TOP 1 ParameterValue FROM SystemParameters WHERE ParameterName = '{name}'{order};";
     }
 
     /// <summary>The PreserveResults value as days; anything but a positive whole number is null.</summary>

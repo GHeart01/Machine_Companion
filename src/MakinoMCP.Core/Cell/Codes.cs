@@ -215,8 +215,8 @@ public static class Codes
         [4] = "alarm",
     };
 
-    // FunctionalToolCutterData.ToolLifeType and the life columns that follow it (ToolLife). Times are raw: 0 counts
-    // seconds, 3 tenths of a second.
+    // FunctionalToolCutterData.ToolLifeType and the life columns that follow it (ToolLife). Both time types are stored
+    // in seconds: 3 only means the control counts in tenths (the cell converts on the way in and out).
     private static readonly Dictionary<int, string> ToolLifeTypes = new()
     {
         [-1] = "undefined",

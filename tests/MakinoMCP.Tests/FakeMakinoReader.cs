@@ -79,6 +79,45 @@ internal sealed class FakeMakinoReader : IMakinoReader
             new PalletInfo(7, "P7", "waiting for machining", "not completed", "MC1 table", ["FIXTURE-A"]),
         ]), ct);
 
+    public Task<ToolList> GetToolsAsync(string? device, string? filter, int? tool, CancellationToken ct) =>
+        Answer(() => new ToolList(Now, false, SqlMakinoReader.ToolFilter(filter, tool), "mm",
+        [
+            new DeviceToolCount("MC1", 5, new Dictionary<string, int> { ["ready"] = 3, ["life warning"] = 1, ["alarm"] = 1 }),
+        ],
+        [
+            new ToolInfo(1001, 101, "CONTOSO 10MM END MILL", "MC1 pot 20", "life warning",
+                [new CutterInfo(1, "life warning") { Life = SqlMakinoReader.Life(3, 4500, 3600, 4140, false), Length = 101.25 }])
+            {
+                Kind = "end mill",
+            },
+            new ToolInfo(1002, 102, "CONTOSO PROBE", "MC1 pot 1", "alarm",
+                [new CutterInfo(1, "alarm") { Alarms = ["broken tool (short)"], Life = SqlMakinoReader.Life(0, 0, 0, 0, false) }])
+            {
+                Flags = ["alarm tool"],
+            },
+        ]), ct, device);
+
+    public Task<ToolChangeList> GetToolChangesAsync(int days, string? device, int? tool, bool includeLifeUpdates, CancellationToken ct) =>
+        Answer(() => new ToolChangeList(Now, false, "mm",
+        [
+            new ToolChange(Now.AddHours(-3), "MC1", 1001, 101, ["length 101.234 → 101.250 mm"]),
+        ]) { LifeUpdatesLeftOut = !includeLifeUpdates }, ct, device);
+
+    public Task<ToolAlarmList> GetToolAlarmsAsync(int days, string? device, int? tool, CancellationToken ct) =>
+        Answer(() => new ToolAlarmList(Now, false, "tool alarm history", "mm",
+        [
+            new ToolAlarmEvent(Now.AddHours(-1), "MC1", 1002, 102, ["tool life alarm"]) { Pot = 1 },
+        ], []), ct, device);
+
+    public Task<ToolMovementList> GetToolMovementsAsync(int days, string? device, int? tool, CancellationToken ct) =>
+        Answer(() => new ToolMovementList(Now, false,
+        [
+            new ToolMovement(Now.AddHours(-2), "out", 1003, 103, "MC1 pot 7", "CRIB1 (tool crib)", "ready")
+            {
+                Name = "CONTOSO 6MM DRILL", UsedPercent = 40,
+            },
+        ]), ct, device);
+
     public Task<LoginRightsInfo> GetLoginRightsAsync(CancellationToken ct) =>
         Answer(() => new LoginRightsInfo(CanWrite, Devices.Count, CanWrite ? "can write" : "read only"), ct);
 }
