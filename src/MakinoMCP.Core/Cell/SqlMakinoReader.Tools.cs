@@ -625,7 +625,7 @@ public sealed partial class SqlMakinoReader
                 WHERE p.PresetDateTime >= DATEADD(day, -@days, @now) AND (@device IS NULL OR p.DeviceID = @device)
                   AND (@tool IS NULL OR p.ITN = @tool OR p.FTN = @tool) AND ({raised})
                 ORDER BY p.PresetDateTime DESC;
-                """, "tool data changes in which an alarm bit turned on (the tool alarm history isn't readable by this login)",
+                """, "tool data changes in which an alarm bit turned on (the tool alarm history is missing on this cell or not readable by this login)",
                 ["pot"]);
         }
         throw new CellSchemaException([AlarmHistory, Preset]);
