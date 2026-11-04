@@ -153,12 +153,14 @@ public sealed class ToolContext
 
     private MakinoLogin Login => Settings.Settings?.Makino ?? new MakinoLogin("", "", false, "", "");
 
-    // The reader's "No device named 'X'. Devices on this cell: …" and "No filter named 'X'. Use one of: …" (any other
+    // The reader's "No device named 'X'. Devices on this cell: …", "No filter named 'X'. Use one of: …" and "Give a part
+    // name …" (any other
     // ArgumentException, such as a bad connection string, goes through ErrorText, which scrubs it).
     private static bool IsBadArgument(Exception e) =>
         e.GetType() == typeof(ArgumentException)
         && (e.Message.StartsWith("No device named ", StringComparison.Ordinal)
-            || e.Message.StartsWith("No filter named ", StringComparison.Ordinal));
+            || e.Message.StartsWith("No filter named ", StringComparison.Ordinal)
+            || e.Message == SqlMakinoReader.NoPartGiven);
 
     private static string Short(string message)
     {

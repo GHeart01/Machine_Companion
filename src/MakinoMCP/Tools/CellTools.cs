@@ -78,8 +78,10 @@ public static class CellTools
 
     [McpServerTool(Name = "get_orders", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("Is there work queued in the cell, and what has finished? Orders, latest due first: name, part, " +
-                 "status, quantity, suspended, due and completed time. Default: active orders only (not complete, " +
-                 "cancelled or undefined); activeOnly=false includes finished ones too.")]
+                 "status, quantity (required), completedQty (good parts out of the last process), scrapQty, " +
+                 "remainingQty (not started yet), suspended, due and completed time. Default: active orders only (not " +
+                 "complete, cancelled or undefined); activeOnly=false includes finished ones too. get_production adds " +
+                 "parts in process and the counts per day.")]
     public static Task<string> GetOrders(
         ToolContext context,
         [Description("true: only orders still to do. false: every order. Default true.")] bool activeOnly = true,
@@ -166,4 +168,59 @@ public static class CellTools
         [Description(ToolParam)] int? tool = null,
         CancellationToken ct = default) =>
         context.Database("get_tool_movements", (r, t) => r.GetToolMovementsAsync(days, device, tool, t), ct);
+
+    [McpServerTool(Name = "get_part_routing", ReadOnly = true, Idempotent = true, OpenWorld = false)]
+    [Description("How is a part made in the cell, and are its tools there? Finds the part by its exact name " +
+                 "(case-insensitive), else the one part whose name contains the text; when several match, it lists " +
+                 "them as candidates (name, revision, process count) and shows no routing, so ask again with the exact " +
+                 "name. Parts split per operation (…-OP1, …-OP2) are separate parts. otherMatches names other parts " +
+                 "containing the text next to an exact match. The routing: processes in order (number, name, status, " +
+                 "maxFixtures, the fixtures that can hold it as \"pallet N fixture M\"), their operations (parts per " +
+                 "clamp) and jobs in order: type (work setting, machining, …), workSet (load/unload) and infoFile " +
+                 "(work instructions), program (NC program), minutes (planned time), operatorCall, feasibleDevices. " +
+                 "With includeTools (default), each machining job lists the tool types (ftn, name) its main program " +
+                 "needs, how many (needed), the life one run uses (cutting), how many usable tools of that type " +
+                 "(status ready or life warning) sit on each feasible machine (usable) and missingOn: the machines " +
+                 "with too few. That check is approximate (toolCheck): main program only, subprograms not followed, " +
+                 "remaining life not checked. notAvailable names what this cell or login can't show.")]
+    public static Task<string> GetPartRouting(
+        ToolContext context,
+        [Description("The part name, or part of it.")] string part,
+        [Description("Only the part with this revision (for names that repeat across revisions). Leave empty for any.")] string? revision = null,
+        [Description("false: leave out the tools each program needs. Default true.")] bool includeTools = true,
+        CancellationToken ct = default) =>
+        context.Database("get_part_routing", (r, t) => r.GetPartRoutingAsync(part, revision, includeTools, t), ct);
+
+    [McpServerTool(Name = "get_production", ReadOnly = true, Idempotent = true, OpenWorld = false)]
+    [Description("How many parts has the cell made, and how far along is each order? Per order, counted the way the " +
+                 "cell's own order screen counts: quantity (required), completedQty (good parts out of the last " +
+                 "process), scrapQty (any process), remainingQty (not started), inProcessQty (started, not finished: " +
+                 "clampedQty on fixtures now plus parts waiting between processes), status; then completedInWindow, " +
+                 "scrapInWindow and daily (date, completed, scrap; days with none left out) for the last days. Orders " +
+                 "that made the most in the window come first, then latest due. Default: active orders, the last 7 " +
+                 "days (today counts as one). Naming an order or a part (exact name, else every name containing the " +
+                 "text) shows its orders whatever their status. The cell keeps daily counts for about three months.")]
+    public static Task<string> GetProduction(
+        ToolContext context,
+        [Description("How many days of daily counts, from today back (today counts as one). Default 7.")] int days = 7,
+        [Description("Only this order: its name, or part of it. Leave empty for every active order.")] string? order = null,
+        [Description("Only the orders of this part: its name, or part of it. Leave empty for every part.")] string? part = null,
+        CancellationToken ct = default) =>
+        context.Database("get_production", (r, t) => r.GetProductionAsync(days, order, part, t), ct);
+
+    [McpServerTool(Name = "get_attention", ReadOnly = true, Idempotent = true, OpenWorld = false)]
+    [Description("What is waiting on a person right now? One list, most severe first: devices with a recovery " +
+                 "request, error, emergency stop, disconnected or a machine's operator call; instructions a work-set " +
+                 "station waits for the operator to carry out (clamp, unclamp, …); manual transports not finished; " +
+                 "fixtures damaged, pre-machining suspended (with the reason) or past their reclamp time; tools in " +
+                 "alarm or with an offset error per machine; fixtures lacking tools for their next machining; stations " +
+                 "or the vehicle over their maintenance cycle count; last, fixtures whose machining is suspended or " +
+                 "held at the work-set station (operators often park fixtures this way; detail is the reason they " +
+                 "typed). Each item: kind, what, device or pallet/fixture, order and process, detail, since (only when " +
+                 "the cell records it). counts: how many of each condition the cell has, even past the row cap. " +
+                 "machineToolStatus: each machine's tool status, as context only (\"lacking tools\" there usually means " +
+                 "a later job waits for a tool; the fixtures concerned are the items). notAvailable names sections " +
+                 "this cell or login can't show.")]
+    public static Task<string> GetAttention(ToolContext context, CancellationToken ct) =>
+        context.Database("get_attention", (r, t) => r.GetAttentionAsync(t), ct);
 }

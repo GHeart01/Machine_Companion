@@ -16,7 +16,8 @@ public sealed class ToolTests : IDisposable
     private static readonly string[] SpecNames =
     [
         "get_cell_overview", "get_alarms", "get_alarm_summary", "get_utilization", "get_recent_activity", "get_orders",
-        "get_pallets", "get_tools", "get_tool_changes", "get_tool_alarms", "get_tool_movements", "list_shared_folders",
+        "get_pallets", "get_tools", "get_tool_changes", "get_tool_alarms", "get_tool_movements", "get_part_routing",
+        "get_production", "get_attention", "list_shared_folders",
         "list_files", "read_file", "search_files",
     ];
 
@@ -63,6 +64,9 @@ public sealed class ToolTests : IDisposable
         ("get_tool_changes", c => CellTools.GetToolChanges(c, ct: CancellationToken.None)),
         ("get_tool_alarms", c => CellTools.GetToolAlarms(c, ct: CancellationToken.None)),
         ("get_tool_movements", c => CellTools.GetToolMovements(c, ct: CancellationToken.None)),
+        ("get_part_routing", c => CellTools.GetPartRouting(c, "CONTOSO-BRACKET", ct: CancellationToken.None)),
+        ("get_production", c => CellTools.GetProduction(c, ct: CancellationToken.None)),
+        ("get_attention", c => CellTools.GetAttention(c, CancellationToken.None)),
         ("list_shared_folders", c => FolderTools.ListSharedFolders(c, CancellationToken.None)),
         ("list_files", c => FolderTools.ListFiles(c, "logs", ct: CancellationToken.None)),
         ("read_file", c => FolderTools.ReadFile(c, "logs", "cell.log", ct: CancellationToken.None)),
@@ -108,7 +112,7 @@ public sealed class ToolTests : IDisposable
             Fail = () => new InvalidOperationException($"Login failed for 'your-login' with Password={Password}; server down"),
         });
 
-        foreach (var (_, call) in AllTools.Take(11))
+        foreach (var (_, call) in AllTools.Take(14))
         {
             var json = await call(context);
             var error = ErrorOf(json);
@@ -269,6 +273,68 @@ public sealed class ToolTests : IDisposable
         var move = moves.GetProperty("movements")[0];
         Assert.Equal("out", move.GetProperty("action").GetString());
         Assert.Equal("CRIB1 (tool crib)", move.GetProperty("to").GetString());
+    }
+
+    [Fact]
+    public async Task Routing_json_shows_jobs_tools_and_where_they_are_missing()
+    {
+        var root = Parse(await CellTools.GetPartRouting(Ready(new FakeMakinoReader()), "CONTOSO-BRACKET", ct: CancellationToken.None));
+
+        Assert.Equal(FakeMakinoReader.Now, root.GetProperty("serverTime").GetDateTime());
+        Assert.StartsWith("approximate", root.GetProperty("toolCheck").GetString());
+        var part = root.GetProperty("part");
+        Assert.Equal("CONTOSO-BRACKET", part.GetProperty("name").GetString());
+        Assert.False(part.TryGetProperty("revision", out _)); // blank fields are left out
+        var job = part.GetProperty("processes")[0].GetProperty("jobs")[1];
+        Assert.Equal("machining", job.GetProperty("type").GetString());
+        Assert.Equal("CONTOSO-BRACKET-OP1", job.GetProperty("program").GetString());
+        var tool = job.GetProperty("tools")[0];
+        Assert.Equal("MC2", tool.GetProperty("missingOn")[0].GetString());
+        Assert.Equal(0, tool.GetProperty("usable").GetProperty("MC2").GetInt32());
+        Assert.False(root.TryGetProperty("candidates", out _));
+    }
+
+    [Fact]
+    public async Task Routing_with_several_matches_lists_candidates_and_no_routing()
+    {
+        var root = Parse(await CellTools.GetPartRouting(Ready(new FakeMakinoReader()), "CONTOSO", ct: CancellationToken.None));
+
+        Assert.False(root.TryGetProperty("part", out _));
+        var names = root.GetProperty("candidates").EnumerateArray().Select(c => c.GetProperty("name").GetString()).ToList();
+        Assert.Equal(["CONTOSO-BRACKET-OP1", "CONTOSO-BRACKET-OP2"], names);
+    }
+
+    [Fact]
+    public async Task Routing_without_a_part_name_says_what_to_give()
+    {
+        var error = ErrorOf(await CellTools.GetPartRouting(Ready(new FakeMakinoReader()), "  ", ct: CancellationToken.None));
+
+        Assert.DoesNotContain("Could not read the Makino cell database", error); // passed through as-is
+        Assert.Contains("part name", error);
+    }
+
+    [Fact]
+    public async Task Production_and_attention_json_have_quantities_and_items()
+    {
+        var context = Ready(new FakeMakinoReader());
+
+        var production = Parse(await CellTools.GetProduction(context, ct: CancellationToken.None));
+        Assert.Equal(7, production.GetProperty("days").GetInt32());
+        var order = production.GetProperty("orders")[0];
+        Assert.Equal(40, order.GetProperty("completedQty").GetInt32());
+        Assert.Equal(2, order.GetProperty("scrapQty").GetInt32());
+        Assert.Equal("2026-11-01", order.GetProperty("daily")[0].GetProperty("date").GetString());
+
+        var orders = Parse(await CellTools.GetOrders(context, ct: CancellationToken.None));
+        Assert.Equal(40, orders.GetProperty("orders")[0].GetProperty("completedQty").GetInt32());
+
+        var attention = Parse(await CellTools.GetAttention(context, CancellationToken.None));
+        var item = attention.GetProperty("items")[0];
+        Assert.Equal("device", item.GetProperty("kind").GetString());
+        Assert.Equal("recovery request", item.GetProperty("what").GetString());
+        Assert.False(item.TryGetProperty("pallet", out _));
+        Assert.Equal("lacking tools", attention.GetProperty("machineToolStatus").GetProperty("MC1").GetString());
+        Assert.Equal(1, attention.GetProperty("counts").GetProperty("machining suspended").GetInt32());
     }
 
     [Fact]
