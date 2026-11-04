@@ -123,7 +123,9 @@ public sealed partial class SqlMakinoReader
     }
 
     // The pallet types whose status and work status the cell rewrites into dashboard codes (its UpdatePalletStatus
-    // procedure); other types keep raw values. No PalletType column (an older cell): treat as a dashboard pallet.
+    // procedure). For other types it always stores PalletStatus 0 and passes the raw work status through, so neither
+    // value is a dashboard code there and both show "code N". No PalletType column (an older cell): treat as a
+    // dashboard pallet.
     private static readonly int[] DashboardPalletTypes = [0, 1, 2, 8, 16];
 
     internal static string PalletStatusWords(int? palletType, int? status) =>

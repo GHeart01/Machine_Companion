@@ -136,6 +136,7 @@ public class ReaderSqlTests
         Assert.Contains("recovery request", missing);
         Assert.Contains("status", missing);
         Assert.Contains("next table pallet", missing);
+        Assert.Contains("executing program", SqlMakinoReader.Missing(SchemaWithout("MachineStatus.ExecONumber"), "MachineStatus"));
         Assert.Empty(SqlMakinoReader.Missing(SchemaWithout(), "MachineStatus"));
         Assert.Empty(SqlMakinoReader.Missing(SchemaWithout(), "WorkSetStatus"));
     }
@@ -163,6 +164,8 @@ public class ReaderSqlTests
         Assert.Empty(SqlMakinoReader.VehicleMissing(SchemaWithout()));
         Assert.Equal(["vehicle mode", "buffer status"], SqlMakinoReader.VehicleMissing(SchemaWithout("VehicleStatus")));
         Assert.Equal(["vehicle status"], SqlMakinoReader.VehicleMissing(SchemaWithout("VehicleStatus", "ViewVehicleStatus")));
+        Assert.Equal(["transport to"], SqlMakinoReader.VehicleMissing(SchemaWithout("VehicleStatus.ToDeviceName")));
+        Assert.Contains("transport to", SqlMakinoReader.VehicleMissing(SchemaWithout("VehicleStatus", "ViewVehicleStatus.ToDevice")));
     }
 
     [Fact]
@@ -218,10 +221,11 @@ public class ReaderSqlTests
     [Fact]
     public async Task Synonym_tables_count_as_present_with_their_probed_columns()
     {
-        var probed = new List<string>();
+        var probed = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var failed = new System.Collections.Concurrent.ConcurrentQueue<string>();
         Task<IReadOnlyList<string>> ColumnsOf(string table, CancellationToken ct)
         {
-            probed.Add(table);
+            probed.Enqueue(table);
             if (table == "ToolLocation") throw new InvalidOperationException("linked server unreachable");
             return Task.FromResult<IReadOnlyList<string>>(["ITNID", "Status"]);
         }
@@ -230,6 +234,8 @@ public class ReaderSqlTests
             [("Devices", "DeviceID")],
             ["IndividualToolData", "ToolLocation", "NotOneOfOurs", "individualtooldata"],
             ColumnsOf,
+            TimeSpan.FromSeconds(10),
+            (table, e) => failed.Enqueue($"{table}: {e.Message}"),
             CancellationToken.None);
 
         Assert.True(schema.HasTable("Devices"));
@@ -240,6 +246,99 @@ public class ReaderSqlTests
         Assert.False(schema.HasTable("NotOneOfOurs"));
         Assert.DoesNotContain("NotOneOfOurs", probed); // only names from the constant list are ever queried
         Assert.Equal(2, probed.Count); // each listed synonym probed once
+        Assert.Equal(["ToolLocation"], schema.UnreadableSynonyms);
+        Assert.Equal(["ToolLocation: linked server unreachable"], failed); // reported, for the log
+    }
+
+    [Fact]
+    public async Task Synonym_probe_past_the_cap_is_missing_and_the_load_returns_in_time()
+    {
+        // A probe that hangs and ignores cancellation (a linked server that never answers) must not hold the load.
+        Task<IReadOnlyList<string>> ColumnsOf(string table, CancellationToken ct) => table == "ToolLocation"
+            ? Task.Delay(TimeSpan.FromMinutes(5), CancellationToken.None).ContinueWith(_ => (IReadOnlyList<string>)["ITNID"], TaskScheduler.Default)
+            : Task.FromResult<IReadOnlyList<string>>(["ITNID", "Status"]);
+        var failed = new System.Collections.Concurrent.ConcurrentQueue<string>();
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var schema = await SchemaInfo.BuildAsync(
+            [("Devices", "DeviceID")],
+            ["ToolLocation", "IndividualToolData"], // the hanging one first: the others still get probed
+            ColumnsOf,
+            TimeSpan.FromMilliseconds(300),
+            (table, _) => failed.Enqueue(table),
+            CancellationToken.None);
+
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(5), $"took {watch.Elapsed}");
+        Assert.False(schema.HasTable("ToolLocation"));
+        Assert.True(schema.HasTable("IndividualToolData"));
+        Assert.True(schema.HasTable("Devices"));
+        Assert.Equal(["ToolLocation"], schema.UnreadableSynonyms);
+        Assert.Equal(["ToolLocation"], failed);
+    }
+
+    [Fact]
+    public void Failed_probe_log_line_names_the_table_and_error_but_never_the_password()
+    {
+        var login = new MakinoLogin("CELL-PC", "Makino", false, "reader", "pw-xyz");
+        var line = SqlMakinoReader.ProbeFailedLine("ToolLocation",
+            new InvalidOperationException($"linked server CRIB down; Password=pw-xyz; {login.ConnectionString()}"), login);
+
+        Assert.Contains("ToolLocation", line);
+        Assert.Contains("InvalidOperationException", line);
+        Assert.Contains("linked server CRIB down", line);
+        Assert.DoesNotContain("pw-xyz", line);
+    }
+
+    [Fact]
+    public async Task Schema_cache_keeps_a_schema_with_unreadable_synonyms_and_retries_later()
+    {
+        var now = new DateTime(2026, 11, 2, 10, 0, 0, DateTimeKind.Utc);
+        var cache = new SchemaCache(() => now, TimeSpan.FromMinutes(5));
+        var partial = new SchemaInfo([("Devices", "DeviceID")], ["ToolLocation"]);
+        var whole = new SchemaInfo([("Devices", "DeviceID"), ("ToolLocation", "ITNID")]);
+        var loads = 0;
+        var next = partial;
+        Task<SchemaInfo> Load(CancellationToken ct) { loads++; return Task.FromResult(next); }
+
+        Assert.Same(partial, await cache.GetAsync(Load, CancellationToken.None));
+        Assert.Same(partial, await cache.GetAsync(Load, CancellationToken.None)); // kept: no re-probe right away
+        Assert.Equal(1, loads);
+
+        now = now.AddMinutes(6);
+        next = whole;
+        Assert.Same(whole, await cache.GetAsync(Load, CancellationToken.None)); // retried after the interval
+        Assert.Equal(2, loads);
+
+        now = now.AddHours(1);
+        Assert.Same(whole, await cache.GetAsync(Load, CancellationToken.None)); // complete: never reloaded
+        Assert.Equal(2, loads);
+    }
+
+    [Fact]
+    public async Task Schema_cache_retries_a_failed_first_load_and_keeps_the_old_schema_when_a_retry_fails()
+    {
+        var now = new DateTime(2026, 11, 2, 10, 0, 0, DateTimeKind.Utc);
+        var cache = new SchemaCache(() => now, TimeSpan.FromMinutes(5));
+        var partial = new SchemaInfo([("Devices", "DeviceID")], ["ToolLocation"]);
+        var loads = 0;
+        var fail = true;
+        Task<SchemaInfo> Load(CancellationToken ct)
+        {
+            loads++;
+            return fail ? Task.FromException<SchemaInfo>(new TimeoutException("cell busy")) : Task.FromResult(partial);
+        }
+
+        await Assert.ThrowsAsync<TimeoutException>(() => cache.GetAsync(Load, CancellationToken.None));
+        fail = false;
+        Assert.Same(partial, await cache.GetAsync(Load, CancellationToken.None)); // a failed load is not kept
+        Assert.Equal(2, loads);
+
+        now = now.AddMinutes(6);
+        fail = true;
+        Assert.Same(partial, await cache.GetAsync(Load, CancellationToken.None)); // retry failed: the old one stands
+        Assert.Equal(3, loads);
+        Assert.Same(partial, await cache.GetAsync(Load, CancellationToken.None)); // and waits another interval
+        Assert.Equal(3, loads);
     }
 
     [Fact]

@@ -15,13 +15,16 @@ public sealed partial class SqlMakinoReader : IMakinoReader
 
     private readonly MakinoLogin _login;
     private readonly int _cap;
-    private readonly SemaphoreSlim _schemaGate = new(1, 1);
-    private SchemaInfo? _schema;
+    private readonly SchemaCache _schema = new();
+    private readonly Action<string>? _log;
 
-    public SqlMakinoReader(MakinoLogin login, Limits limits)
+    /// <param name="log">Where to note problems that don't fail a call (a synonym table that can't be read); the
+    /// lines never hold the password or the connection string.</param>
+    public SqlMakinoReader(MakinoLogin login, Limits limits, Action<string>? log = null)
     {
         _login = login;
         _cap = limits.MaxRows < 1 ? DefaultCap : limits.MaxRows;
+        _log = log;
     }
 
     /// <summary>A device row: Type and Number are how PalletLocation names a place.</summary>
@@ -77,20 +80,31 @@ public sealed partial class SqlMakinoReader : IMakinoReader
         }
     }
 
-    // Loaded once per reader; a failed load is not kept, so the next call tries again.
-    private async Task<SchemaInfo> SchemaAsync(SqlConnection connection, CancellationToken ct)
+    // Loaded once per reader (see SchemaCache: a failed load is not kept; unreadable synonyms are retried later).
+    private Task<SchemaInfo> SchemaAsync(SqlConnection connection, CancellationToken ct) =>
+        _schema.GetAsync(token => SchemaInfo.LoadAsync(connection, OpenProbeAsync,
+            (table, e) => _log?.Invoke(ProbeFailedLine(table, e, _login)), token), ct);
+
+    // A connection of its own for one synonym probe.
+    private async Task<SqlConnection> OpenProbeAsync(CancellationToken ct)
     {
-        if (_schema is { } known) return known;
-        await _schemaGate.WaitAsync(ct);
+        var connection = new SqlConnection(_login.ConnectionString());
         try
         {
-            return _schema ??= await SchemaInfo.LoadAsync(connection, ct);
+            await connection.OpenAsync(ct);
+            return connection;
         }
-        finally
+        catch
         {
-            _schemaGate.Release();
+            await connection.DisposeAsync();
+            throw;
         }
     }
+
+    /// <summary>The log line for a synonym that couldn't be read: table, exception type and message, scrubbed.</summary>
+    internal static string ProbeFailedLine(string table, Exception e, MakinoLogin login) =>
+        $"schema: {table} (a synonym) not readable, counted as missing until a retry in " +
+        $"{SchemaCache.DefaultRetryAfter.TotalMinutes:0} minutes: {ErrorText.ForClaude(e, login)}";
 
     private static SqlCommand Command(SqlConnection connection, string sql) =>
         new(Isolation + sql, connection) { CommandTimeout = CommandTimeoutSeconds };

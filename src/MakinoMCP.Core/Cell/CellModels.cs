@@ -140,7 +140,8 @@ public sealed record OrderInfo(
 public sealed record PalletList(DateTime ServerTime, bool Capped, IReadOnlyList<PalletInfo> Pallets);
 
 /// <summary>Status and WorkStatus are the cell's dashboard words (idle, waiting for machining, …; not completed,
-/// normal, abnormal, cancel); pallet types the dashboard doesn't cover show "code N".</summary>
+/// normal, abnormal, cancel). For pallet types the cell's dashboard doesn't track, it stores status 0 and a raw work
+/// status, so both show "code N".</summary>
 public sealed record PalletInfo(
     int Number, string Name, string Status, string WorkStatus, string Location, IReadOnlyList<string> Fixtures);
 

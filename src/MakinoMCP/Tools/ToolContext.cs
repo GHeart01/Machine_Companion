@@ -71,7 +71,7 @@ public sealed class ToolContext
     {
         var load = SettingsStore.Load(settingsPath);
         var s = load.Settings;
-        var reader = s is { IsReady: true } ? new SqlMakinoReader(s.Makino, s.Limits) : null;
+        var reader = s is { IsReady: true } ? new SqlMakinoReader(s.Makino, s.Limits, log is null ? null : log.Write) : null;
         var folders = s is not null && (s.IsReady || s.Folders.Count > 0)
             ? new SharedFolders(s.Folders, s.Limits, ProtectedPaths(settingsPath))
             : null;
