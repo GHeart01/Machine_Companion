@@ -293,7 +293,17 @@ public sealed record ToolList(
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? DiameterTypeAssumed { get; init; }
 
-    /// <summary>What this cell lacks for the chosen filter, which then couldn't be applied (Tools is empty).</summary>
+    /// <summary>True when the cell doesn't manage tools (ToolManagementType 0): the console then shows offset error
+    /// and unknown as ready. Status here stays the stored, derived one.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? ToolManagementOff { get; init; }
+
+    /// <summary>Filter unused only: the order statuses that don't count as an active order.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? InactiveOrderStatuses { get; init; }
+
+    /// <summary>What this cell lacks for the chosen filter: it couldn't be applied (Tools is empty), or (unused) a
+    /// reason that couldn't be checked.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? NotAvailable { get; init; }
 }
@@ -326,6 +336,26 @@ public sealed record ToolInfo(int Itn, int? Ftn, string Name, string Location, s
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? LastUsedProgram { get; init; }
+
+    /// <summary>The program tool number (T number) the tool answers to, when it isn't 0 and differs from the FTN.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Ptn { get; init; }
+
+    /// <summary>The FTN's free-text type (two characters), when set.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Type { get; init; }
+
+    /// <summary>The FTN's size class and its flags ("large, Borematic"), when set.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SizeClass { get; init; }
+
+    /// <summary>Settings on the tool type (FTN): operator call tool, first-use check, tool life alarm prohibit.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? TypeFlags { get; init; }
+
+    /// <summary>Filter unused only: why nothing on this machine needs the tool.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? UnusedReasons { get; init; }
 }
 
 /// <summary>One cutting edge of a tool: its status, the alarm bits set on it, its life and its measured length and
@@ -343,6 +373,12 @@ public sealed record CutterInfo(int CutterNo, string Status)
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public double? Diameter { get; init; }
+
+    /// <summary>Only on a cutter in offset error: why, from length + wear and diameter + wear against the FTN's
+    /// limits now ("length 101.2500 above max 100.0000 inch"), or that it is within them now (the stored status may
+    /// predate a limit change).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? OffsetError { get; init; }
 }
 
 /// <summary>Tool life in Unit: "min" (time), "count", "m" or "inch" (distance, by the cell's unit), or "code N". Limit is
@@ -413,6 +449,11 @@ public sealed record ToolChange(DateTime Time, string Device, int Itn, int? Ftn,
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? User { get; init; }
+
+    /// <summary>Who wrote the change: "machine upload" (the machine's own values after a tool change or machining
+    /// finish) or the cell (presetter, tool-ID read, screen edit or import).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? By { get; init; }
 }
 
 /// <summary>Tool alarms, newest first. Source says where they come from: the cell's tool alarm history, or (when this
@@ -456,7 +497,16 @@ public sealed record ToolAlarmEvent(DateTime Time, string Device, int Itn, int? 
     public double? Diameter { get; init; }
 }
 
-public sealed record ToolMovementList(DateTime ServerTime, bool Capped, IReadOnlyList<ToolMovement> Movements);
+public sealed record ToolMovementList(DateTime ServerTime, bool Capped, IReadOnlyList<ToolMovement> Movements)
+{
+    /// <summary>When the console asks for a tool-out reason (SystemParameters ToolOutReason); null when this login
+    /// can't read the settings.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReasonAsked { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? NotAvailable { get; init; }
+}
 
 /// <summary>A tool put into ("in") or taken out of ("out") a machine; the cell logs no other moves. From and To are
 /// device and pot; Status is the tool's status at the time, UsedPercent its life used then.</summary>
@@ -479,6 +529,11 @@ public sealed record ToolMovement(DateTime Time, string Action, int Itn, int? Ft
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Reason { get; init; }
+
+    /// <summary>On an "in": the ITN taken out of the same machine pot just before (an exchange logs an out then an
+    /// in on that pot, the reason on the out). A guess from the order of the moves, not a link the cell stores.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ProbablyExchangedWith { get; init; }
 }
 
 // 0.2: routing, production and attention. Optional fields are left out of the JSON when null.

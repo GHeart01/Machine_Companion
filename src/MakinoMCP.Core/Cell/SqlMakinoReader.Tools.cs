@@ -8,7 +8,7 @@ namespace MakinoMCP.Core.Cell;
 // old and new values), ToolAlarmHistory and ToolInputOutputResults (tools put into or taken out of a machine).
 public sealed partial class SqlMakinoReader
 {
-    public static readonly IReadOnlyList<string> ToolFilterNames = ["problems", "all", "near_end", "alarm", "absent"];
+    public static readonly IReadOnlyList<string> ToolFilterNames = ["problems", "all", "near_end", "alarm", "absent", "unused"];
 
     private const string Itd = "IndividualToolData";
     private const string Itc = "IndividualToolCutterData";
@@ -16,8 +16,20 @@ public sealed partial class SqlMakinoReader
     private const string Ftc = "FunctionalToolCutterData";
     private const string Loc = "ToolLocation";
     private const string Preset = "PresetResults";
+    // ToolAlarmHistory exists only from V3.30, and the vendor's stock reporting login has no grant on it (its user
+    // script grants PresetResults and ToolInputOutputResults, not this table). So the PresetResults alarm-bit fallback
+    // in ToolAlarmsSql is the expected path on 3.x cells and stock logins, not an error.
     private const string AlarmHistory = "ToolAlarmHistory";
     private const string InOut = "ToolInputOutputResults";
+    private const string Mpt = "MainProgramTools";
+
+    // The settings get_tools reads besides ToolSettings: ToolManagementType (enum ToolManagementType: 0 none, 1 tool
+    // data, 2 tool resource; absent = 1), PTNDownloadType (enum PTNDownloadType: 0 the T number (PTN) is given at
+    // tool-in, so PTN 0 on a machine is a spare; 1/2 it is given before machining, so 0 means not assigned yet; absent
+    // = 0) and InspectionType (flags enum InspectionType; 0x10 first-used-tool inspection, the only case in which the
+    // cell clears ToolLocation.FirstTool after a use; absent = 0).
+    private static readonly string[] ToolStateParameterNames = ["ToolManagementType", "PTNDownloadType", "InspectionType"];
+    private const int FirstUsedToolInspection = 0x10;
 
 
     // ToolAlarmHistory's alarm bit columns: the cutter's columns, except that the long broken-tool bit is BT2Alarm.
@@ -112,12 +124,23 @@ public sealed partial class SqlMakinoReader
 
     internal static string? ToolSettingsSql(SchemaInfo schema) => SystemParametersSql(schema, ToolParameterNames);
 
-    private static async Task<ToolSettings> ToolSettingsAsync(Session s, CancellationToken ct)
+    private static async Task<ToolSettings> ToolSettingsAsync(Session s, CancellationToken ct) =>
+        (await ToolSettingsWithAsync(s, ct)).Settings;
+
+    /// <summary>The tool settings and, in the same read, the <paramref name="extra"/> parameters (Values null when
+    /// this login can't read SystemParameters).</summary>
+    private static async Task<(ToolSettings Settings, IReadOnlyDictionary<string, string>? Values)> ToolSettingsWithAsync(
+        Session s, CancellationToken ct, params string[] extra)
     {
-        var values = await SystemParametersAsync(s, ct, ToolParameterNames);
-        return ToolSettingsFrom(values?.GetValueOrDefault("ToolLifeCountType"), values?.GetValueOrDefault("ToolOffsetUnit"),
-            values?.GetValueOrDefault("DiameterTypePC"));
+        var values = await SystemParametersAsync(s, ct, [.. ToolParameterNames, .. extra]);
+        return (ToolSettingsFrom(values?.GetValueOrDefault("ToolLifeCountType"), values?.GetValueOrDefault("ToolOffsetUnit"),
+            values?.GetValueOrDefault("DiameterTypePC")), values);
     }
+
+    /// <summary>A setting's whole-number value; <paramref name="absent"/> (the vendor's default) when the cell has no
+    /// row for it; null when the settings can't be read at all.</summary>
+    private static int? Setting(IReadOnlyDictionary<string, string>? values, string name, int absent) =>
+        values is null ? null : values.TryGetValue(name, out var text) ? ToInt(text) : absent;
 
     private static bool? Assumed(bool assumed) => assumed ? true : null;
 
@@ -199,14 +222,26 @@ public sealed partial class SqlMakinoReader
         var chosen = ToolFilter(filter, tool);
         await using var s = await OpenAsync(ct);
         var deviceId = FindDevice(s.Names(), device);
+        var unused = chosen == "unused";
+        if (unused && s.Devices.FirstOrDefault(d => d.Id == deviceId) is not { Type: MachineType })
+        {
+            var machines = s.Devices.Where(d => d.Type == MachineType).Select(d => d.Name);
+            throw new ArgumentException("The unused filter needs a machine as device (it compares the tools on it with " +
+                                        $"the jobs that can run there). Machines on this cell: {string.Join(", ", machines)}.");
+        }
         s.Schema.Require(Itd, Itc, Ftd, Ftc, Loc);
-        var settings = await ToolSettingsAsync(s, ct);
+        var (settings, values) = await ToolSettingsWithAsync(s, ct, ToolStateParameterNames);
+        var ptnType = Setting(values, "PTNDownloadType", absent: 0);
+        var spareRule = ptnType == 0; // PTN given at tool-in: a machine tool with PTN 0 is a spare
+        var firstUseInspected = Setting(values, "InspectionType", absent: 0) is { } inspection
+                                && (inspection & FirstUsedToolInspection) != 0;
 
         using var cmd = Command(s.Connection, ToolSummarySql(s.Schema) + "\n" + ToolsSql(s.Schema, chosen));
         AddTake(cmd);
         cmd.Parameters.Add("@device", System.Data.SqlDbType.Int).Value = (object?)deviceId ?? DBNull.Value;
         cmd.Parameters.Add("@tool", System.Data.SqlDbType.Int).Value = (object?)tool ?? DBNull.Value;
         cmd.Parameters.Add("@remain", System.Data.SqlDbType.Int).Value = settings.Remain ? 1 : 0;
+        cmd.Parameters.Add("@spare", System.Data.SqlDbType.Int).Value = spareRule ? 1 : 0;
         using var r = await cmd.ExecuteReaderAsync(ct);
 
         var counts = new List<(int? Device, int? Status, int N)>();
@@ -216,11 +251,20 @@ public sealed partial class SqlMakinoReader
         var tools = new List<(int Id, ToolInfo Tool)>();
         while (await r.ReadAsync(ct))
         {
+            var onMachine = s.Devices.FirstOrDefault(d => d.Id == Int(r, "CurrentDeviceID"))?.Type == MachineType;
+            var ptn = Int(r, "PTN");
             var flags = new List<string>();
             if (Bool(r, "AlarmTool") == true) flags.Add("alarm tool");
             if (Bool(r, "ProhibitTool") == true) flags.Add("prohibited");
             if (Bool(r, "AbsentTool") == true) flags.Add("absent");
+            if (spareRule && onMachine && ptn == 0) flags.Add("spare (no T number)");
+            // ToolLocation.FirstTool is set at tool-in and cleared after the first use only when the cell runs the
+            // first-used-tool inspection (InspectionType 0x10). Otherwise nothing clears it, so it means nothing.
+            if (firstUseInspected && onMachine && Bool(r, "FirstTool") == true) flags.Add("not used since tool-in");
+            var typeFlags = new List<string>();
+            if (Bool(r, "TLAlarmProhibit") == true) typeFlags.Add("tool life alarm prohibit");
             var allocated = Int(r, "AllocatedDeviceID");
+            var reasons = unused ? UnusedReasonWords(c => Int(r, c)) : null;
             tools.Add((Int(r, "ITNID") ?? 0, new ToolInfo(
                 Int(r, "ITN") ?? 0, Int(r, "FTN"), Str(r, "FTNComment"),
                 PlaceOf(s, Int(r, "CurrentDeviceID"), Str(r, "CurrentDeviceName"), Int(r, "CurrentPot")),
@@ -231,11 +275,16 @@ public sealed partial class SqlMakinoReader
                 MovingTo = allocated is > 0 ? PlaceOf(s, allocated, "", Int(r, "AllocatedPot")) : null,
                 LastUsed = Int(r, "LastUsedDate") is > 0 and var used ? used : null,
                 LastUsedProgram = Int(r, "LastUsedProgram") is > 0 and var program ? $"O{program:D4}" : null,
+                Ptn = ptn is > 0 && ptn != Int(r, "FTN") ? ptn : null,
+                Type = NonEmpty(Str(r, "Type")),
+                SizeClass = NonEmpty(Codes.ToolSizeClass(Int(r, "DiameterClass"))),
+                TypeFlags = typeFlags.Count > 0 ? typeFlags : null,
+                UnusedReasons = reasons is { Count: > 0 } ? reasons : null,
             }));
         }
 
         await r.NextResultAsync(ct);
-        var cutters = new Dictionary<int, List<(CutterInfo Cutter, int? Kind)>>();
+        var cutters = new Dictionary<int, List<(CutterInfo Cutter, int? Kind, bool OperatorCall, bool FirstUse)>>();
         while (await r.ReadAsync(ct))
         {
             var flags = 0;
@@ -252,25 +301,137 @@ public sealed partial class SqlMakinoReader
                     settings.Remain, settings.LengthUnit),
                 Length = Length(Int(r, "Length"), settings.LengthUnit),
                 Diameter = Length(Int(r, "Diameter"), settings.LengthUnit),
+                OffsetError = status == OffsetErrorStatus
+                    ? OffsetErrorText(c => Int(r, c), settings.LengthUnit, settings.DiameterIsRadius)
+                    : null,
             };
             var id = Int(r, "ITNID") ?? 0;
             if (!cutters.TryGetValue(id, out var list)) cutters[id] = list = [];
-            list.Add((cutter, Int(r, "Kind")));
+            list.Add((cutter, Int(r, "Kind"), Bool(r, "OperatorCall") == true, Bool(r, "FirstUseTool") == true));
         }
 
         var picked = tools.Select(t =>
         {
             var own = cutters.GetValueOrDefault(t.Id) ?? [];
             var kind = own.Count > 0 && own[0].Kind is > 0 ? Codes.ToolKind(own[0].Kind) : null;
-            return t.Tool with { Cutters = own.Select(c => c.Cutter).ToList(), Kind = kind };
+            List<string> typeFlags = [.. t.Tool.TypeFlags ?? []];
+            if (own.Any(c => c.OperatorCall)) typeFlags.Insert(0, "operator call tool");
+            if (own.Any(c => c.FirstUse)) typeFlags.Add("first-use check");
+            // The unused list is about which tools to take out: the cutters' details are left out to keep it short.
+            return t.Tool with
+            {
+                Cutters = unused ? [] : own.Select(c => c.Cutter).ToList(), Kind = kind,
+                TypeFlags = typeFlags.Count > 0 ? typeFlags : null,
+            };
         }).ToList();
         var (shown, capped) = Cap(picked);
+        List<string> notAvailable = ToolFilterSql(s.Schema, chosen) is null ? [FilterNotAvailable(chosen)]
+            : unused ? UnusedNotAvailable(s.Schema, ptnType) : [];
         return new ToolList(s.Now, capped, chosen, settings.LengthUnit, Summary(s, counts), shown)
         {
             LifeDirectionAssumed = Assumed(settings.LifeAssumed), LengthUnitAssumed = Assumed(settings.UnitAssumed),
             DiameterIsRadius = Assumed(settings.DiameterIsRadius), DiameterTypeAssumed = Assumed(settings.DiameterAssumed),
-            NotAvailable = ToolFilterSql(s.Schema, chosen) is null ? [FilterNotAvailable(chosen)] : null,
+            ToolManagementOff = Assumed(Setting(values, "ToolManagementType", absent: 1) == 0),
+            InactiveOrderStatuses = unused ? InactiveOrderStatusWords : null,
+            NotAvailable = notAvailable.Count > 0 ? notAvailable : null,
         };
+    }
+
+    private const int OffsetErrorStatus = 3; // ToolStatus.OffsetError
+
+    // --- get_tools: why a cutter is in offset error ---
+
+    /// <summary>Why a cutter in offset error is in it, the way the cell decides it (a pair of limits counts when either
+    /// is non-zero; the measured value plus its wear must lie within them): "length 101.2500 above max 100.0000 inch",
+    /// "length not measured (0), min 95.0000 inch", or that both are within their limits now (the stored status may
+    /// predate a limit change). Reads Length, LengthWear, MinimumLength, MaximumLength and the same for Diameter
+    /// through <paramref name="value"/>; null when the cell gives no limits at all.</summary>
+    internal static string? OffsetErrorText(Func<string, int?> value, string unit, bool diameterIsRadius)
+    {
+        var words = new List<string>();
+        var anyLimits = false;
+        foreach (var (column, label) in new[] { ("Length", "length"), ("Diameter", diameterIsRadius ? "radius" : "diameter") })
+        {
+            int? min = value($"Minimum{column}"), max = value($"Maximum{column}");
+            if (min is null && max is null) continue;
+            anyLimits = true;
+            int lo = min ?? 0, hi = max ?? 0;
+            if (lo == 0 && hi == 0) continue; // no limits set: never an offset error
+            var measured = value(column) ?? 0;
+            long total = (long)measured + (value($"{column}Wear") ?? 0);
+            if (total >= lo && total <= hi) continue;
+            string Text(long raw) => (raw / 100000.0).ToString(unit == "inch" ? "0.0000" : "0.000", CultureInfo.InvariantCulture);
+            words.Add(measured == 0 ? $"{label} not measured (0), min {Text(lo)} {unit}"
+                : total < lo ? $"{label} {Text(total)} below min {Text(lo)} {unit}"
+                : hi == 0 ? $"{label} {Text(total)} {unit} with only a minimum set (the cell reads the missing maximum as 0)"
+                : $"{label} {Text(total)} above max {Text(hi)} {unit}");
+        }
+        if (!anyLimits) return null;
+        return words.Count > 0 ? string.Join("; ", words)
+            : "within its limits now (the stored offset error may predate a limit change)";
+    }
+
+    // --- get_tools: the unused filter ---
+
+    /// <summary>The order statuses that don't count as an active order for the unused filter, in words.</summary>
+    private static readonly IReadOnlyList<string> InactiveOrderStatusWords =
+        FinishedOrderStatuses.Split(',').Select(n => Codes.OrderStatus(int.Parse(n.Trim(), CultureInfo.InvariantCulture))).ToList();
+
+    private static readonly (string Column, string Words)[] UnusedReasons =
+    [
+        ("UnusedNoProgram", "no program uses this tool type"),
+        ("UnusedNotFeasible", "only programs not feasible here"),
+        ("UnusedNoOrder", "no active order needs it"),
+        ("UnusedSpare", "spare (no T number)"),
+    ];
+
+    private static List<string> UnusedReasonWords(Func<string, int?> value) =>
+        UnusedReasons.Where(u => value(u.Column) == 1).Select(u => u.Words).ToList();
+
+    /// <summary>The conditions behind each unused reason, over a tool (i, its tool type f) on @device; null when this
+    /// cell lacks the columns. Programs are matched through MainProgramTools, which already holds the tools of a main
+    /// program's subprograms (the cell follows SubprogramLinks when it builds it), so no subprogram walk is needed;
+    /// it is what the console's own unused-tools view reads. A program is needed here when a machining job running it
+    /// is feasible on the machine or is processing there now (FixtureRun CurJobStatus 2). Never EXECs the vendor's
+    /// procedures.</summary>
+    internal static (string? NoProgram, string? NotFeasible, string? NoOrder, string? Spare) UnusedConditions(SchemaInfo schema)
+    {
+        bool Has(string table, params string[] columns) => columns.All(c => schema.Has(table, c));
+        var programs = Has(Mpt, "FTN", "NCProgramFileID");
+        var jobs = programs && Has("MachineJobs", "JobID", "NCProgramFileID");
+        const string anyProgram = "EXISTS (SELECT 1 FROM MainProgramTools m WHERE m.FTN = f.FTN)";
+        const string programJobs = "MainProgramTools m JOIN MachineJobs mj ON mj.NCProgramFileID = m.NCProgramFileID";
+
+        string? notFeasible = null;
+        if (jobs && Has("JobFeasibleDevices", "JobID", "FeasibleDeviceID"))
+        {
+            List<string> here = ["EXISTS (SELECT 1 FROM JobFeasibleDevices fd WHERE fd.JobID = mj.JobID AND fd.FeasibleDeviceID = @device)"];
+            if (Has("FixtureRun", "CurJobID", "MachineDeviceID", "CurJobStatus"))
+                here.Add("EXISTS (SELECT 1 FROM FixtureRun fr WHERE fr.CurJobID = mj.JobID AND fr.MachineDeviceID = @device AND fr.CurJobStatus = 2)");
+            notFeasible = $"({anyProgram} AND NOT EXISTS (SELECT 1 FROM {programJobs} WHERE m.FTN = f.FTN AND ({string.Join(" OR ", here)})))";
+        }
+        var noOrder = jobs && Has("Jobs", "JobID", "ProcessID") && Has("Processes", "ProcessID", "PartID") && Has("Orders", "PartID", "Status")
+            ? $"({anyProgram} AND NOT EXISTS (SELECT 1 FROM {programJobs} JOIN Jobs j ON j.JobID = mj.JobID"
+              + " JOIN Processes pr ON pr.ProcessID = j.ProcessID JOIN Orders o ON o.PartID = pr.PartID"
+              + $" WHERE m.FTN = f.FTN AND o.Status NOT IN ({FinishedOrderStatuses})))"
+            : null;
+        return (programs ? $"NOT {anyProgram}" : null, notFeasible, noOrder,
+            schema.Has(Itd, "PTN") ? "(@spare = 1 AND i.PTN = 0)" : null);
+    }
+
+    /// <summary>The unused reasons this cell can't check, for NotAvailable (the filter itself still applies).</summary>
+    internal static List<string> UnusedNotAvailable(SchemaInfo schema, int? ptnDownloadType)
+    {
+        var (noProgram, notFeasible, noOrder, spare) = UnusedConditions(schema);
+        var missing = new List<string>();
+        if (noProgram is null) missing.Add("tool types no program uses (no MainProgramTools)");
+        if (notFeasible is null) missing.Add("tools only programs not feasible here use (no MachineJobs/JobFeasibleDevices)");
+        else if (!new[] { "CurJobID", "MachineDeviceID", "CurJobStatus" }.All(c => schema.Has("FixtureRun", c)))
+            missing.Add("jobs processing on the machine now (no FixtureRun columns): only feasible jobs count");
+        if (noOrder is null) missing.Add("tools no active order needs (no Jobs/Processes/Orders columns)");
+        if (spare is null) missing.Add("spare tools (no PTN column)");
+        else if (ptnDownloadType is null) missing.Add("spare tools (this login can't read the PTN download setting)");
+        return missing;
     }
 
     private static List<DeviceToolCount> Summary(Session s, List<(int? Device, int? Status, int N)> counts)
@@ -302,8 +463,9 @@ public sealed partial class SqlMakinoReader
         GROUP BY DeviceID, Status;
         """;
 
-    /// <summary>Two result sets: the tools <paramref name="filter"/> picks (cap + 1, most severe first, then by place),
-    /// and the cutters of exactly those tools. Expects @take, @device, @tool and @remain (1: the cell counts life down).</summary>
+    /// <summary>Two result sets: the tools <paramref name="filter"/> picks (cap + 1, most severe first, then by place;
+    /// unused: the strongest reason first, then by pot), and the cutters of exactly those tools. Expects @take,
+    /// @device, @tool, @remain (1: the cell counts life down) and @spare (1: PTN 0 on a machine is a spare).</summary>
     internal static string ToolsSql(SchemaInfo schema, string filter)
     {
         var where = "(@device IS NULL OR l.CurrentDeviceID = @device) AND (@tool IS NULL OR i.ITN = @tool OR f.FTN = @tool)"
@@ -311,23 +473,41 @@ public sealed partial class SqlMakinoReader
         var status = DerivedStatusSql(schema);
         var from = ToolFromSql(schema);
         var pot = schema.Has(Loc, "CurrentPot") ? "l.CurrentPot" : "0";
-        var order = $"CASE {status} WHEN 4 THEN 0 WHEN 3 THEN 1 WHEN 2 THEN 2 ELSE 3 END, l.CurrentDeviceID, {pot}, i.ITN, i.ITNID";
+        var isUnused = filter == "unused";
+        var u = isUnused ? UnusedConditions(schema) : default;
+        string?[] reasons = [u.NoProgram, u.NotFeasible, u.NoOrder, u.Spare];
+        var strongest = reasons.Select((c, n) => c is null ? null : $"WHEN {c} THEN {n}").OfType<string>().ToList();
+        var first = isUnused && strongest.Count > 0
+            ? $"CASE {string.Join(" ", strongest)} ELSE {reasons.Length} END"
+            : $"CASE {status} WHEN 4 THEN 0 WHEN 3 THEN 1 WHEN 2 THEN 2 ELSE 3 END";
+        var order = $"{first}, l.CurrentDeviceID, {pot}, i.ITN, i.ITNID";
+        var reasonColumns = UnusedReasons.Select((reason, n) => reasons[n] is { } c
+            ? $"CASE WHEN {c} THEN 1 ELSE 0 END AS {reason.Column}"
+            : $"CAST(NULL AS int) AS {reason.Column}");
 
         var toolColumns = string.Join(", ",
-            "i.ITNID", "i.ITN", "f.FTN",
-            Opt(schema, Ftd, "f", "FTNComment", type: Text),
-            Opt(schema, Itd, "i", "ITNComment", type: Text),
-            $"{status} AS Status",
-            Opt(schema, Itd, "i", "AlarmTool", type: "bit"),
-            Opt(schema, Itd, "i", "ProhibitTool", type: "bit"),
-            Opt(schema, Itd, "i", "AbsentTool", type: "bit"),
-            Opt(schema, Itd, "i", "LastUsedDate"),
-            Opt(schema, Itd, "i", "LastUsedProgram"),
-            "l.CurrentDeviceID",
-            Opt(schema, Loc, "l", "CurrentPot"),
-            Opt(schema, Loc, "l", "CurrentDeviceName", type: Text),
-            Opt(schema, Loc, "l", "AllocatedDeviceID"),
-            Opt(schema, Loc, "l", "AllocatedPot"));
+            [
+                "i.ITNID", "i.ITN", "f.FTN",
+                Opt(schema, Ftd, "f", "FTNComment", type: Text),
+                Opt(schema, Itd, "i", "ITNComment", type: Text),
+                $"{status} AS Status",
+                Opt(schema, Itd, "i", "AlarmTool", type: "bit"),
+                Opt(schema, Itd, "i", "ProhibitTool", type: "bit"),
+                Opt(schema, Itd, "i", "AbsentTool", type: "bit"),
+                Opt(schema, Itd, "i", "LastUsedDate"),
+                Opt(schema, Itd, "i", "LastUsedProgram"),
+                Opt(schema, Itd, "i", "PTN"),
+                Opt(schema, Ftd, "f", "Type", type: Text),
+                Opt(schema, Ftd, "f", "DiameterClass"),
+                Opt(schema, Ftd, "f", "TLAlarmProhibit", type: "bit"),
+                "l.CurrentDeviceID",
+                Opt(schema, Loc, "l", "CurrentPot"),
+                Opt(schema, Loc, "l", "CurrentDeviceName", type: Text),
+                Opt(schema, Loc, "l", "AllocatedDeviceID"),
+                Opt(schema, Loc, "l", "AllocatedPot"),
+                Opt(schema, Loc, "l", "FirstTool", type: "bit"),
+                .. reasonColumns,
+            ]);
         var cutterColumns = string.Join(", ",
             [
                 "cu.ITNID", "cu.CutterNo",
@@ -336,10 +516,18 @@ public sealed partial class SqlMakinoReader
                 Opt(schema, Itc, "cu", "ActualToolLife"),
                 Opt(schema, Itc, "cu", "Length"),
                 Opt(schema, Itc, "cu", "Diameter"),
+                Opt(schema, Itc, "cu", "LengthWear"),
+                Opt(schema, Itc, "cu", "DiameterWear"),
                 Opt(schema, Ftc, "cf", "ToolLifeType"),
                 Opt(schema, Ftc, "cf", "ToolLife"),
                 Opt(schema, Ftc, "cf", "ToolLifeWarning"),
                 Opt(schema, Ftc, "cf", "Kind"),
+                Opt(schema, Ftc, "cf", "MinimumLength"),
+                Opt(schema, Ftc, "cf", "MaximumLength"),
+                Opt(schema, Ftc, "cf", "MinimumDiameter"),
+                Opt(schema, Ftc, "cf", "MaximumDiameter"),
+                Opt(schema, Ftc, "cf", "OperatorCall", type: "bit"),
+                Opt(schema, Ftc, "cf", "FirstUseTool", type: "bit"),
             ]);
         return $"""
             SELECT TOP (@take) {toolColumns}
@@ -361,6 +549,7 @@ public sealed partial class SqlMakinoReader
         "absent" => "absent flag",
         "alarm" => "tool status and alarm columns",
         "near_end" => "tool status and life columns",
+        "unused" => "the programs' tool lists (MainProgramTools) and the PTN column",
         _ => "tool status, flag and alarm columns",
     } + $" (the {filter} filter couldn't be applied)";
 
@@ -404,9 +593,13 @@ public sealed partial class SqlMakinoReader
                 status ? $"{derived} IN (2, 3, 4)" : null, ToolBit("AlarmTool"), ToolBit("AbsentTool"), ToolBit("ProhibitTool"),
                 Cutter([cutterStatus ? "c.CutterStatus IN (2, 3, 4)" : null, .. bits.Select(b => $"c.{b} = 1"), Worn(90)]),
             ]),
+            "unused" => Unused(UnusedConditions(schema)),
             _ => throw new ArgumentOutOfRangeException(nameof(filter), filter, "not a tool filter"),
         };
         return condition == "1 = 0" ? null : condition;
+
+        static string Unused((string? NoProgram, string? NotFeasible, string? NoOrder, string? Spare) u) =>
+            Any([u.NoProgram, u.NotFeasible, u.NoOrder, u.Spare]);
     }
 
     /// <summary>For get_part_routing: how many usable tools (status ready or life warning, the cell's own lacking-tool
@@ -483,6 +676,7 @@ public sealed partial class SqlMakinoReader
             {
                 Cutter = Int(r, "TotalCutter") is > 1 ? Int(r, "CutterNo") : null,
                 User = NonEmpty(Str(r, "Username")),
+                By = NonEmpty(Codes.PresetResultSource(Int(r, "M6Flag"))),
             });
         }
         if (await r.NextResultAsync(ct) && await r.ReadAsync(ct)) lifeWarnings = Int(r, "LifeWarnings") ?? 0;
@@ -520,6 +714,7 @@ public sealed partial class SqlMakinoReader
                 "p.PresetDateTime", "p.DeviceID", "p.ITN", "p.FTN",
                 Opt(schema, Preset, "p", "TotalCutter"), Opt(schema, Preset, "p", "CutterNo"),
                 Opt(schema, Preset, "p", "Username", type: Text), Opt(schema, Preset, "p", "ToolLifeType"),
+                Opt(schema, Preset, "p", "M6Flag", type: "bit"),
                 .. pairs.Concat(lives).SelectMany(c => new[] { $"p.{c}Old", $"p.{c}New" }),
             ]);
         var window = "p.PresetDateTime >= DATEADD(day, -@days, @now) AND (@device IS NULL OR p.DeviceID = @device)"
@@ -740,7 +935,7 @@ public sealed partial class SqlMakinoReader
                 WHERE p.PresetDateTime >= DATEADD(day, -@days, @now) AND (@device IS NULL OR p.DeviceID = @device)
                   AND (@tool IS NULL OR p.ITN = @tool OR p.FTN = @tool) AND ({raised})
                 ORDER BY p.PresetDateTime DESC;
-                """, "tool data changes in which an alarm bit turned on (the tool alarm history is missing on this cell or not readable by this login)",
+                """, "tool data changes in which an alarm bit turned on (the usual source: the tool alarm history table exists only from V3.30 and the vendor's reporting login can't read it)",
                 bits.Count > 0 ? ["pot"] : ["pot", "alarm bits (no Old/New alarm columns: " +
                     $"{string.Join(", ", Codes.ToolAlarmColumns.Select(c => $"{c.Column}Old/{c.Column}New"))}), so no alarms can be found"]);
         }
@@ -776,13 +971,17 @@ public sealed partial class SqlMakinoReader
         await using var s = await OpenAsync(ct);
         var deviceId = FindDevice(s.Names(), device);
         s.Schema.Require(InOut);
+        var reasonMode = Setting(await SystemParametersAsync(s, ct, "ToolOutReason"), "ToolOutReason", absent: 0);
 
         using var cmd = Command(s.Connection, ToolMovementsSql(s.Schema));
         AddToolWindow(cmd, s.Now, days, deviceId, tool, remain: false);
         var rows = new List<ToolMovement>();
+        var ends = new List<MoveEnds>();
         using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
         {
+            ends.Add(new MoveEnds(Str(r, "Action").ToLowerInvariant(), Int(r, "ITN") ?? 0,
+                Int(r, "FromDeviceID"), Int(r, "FromPot"), Int(r, "ToDeviceID"), Int(r, "ToPot")));
             rows.Add(new ToolMovement(
                 Date(r, "InOutDateTime")!.Value,
                 Str(r, "Action").ToLowerInvariant(),
@@ -799,8 +998,45 @@ public sealed partial class SqlMakinoReader
                 Reason = NonEmpty(Str(r, "ToolOutReason")),
             });
         }
-        var (list, capped) = Cap(rows);
-        return new ToolMovementList(s.Now, capped, list);
+        var pairs = ExchangePairs(ends);
+        var paired = rows.Select((m, n) => pairs[n] is { } outItn ? m with { ProbablyExchangedWith = outItn } : m).ToList();
+        var (list, capped) = Cap(paired);
+        List<string> notAvailable = [];
+        if (!s.Schema.Has(InOut, "ToolOutReason")) notAvailable.Add("tool-out reason (the cell's log has no ToolOutReason column; it came in V3.8)");
+        var reasonAsked = reasonMode is null ? null : NonEmpty(Codes.ToolOutReasonMode(reasonMode));
+        if (reasonAsked is null) notAvailable.Add("when a tool-out reason is asked (this login can't read the cell's settings)");
+        return new ToolMovementList(s.Now, capped, list)
+        {
+            ReasonAsked = reasonAsked,
+            NotAvailable = notAvailable.Count > 0 ? notAvailable : null,
+        };
+    }
+
+    /// <summary>The ends of one logged move: action ("in"/"out"), the tool and the device and pot at each end.</summary>
+    internal sealed record MoveEnds(string Action, int Itn, int? FromDevice, int? FromPot, int? ToDevice, int? ToPot);
+
+    /// <summary>For moves listed newest first: on each "in", the ITN of the "out" from the same device and pot just
+    /// before it (an exchange logs the out, then the in), when no other move into that pot came between; null
+    /// elsewhere. No time limit: without pre-operation, or on a TLS cell, both moves are logged only when the
+    /// machine-side operation finishes. Pot 0 (no pot) never pairs.</summary>
+    internal static IReadOnlyList<int?> ExchangePairs(IReadOnlyList<MoveEnds> newestFirst)
+    {
+        var result = new int?[newestFirst.Count];
+        var waitingIn = new Dictionary<(int, int), int>(); // device+pot → index of the newer "in" not paired yet
+        for (var n = 0; n < newestFirst.Count; n++) // newest to oldest
+        {
+            var m = newestFirst[n];
+            if (m.Action == "in" && m.ToDevice is { } td and > 0 && m.ToPot is { } tp and > 0)
+            {
+                waitingIn[(td, tp)] = n; // an older "in" into the same pot ends the wait of the newer one
+            }
+            else if (m.Action == "out" && m.FromDevice is { } fd and > 0 && m.FromPot is { } fp and > 0
+                     && waitingIn.Remove((fd, fp), out var newer))
+            {
+                result[newer] = m.Itn;
+            }
+        }
+        return result;
     }
 
     /// <summary>Tools put into or taken out of a machine, newest first, cap + 1; a device matches either end.
