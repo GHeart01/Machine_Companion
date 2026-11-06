@@ -330,6 +330,10 @@ public class OrdersTests
     public void Cycle_minutes_are_only_read_when_asked_and_matched_by_name_part_and_revision_since_registration()
     {
         Assert.DoesNotContain("MachiningMinutes", SqlMakinoReader.ProductionSql(SchemaWithout(), false, false, false));
+        // An order under machining suspend (the cell's setting on) has its fixtures parked: its clamped parts aren't activity.
+        Assert.Contains("(ISNULL(o.MachiningSuspended, 0) = 0 AND ISNULL((SELECT SUM(fq.ClampedQuantity)",
+            SqlMakinoReader.ProductionSql(SchemaWithout(), false, false, false, orderSuspendCounts: true));
+        Assert.DoesNotContain("ISNULL(o.MachiningSuspended, 0) = 0", SqlMakinoReader.ProductionSql(SchemaWithout(), false, false, false));
         var sql = SqlMakinoReader.ProductionSql(SchemaWithout(), false, false, false, includeCycleTime: true);
         Assert.Contains("FROM MachineResults x WHERE x.OrderName = o.OrderName AND x.PartName = pa.PartName", sql);
         Assert.Contains("FROM WorkSetResults x WHERE x.ClampOrderName = o.OrderName", sql);

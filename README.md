@@ -118,21 +118,25 @@ builds on the share. To roll back, write an older build's folder name (see `vers
 
 | Tool | What Claude gets |
 | --- | --- |
-| `get_cell_overview` | Every device: connected, emergency stop, status (down, idle, busy, manual, error), recovery request, mode, current action, pallets, open alarms, last activity. Machines add tool status, CNC run state, operator call, current job and program (with its name); stations add the instruction they show; work in progress shows since when and its planned finish. Closed devices are marked. Cell level: duty, scheduled power-off, recovery policy and `historyDays` (how long the cell keeps PMC alarms and results). |
-| `get_alarms` | Open and recent PMC and CNC alarms, newest first, with how long each was open. |
-| `get_alarm_summary` | Alarms grouped by device and number, most frequent first. |
-| `get_utilization` | Hours busy, idle, down, manual and in error per device and day; OEE where the cell keeps it. |
-| `get_recent_activity` | Machining, work-set and vehicle transport results, to spot gaps. |
-| `get_orders` | Queued and finished orders with part, status, quantity, completed, scrap and remaining quantities, machining suspend, and due time. |
-| `get_pallets` | Each pallet's status, location and fixtures. |
-| `get_tools` | Which tools need attention and where a tool is: status per device, life used and remaining, measured length and diameter. |
+| `get_cell_overview` | Every device: connected, emergency stop, status (down, idle, busy, manual, error), recovery request, mode, current action, pallets, open alarms, last activity. Machines add tool status, CNC run state, operator call, current job and program (with its name); stations add the instruction they show; work in progress shows since when and its planned finish. Closed devices, system mode and transport cancel are marked. Cell level: duty, scheduled power-off, recovery policy, scheduling rules, software version, retention windows (`historyDays` and more) and the cell's file locations. |
+| `get_alarms` | Open and recent PMC and CNC alarms, newest first, with how long each was open, and each device's alarm help file. |
+| `get_alarm_summary` | Alarms grouped by device and number, most frequent first; optional shift filter. |
+| `get_utilization` | Hours busy, idle, down, manual and in error per device and day, the console's result-based utilization, spindle time, and OEE with availability, performance and quality where the cell keeps it; optional shift filter. |
+| `get_recent_activity` | Machining, work-set and vehicle transport results, to spot gaps, with machining minutes and work-set part counts. |
+| `get_orders` | Queued and finished orders with part, status (and the console's dashboard status), quantities, machining suspend, start, due, priority and what each order waits for; optionally the archive of finished and deleted orders. |
+| `get_pallets` | Each pallet's status, location, priority and fixtures (one line of states each, or full details for one pallet). |
+| `get_tools` | Which tools need attention and where a tool is: status per device, life used and remaining, measured length and diameter, why a cutter is in offset error; `unused` lists tools on a machine nothing there needs. |
 | `get_tool_changes` | What changed in the tool data (measurements, imports, edits, alarms), newest first; routine life-count updates and tools that only reached their life warning are counted, and listed only on request. Default: the last 3 days. |
 | `get_tool_alarms` | Which tools alarmed lately (worn out, broken, ...), with the tool's life and size then. |
-| `get_tool_movements` | Tools put into or taken out of the machines, with who and why. |
-| `get_part_routing` | How a part is made: processes, jobs, programs and fixtures, and whether the tools each program needs are on the machines. The tool check is approximate: it uses the tool set the cell registered for each program (subprograms included) and doesn't check remaining life. |
-| `get_production` | Parts completed, scrapped and in process per order, plus per-day totals, counted the way the cell's own order screen counts. |
-| `get_attention` | One list of what waits on a person: recovery requests (with what the device was doing), errors, operator calls, damaged fixtures, tools in alarm, closed or skipped devices; parked fixtures are counted. |
+| `get_tool_movements` | Tools put into or taken out of the machines, with who and why, and probable exchange pairs. |
+| `get_part_routing` | How a part is made: processes, jobs, programs and fixtures, and whether the tools each program needs are on the machines. Fixture places show what they hold now, programs their O-number and tool study, and `blockers` says why a process isn't running (the console's Process Diagnosis). The tool check follows the cell's own lacking-tool rule. |
+| `get_production` | Parts completed, scrapped, in process and at an external process per order, plus per-day totals, counted the way the cell's own order screen counts; optional cycle time per order. |
+| `get_attention` | One list of what waits on a person: recovery requests (with what the device was doing), errors, operator calls and other machine waits, station instructions, manual transports, damaged fixtures, tools in alarm, waiting work no device can take, closed or skipped devices; parked fixtures (including off-duty holds) are counted. |
 | `get_pallet_diagnosis` | Why a pallet's work isn't moving, by the console's own Pallet Diagnosis rules: per fixture its job and verdict, with each feasible machine's or station's verdict, and what the cell keeps only in memory and so can't be checked. |
+| `get_work_set` | What each work-set station asks the operator to do: each fixture's instruction, what it leaves as, and the part coming off and going on. |
+| `get_macro_values` | Macro variable values the machines' programs uploaded, with the part and program being machined then. |
+| `find_serial` | Where a part serial number was recorded (machining, clamp, unclamp), with its pallet, order and program. |
+| `explain_ade_file` | Why an automatic data entry file was rejected, or what it will do, checked against the cell's data entry rules. |
 | `list_shared_folders` | The folders you shared and whether each is reachable. |
 | `list_files` | Files and subfolders in a shared folder, newest first. |
 | `read_file` | A text file, or its last lines or a line range. |

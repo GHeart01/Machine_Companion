@@ -184,7 +184,8 @@ public sealed partial class SqlMakinoReader
     /// status; most produced in the window first, then latest due) with their quantities and window sums; the daily
     /// counts since @from (cap + 1, newest first, days with nothing left out): one total per day across those orders
     /// (OrderID NULL), or per order when an order or part is named; and the count of active orders left out.</summary>
-    internal static string ProductionSql(SchemaInfo schema, bool byOrder, bool byPart, bool includeIdle, bool includeCycleTime = false)
+    internal static string ProductionSql(SchemaInfo schema, bool byOrder, bool byPart, bool includeIdle, bool includeCycleTime = false,
+        bool orderSuspendCounts = false)
     {
         var conditions = new List<string>();
         if (byOrder) conditions.Add(NameMatch("Orders", "OrderName", "o", "order"));
@@ -208,7 +209,7 @@ public sealed partial class SqlMakinoReader
 
         // Unless asked for every order (or one is named), only those with something happening: output or scrap in
         // the window, or parts on a fixture that isn't parked (suspended or on hold). The rest are counted.
-        var activity = includeIdle || byOrder || byPart ? null : ActivitySql(schema, windowCompleted, windowScrap);
+        var activity = includeIdle || byOrder || byPart ? null : ActivitySql(schema, windowCompleted, windowScrap, orderSuspendCounts);
         var where = activity is null ? activeWhere : $"{activeWhere} AND ({activity})";
         var others = activity is null
             ? "SELECT CAST(NULL AS int) AS OtherActiveOrders;"
@@ -282,8 +283,10 @@ public sealed partial class SqlMakinoReader
     }
 
     /// <summary>"Something happened to the order" (alias o): output or scrap since @from, or parts clamped on a
-    /// fixture now that isn't suspended or on hold. Null when the cell can tell none of these.</summary>
-    private static string? ActivitySql(SchemaInfo schema, string? windowCompleted, string? windowScrap)
+    /// fixture now that isn't suspended or on hold. With <paramref name="orderSuspendCounts"/> (the cell's
+    /// OrderMachiningSuspend setting on), an order under machining suspend has its fixtures parked the same way, so its
+    /// clamped parts don't count. Null when the cell can tell none of these.</summary>
+    private static string? ActivitySql(SchemaInfo schema, string? windowCompleted, string? windowScrap, bool orderSuspendCounts = false)
     {
         var parts = new List<string>();
         if (windowCompleted is not null) parts.Add($"ISNULL({windowCompleted}, 0) > 0");
@@ -297,8 +300,11 @@ public sealed partial class SqlMakinoReader
             var join = notParked.Count > 0 && schema.Has("PalletFixtures", "PalletFixtureID")
                 ? " JOIN PalletFixtures pf ON pf.PalletFixtureID = fq.PalletFixtureID" : "";
             var filter = join.Length > 0 ? " AND " + string.Join(" AND ", notParked) : "";
-            parts.Add("ISNULL((SELECT SUM(fq.ClampedQuantity) FROM FixtureQuantity fq JOIN FixtureRun fr ON fr.PalletFixtureID = fq.PalletFixtureID" +
-                      $"{join} WHERE fr.CurOrderID = o.OrderID{filter}), 0) > 0");
+            var clamped = "ISNULL((SELECT SUM(fq.ClampedQuantity) FROM FixtureQuantity fq JOIN FixtureRun fr ON fr.PalletFixtureID = fq.PalletFixtureID" +
+                          $"{join} WHERE fr.CurOrderID = o.OrderID{filter}), 0) > 0";
+            parts.Add(orderSuspendCounts && schema.Has("Orders", "MachiningSuspended")
+                ? $"(ISNULL(o.MachiningSuspended, 0) = 0 AND {clamped})"
+                : clamped);
         }
         return parts.Count > 0 ? string.Join(" OR ", parts) : null;
     }
@@ -332,7 +338,8 @@ public sealed partial class SqlMakinoReader
         }
         var settings = await SystemParametersAsync(s, ct, ProductionParameterNames);
 
-        using var cmd = Command(s.Connection, ProductionSql(schema, byOrder, byPart, includeIdle, includeCycleTime));
+        using var cmd = Command(s.Connection, ProductionSql(schema, byOrder, byPart, includeIdle, includeCycleTime,
+            orderSuspendCounts: ToInt(settings?.GetValueOrDefault("OrderMachiningSuspend")) == 1));
         AddTake(cmd);
         cmd.Parameters.Add("@from", System.Data.SqlDbType.DateTime).Value = s.Now.Date.AddDays(1 - window);
         if (byOrder)

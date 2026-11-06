@@ -19,6 +19,8 @@ Machine-specific notes (which share it is published to, the live-test settings, 
 - **The password never appears** in a tool result, error, log line, UI text or CI log. Errors go through
   `ErrorText.ForClaude`; `MakinoLogin`/`McpSettings` mask it in `ToString`; `SettingsStore.Load` reports JSON errors by
   position only.
+- **Never read the console's user tables** (Users, UserCards, Groups, GroupMembers, GroupPermissions, Permissions, the
+  CompSec user tables): the console keeps its users' passwords there in plain text. `DevicesTests` checks every query.
 - **Folder tools stay inside the shared folders.** Folders are chosen by configured name; paths are resolved and checked
   against the root including links (`SharedFolders.Resolve`, `LinkStaysInside`); any file whose name starts with
   `MakinoMCP.settings.json`, and MakinoMCP's own folders, are always refused.

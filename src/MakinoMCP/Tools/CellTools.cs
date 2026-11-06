@@ -343,7 +343,9 @@ public static partial class CellTools
     [Description("How is a part made in the cell, and are its tools there? Finds the part by its exact name " +
                  "(case-insensitive), else the one part whose name contains the text; when several match, it lists " +
                  "them as candidates (name, revision, process count) and shows no routing, so ask again with the exact " +
-                 "name. Parts split per operation (…-OP1, …-OP2) are separate parts. otherMatches names other parts " +
+                 "name. A part the cell no longer has may have been removed with its last order when the cell's " +
+                 "comprehensive delete is on (get_orders autoDelete says; includeArchive shows finished and deleted " +
+                 "orders). Parts split per operation (…-OP1, …-OP2) are separate parts. otherMatches names other parts " +
                  "containing the text next to an exact match. Routings change under running production and the cell keeps " +
                  "no versions: updated (the part, its processes and operations) and programUpdated (any edit of the " +
                  "program file's data) say when they last changed. The routing: processes in order (number, name, status, " +
