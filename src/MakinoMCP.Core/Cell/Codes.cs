@@ -3,7 +3,7 @@
 
 namespace MakinoMCP.Core.Cell;
 
-public static class Codes
+public static partial class Codes
 {
     private static readonly Dictionary<int, string> DeviceTypes = new()
     {

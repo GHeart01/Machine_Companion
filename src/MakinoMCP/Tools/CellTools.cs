@@ -96,31 +96,64 @@ public static class CellTools
 
     [McpServerTool(Name = "get_orders", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("Is there work queued in the cell, and what has finished? Orders, latest due first: name, part, " +
-                 "status (\"suspended\" is an order suspended as a whole), quantity (required), completedQty (good parts " +
-                 "out of the last process), scrapQty, remainingQty (not started yet), machiningSuspended (the order's " +
+                 "status (the stored order status; \"suspended\" is an order suspended as a whole by an operator), " +
+                 "dashboardStatus (only when it differs: running or waiting for material, from the cell's dashboard or " +
+                 "worked out as dashboardStatusFrom says), quantity (required), completedQty (good parts out of the last " +
+                 "process), scrapQty, remainingQty (not started yet), priority, comment, start (only when still to come " +
+                 "or the order is inactive: an order activates at midnight of its start date), waitingFor (what a " +
+                 "waiting order needs: its start date, a quantity, material input, an operator's release, or a fixture to " +
+                 "take its material), quickData (an order of a quick-data part), machiningSuspended (the order's " +
                  "machining suspend: its waiting fixtures aren't machined; only where the cell's setting makes it count), " +
-                 "due and completed time. completeIncludesScrap: true means the cell calls an order complete once good " +
+                 "due and completed time. The due date is a scheduling input, not a deadline the cell enforces: pallets " +
+                 "go by operator priority, transport type and pallet priority first, then due date, and order priority " +
+                 "only breaks due-date ties. completeIncludesScrap: true means the cell calls an order complete once good " +
                  "plus scrap parts reach its quantity. It lists the whole queue, so fields " +
                  "at their default are left out: machiningSuspended only when true, due and completed only when set, a quantity of " +
                  "0 (notAvailable says when the quantities can't be read). Default: active orders only (not " +
-                 "complete, cancelled or undefined); activeOnly=false includes finished ones too. get_production adds " +
-                 "parts in process and the counts per day.")]
+                 "complete, cancelled or undefined); activeOnly=false includes finished ones too. With finished orders " +
+                 "or the archive, autoDelete says when the cell deletes orders by itself, so a missing order may simply " +
+                 "have been deleted. includeArchive=true adds archive: finished and deleted orders the cell recorded in " +
+                 "the last archiveDays (name, part, quantities, completed, deleted, recorded; archiveCapped when the row " +
+                 "limit cut it). get_production adds parts in process and the counts per day.")]
     public static Task<string> GetOrders(
         ToolContext context,
         [Description("true: only orders still to do. false: every order. Default true.")] bool activeOnly = true,
+        [Description("true: also list finished and deleted orders from the cell's order archive. Default false.")] bool includeArchive = false,
+        [Description("How many days of the archive, from today back (today counts as one). Default 30.")] int archiveDays = 30,
         CancellationToken ct = default) =>
-        context.Database("get_orders", (r, t) => r.GetOrdersAsync(activeOnly, t), ct);
+        context.Database("get_orders", (r, t) => r.GetOrdersAsync(activeOnly, includeArchive, archiveDays, t), ct);
 
     [McpServerTool(Name = "get_pallets", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("Where is each pallet and what state is it in? Every pallet: number, name, status (idle, machining, " +
                  "waiting for machining, machining suspended, work-set hold, damaged, …; idle also covers a pallet whose " +
                  "work is finished, and the transport states mean a manual or special transport is set up, not that the " +
-                 "vehicle is carrying it now), workStatus (the state of the work on it, not the pallet's health: not " +
-                 "completed, normal result, scrap or abnormal work set, cancelled; none when there is no work on it), " +
-                 "location (a device, stocker shelf or station, or out of system for a pallet taken out) and " +
-                 "the fixtures on it. Values whose meaning is not known are shown as \"code N\".")]
-    public static Task<string> GetPallets(ToolContext context, CancellationToken ct) =>
-        context.Database("get_pallets", (r, t) => r.GetPalletsAsync(t), ct);
+                 "vehicle is carrying it now). The pallet's status is its highest-priority fixture state, so one fixture " +
+                 "can be suspended under \"waiting for machining\". workStatus is what waits on the pallet to be " +
+                 "unloaded, not the pallet's health: not completed, normal result (good parts), scrap or abnormal work " +
+                 "set, cancelled (order or process: the parts still go to a station to be unloaded, which is not a " +
+                 "fault); none when there is no work on it. location: a device and position (table, front, back, buffer), " +
+                 "a stocker shelf, or out of system for a pallet taken out. type (only when not standard: material " +
+                 "pallets have no dashboard status), priority and operatorPriority (only when not 0; the cell also raises " +
+                 "operator priority itself for manual and synchronous transports, so it doesn't prove an operator " +
+                 "expedited the pallet), notFeasibleFor (machines and stations the pallet may not go to; left out when " +
+                 "it may go to all). fixtures: one short line per fixture: number and its name if it has one (nameless " +
+                 "fixtures in a row with the same states share a line, \"fixtures 1-4: …\"), then empty or its states in the console's order " +
+                 "(damaged, machining suspended, work-set hold, pre-machining suspended, operator call, off-duty process, " +
+                 "cleaning or deburring skipped), MakinoMCP's own additions (reclamp timeout, lacking tools, clamp-wait " +
+                 "hold disabled: a fixture exempt from the cell's wait-for-clamp hold; where the cell uses that hold, a " +
+                 "pallet whose remaining fixtures wait for unclamping with no new material may wait at home on purpose), " +
+                 "and scrap (with how the cycle ended) or cancelled. Give a pallet number, or includeFixtures=true, for " +
+                 "the fixtures as objects instead (fixtureDetails: label (its name; for a nameless fixture of one " +
+                 "process, part | revision | process N; else its comment), processes, empty, order, part, process, job, " +
+                 "jobStatus, states, operatorCall, workStatus). Fixture work statuses seating error and unclamp NG " +
+                 "aren't rolled up into the pallet's workStatus, which then reads not completed. Values whose meaning " +
+                 "is not known are shown as \"code N\"; notAvailable names what this cell or login can't show.")]
+    public static Task<string> GetPallets(
+        ToolContext context,
+        [Description("Only this pallet number, with its fixtures in full. Leave empty for every pallet.")] int? pallet = null,
+        [Description("true: every pallet's fixtures as objects instead of short lines (much longer). Default false.")] bool includeFixtures = false,
+        CancellationToken ct = default) =>
+        context.Database("get_pallets", (r, t) => r.GetPalletsAsync(pallet, includeFixtures, t), ct);
 
     private const string ToolParam =
         "Only this tool number. It is matched against both ITNs (physical tools) and FTNs (tool types), so one number can " +
@@ -233,26 +266,35 @@ public static class CellTools
     [McpServerTool(Name = "get_production", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("How many parts has the cell made, and how far along is each order? Per order, counted the way the " +
                  "cell's own order screen counts: quantity (required), completedQty (good parts out of the last " +
-                 "process), scrapQty (any process), remainingQty (material put in for the first process, not started), " +
-                 "inProcessQty (started, not finished: clampedQty on fixtures now plus parts waiting for a later " +
-                 "process, including material put in there directly), status, completedInWindow and " +
-                 "scrapInWindow; daily: per production day (date, completed, scrap; days with none left out) the totals " +
-                 "over the listed orders, or each order's own days when an order or part is named (dailyCapped: the " +
-                 "oldest days didn't fit the row limit). Orders " +
+                 "process; also those sent to an external process after the last process when " +
+                 "completedIncludesLastOutProcess), scrapQty (any process), remainingQty (material put in for the first " +
+                 "process, not started), inProcessQty (started, not finished: clampedQty on fixtures now plus parts " +
+                 "waiting for a later process, including material put in there directly; the database can't tell those " +
+                 "two apart; parts on suspended or held fixtures are already left out of active work), outProcessQty " +
+                 "(parts away at an external process, in neither inProcessQty nor completedQty), status, " +
+                 "completedInWindow and scrapInWindow; daily: per production day (date, completed, scrap; days with none " +
+                 "left out) the totals over the listed orders, or each order's own days when an order or part is named " +
+                 "(dailyCapped: the oldest days didn't fit the row limit). On cells that use CMM inspection, completed " +
+                 "counts can lag. probePartCount: true means the machines' probe reports how many parts are really " +
+                 "clamped and the cell lowers the clamped quantity to it, so fewer parts than a fixture's clamp quantity " +
+                 "is by design. Orders " +
                  "that made the most in the window come first, then latest due. Default: the last 7 days (today counts " +
                  "as one) and only the active orders something happened to in them (output, scrap, or parts on a " +
                  "fixture that isn't suspended or on hold); otherActiveOrders counts the rest, includeIdle=true lists " +
                  "them too. Naming an order or a part (exact name, else every name containing the text) shows its " +
                  "orders whatever their status or activity. completeIncludesScrap: true means an order counts as " +
-                 "complete once good plus scrap parts reach its quantity. The cell keeps daily counts for about three months.")]
+                 "complete once good plus scrap parts reach its quantity. autoDelete says when the cell deletes orders " +
+                 "by itself. includeCycleTime=true adds machiningMinutes, workSetMinutes and machiningMinutesPerPart " +
+                 "per order, an approximation (cycleTimeNote says how it is counted). The cell keeps daily counts for about three months.")]
     public static Task<string> GetProduction(
         ToolContext context,
         [Description("How many days of daily counts, from today back (today counts as one). Default 7.")] int days = 7,
         [Description("Only this order: its name, or part of it. Leave empty for every active order.")] string? order = null,
         [Description("Only the orders of this part: its name, or part of it. Leave empty for every part.")] string? part = null,
         [Description("true: also list the active orders nothing happened to in the window. Default false.")] bool includeIdle = false,
+        [Description("true: add each order's machining and work-set minutes from the cell's results (approximate). Default false.")] bool includeCycleTime = false,
         CancellationToken ct = default) =>
-        context.Database("get_production", (r, t) => r.GetProductionAsync(days, order, part, includeIdle, t), ct);
+        context.Database("get_production", (r, t) => r.GetProductionAsync(days, order, part, includeIdle, includeCycleTime, t), ct);
 
     [McpServerTool(Name = "get_pallet_diagnosis", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("Why isn't this pallet's work moving? The console's Pallet Diagnosis for one pallet: for each fixture, " +

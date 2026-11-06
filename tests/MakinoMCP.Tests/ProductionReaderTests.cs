@@ -77,7 +77,8 @@ public class ProductionReaderTests
         Assert.Contains("AS CompletedQty", sql);
         Assert.Contains("AS ScrapQty", sql);
         Assert.Contains("AS RemainingQty", sql);
-        Assert.DoesNotContain("InProcessQty", sql);
+        // In process too: read to work out the dashboard word and "no fixture has taken it yet", not shown.
+        Assert.Contains("AS InProcessQty", sql);
 
         var none = SqlMakinoReader.OrdersSql(SchemaWithout("Quantities", "ViewOrders"), activeOnly: true);
         Assert.Contains("CAST(NULL AS int) AS CompletedQty", none);

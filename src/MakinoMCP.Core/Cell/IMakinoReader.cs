@@ -19,10 +19,15 @@ public interface IMakinoReader
     /// <summary>Machining, work-set and transport results started in the last <paramref name="hours"/>, newest first.</summary>
     Task<ActivityList> GetRecentActivityAsync(int hours, string? device, CancellationToken ct);
 
-    /// <summary>Orders, latest due first; activeOnly leaves out complete, cancelled and undefined ones.</summary>
-    Task<OrderList> GetOrdersAsync(bool activeOnly, CancellationToken ct);
+    /// <summary>Orders, latest due first; activeOnly leaves out complete, cancelled and undefined ones. With
+    /// <paramref name="includeArchive"/>, also the finished and deleted orders the cell archived in the last
+    /// <paramref name="archiveDays"/> (today counts as one).</summary>
+    Task<OrderList> GetOrdersAsync(bool activeOnly, bool includeArchive, int archiveDays, CancellationToken ct);
 
-    Task<PalletList> GetPalletsAsync(CancellationToken ct);
+    /// <summary>Every pallet with its fixtures as short lines; only the one numbered <paramref name="pallet"/> (an
+    /// unknown number throws ArgumentException), and the fixtures as objects, when it is given or with
+    /// <paramref name="includeFixtures"/>.</summary>
+    Task<PalletList> GetPalletsAsync(int? pallet, bool includeFixtures, CancellationToken ct);
 
     /// <summary>Tools: per-device counts by status, plus the tools <paramref name="filter"/> picks (problems, all,
     /// near_end, alarm, absent; null = problems, or all when <paramref name="tool"/> is given). <paramref name="tool"/>
@@ -47,8 +52,9 @@ public interface IMakinoReader
     /// <summary>Quantities per order (active orders, or the ones named by <paramref name="order"/> / <paramref name="part"/>
     /// whatever their status), with the completed and scrap counts per day of the last <paramref name="days"/>. Without
     /// <paramref name="includeIdle"/>, active orders with no output, scrap or work on an active fixture in the window are
-    /// only counted (OtherActiveOrders).</summary>
-    Task<ProductionList> GetProductionAsync(int days, string? order, string? part, bool includeIdle, CancellationToken ct);
+    /// only counted (OtherActiveOrders). With <paramref name="includeCycleTime"/>, each order's machining and work-set
+    /// minutes from the cell's results.</summary>
+    Task<ProductionList> GetProductionAsync(int days, string? order, string? part, bool includeIdle, bool includeCycleTime, CancellationToken ct);
 
     /// <summary>Everything that waits on a person right now, most severe first. Without <paramref name="includeParked"/>,
     /// fixtures that are only suspended or on hold are counted per place (Parked), not listed.</summary>

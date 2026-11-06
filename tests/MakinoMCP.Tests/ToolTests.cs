@@ -59,7 +59,7 @@ public sealed class ToolTests : IDisposable
         ("get_utilization", c => CellTools.GetUtilization(c, ct: CancellationToken.None)),
         ("get_recent_activity", c => CellTools.GetRecentActivity(c, ct: CancellationToken.None)),
         ("get_orders", c => CellTools.GetOrders(c, ct: CancellationToken.None)),
-        ("get_pallets", c => CellTools.GetPallets(c, CancellationToken.None)),
+        ("get_pallets", c => CellTools.GetPallets(c, ct: CancellationToken.None)),
         ("get_tools", c => CellTools.GetTools(c, ct: CancellationToken.None)),
         ("get_tool_changes", c => CellTools.GetToolChanges(c, ct: CancellationToken.None)),
         ("get_tool_alarms", c => CellTools.GetToolAlarms(c, ct: CancellationToken.None)),
@@ -222,7 +222,7 @@ public sealed class ToolTests : IDisposable
     [Fact]
     public async Task Pallets_json_has_work_status()
     {
-        var pallet = Parse(await CellTools.GetPallets(Ready(new FakeMakinoReader()), CancellationToken.None))
+        var pallet = Parse(await CellTools.GetPallets(Ready(new FakeMakinoReader()), ct: CancellationToken.None))
             .GetProperty("pallets")[0];
         Assert.Equal("waiting for machining", pallet.GetProperty("status").GetString());
         Assert.Equal("not completed (no result yet)", pallet.GetProperty("workStatus").GetString());
@@ -490,7 +490,7 @@ public sealed class ToolTests : IDisposable
         var failing = Ready(new FakeMakinoReader { Fail = () => new InvalidOperationException($"Password={Password}") }, log);
 
         await CellTools.GetOrders(ok, ct: CancellationToken.None);
-        await CellTools.GetPallets(failing, CancellationToken.None);
+        await CellTools.GetPallets(failing, ct: CancellationToken.None);
 
         var file = Assert.Single(Directory.GetFiles(_logs, "makinomcp-*.log"));
         Assert.Equal($"makinomcp-{DateTime.Now:yyyyMMdd}.log", Path.GetFileName(file));

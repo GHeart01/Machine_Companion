@@ -18,7 +18,7 @@ public class LiveReaderTests(ITestOutputHelper output)
     {
         var reader = Reader();
         var overview = await reader.GetOverviewAsync(CancellationToken.None);
-        var orders = await reader.GetOrdersAsync(activeOnly: true, CancellationToken.None);
+        var orders = await reader.GetOrdersAsync(activeOnly: true, false, 30, CancellationToken.None);
         var tools = await reader.GetToolsAsync(null, "all", null, CancellationToken.None);
         var attention = await reader.GetAttentionAsync(includeParked: false, CancellationToken.None);
 
@@ -97,7 +97,7 @@ public class LiveReaderTests(ITestOutputHelper output)
         Assert.All(o.Devices.Where(d => d.Type == "vehicle"),
             v => Assert.True(v.Status is not null || v.NotAvailable.Contains("vehicle status")));
 
-        var pallets = await Reader().GetPalletsAsync(CancellationToken.None);
+        var pallets = await Reader().GetPalletsAsync(null, false, CancellationToken.None);
         Assert.All(pallets.Pallets, p => Assert.False(string.IsNullOrWhiteSpace(p.Status)));
     }
 
@@ -145,8 +145,8 @@ public class LiveReaderTests(ITestOutputHelper output)
         var util = await r.GetUtilizationAsync(7, null, ct);
         Assert.All(util.Days, d => Assert.InRange(d.BusyPercent, 0, 100));
         Assert.NotNull(await r.GetRecentActivityAsync(24, device, ct));
-        Assert.NotNull(await r.GetOrdersAsync(true, ct));
-        var pallets = await r.GetPalletsAsync(ct);
+        Assert.NotNull(await r.GetOrdersAsync(true, false, 30, ct));
+        var pallets = await r.GetPalletsAsync(null, false, ct);
         Assert.All(pallets.Pallets, p => Assert.False(string.IsNullOrWhiteSpace(p.Location)));
         var rights = await r.GetLoginRightsAsync(ct);
         Assert.Equal(overview.Devices.Count, rights.DeviceCount);
@@ -282,12 +282,12 @@ public class LiveReaderTests(ITestOutputHelper output)
     public async Task Live_production_agrees_with_orders_and_stays_in_its_window()
     {
         var ct = CancellationToken.None;
-        var production = await Reader(100000).GetProductionAsync(7, null, null, true, ct);
-        var orders = await Reader(100000).GetOrdersAsync(true, ct);
+        var production = await Reader(100000).GetProductionAsync(7, null, null, true, false, ct);
+        var orders = await Reader(100000).GetOrdersAsync(true, false, 30, ct);
 
         Assert.Equal(orders.Orders.Count, production.Orders.Count); // includeIdle: the same active orders
         Assert.Null(production.OtherActiveOrders);
-        var busy = await Reader(100000).GetProductionAsync(7, null, null, false, ct);
+        var busy = await Reader(100000).GetProductionAsync(7, null, null, false, false, ct);
         Assert.Equal(production.Orders.Count, busy.Orders.Count + (busy.OtherActiveOrders ?? 0));
         Assert.All(busy.Orders, o => Assert.Contains(production.Orders, p => p.Name == o.Name));
         var byName = orders.Orders.GroupBy(o => o.Name).ToDictionary(g => g.Key, g => g.First());
@@ -311,7 +311,7 @@ public class LiveReaderTests(ITestOutputHelper output)
             Assert.Equal(busy.Orders.Sum(o => o.CompletedInWindow ?? 0), totals.Sum(d => d.Completed));
 
         Skip.If(production.Orders.Count < 2, "fewer than two active orders");
-        var named = await Reader().GetProductionAsync(30, production.Orders[0].Name, null, false, ct);
+        var named = await Reader().GetProductionAsync(30, production.Orders[0].Name, null, false, false, ct);
         Assert.Contains(named.Orders, o => o.Name == production.Orders[0].Name);
         Assert.Null(named.Daily);
         foreach (var o in named.Orders)
@@ -320,7 +320,7 @@ public class LiveReaderTests(ITestOutputHelper output)
             Assert.All(daily, d => Assert.True(d.Date >= DateOnly.FromDateTime(named.ServerTime).AddDays(-29)));
             if (named.DailyCapped != true) Assert.Equal(o.CompletedInWindow ?? 0, daily.Sum(d => d.Completed));
         }
-        var capped = await Reader(1).GetProductionAsync(7, null, null, true, ct);
+        var capped = await Reader(1).GetProductionAsync(7, null, null, true, false, ct);
         Assert.True(capped.Capped);
         Assert.Single(capped.Orders);
     }
@@ -331,7 +331,7 @@ public class LiveReaderTests(ITestOutputHelper output)
     public async Task Live_pallet_diagnosis_gives_a_verdict_per_fixture()
     {
         var reader = Reader();
-        var pallets = (await reader.GetPalletsAsync(CancellationToken.None)).Pallets;
+        var pallets = (await reader.GetPalletsAsync(null, false, CancellationToken.None)).Pallets;
         var picks = new[] { "waiting for machining", "machining", "idle" }
             .Select(status => pallets.FirstOrDefault(p => p.Status == status)).OfType<PalletInfo>().ToList();
         Skip.If(picks.Count == 0, "no pallet waiting, machining or idle");
@@ -372,7 +372,7 @@ public class LiveReaderTests(ITestOutputHelper output)
         var sql = SqlMakinoReader.ProductionSql(viewSchema, byOrder: false, byPart: false, includeIdle: true);
 
         var fromView = new Dictionary<int, int?>();
-        var production = await Reader(100000).GetProductionAsync(7, null, null, true, ct);
+        var production = await Reader(100000).GetProductionAsync(7, null, null, true, false, ct);
         await using (var connection = new Microsoft.Data.SqlClient.SqlConnection(s.Makino.ConnectionString()))
         {
             await connection.OpenAsync(ct);
@@ -427,8 +427,8 @@ public class LiveReaderTests(ITestOutputHelper output)
             Skip.If(true, "ViewOrders isn't readable by this login");
         }
 
-        var production = await Reader(100000).GetProductionAsync(7, null, null, true, ct);
-        var orders = await Reader(100000).GetOrdersAsync(false, ct);
+        var production = await Reader(100000).GetProductionAsync(7, null, null, true, false, ct);
+        var orders = await Reader(100000).GetOrdersAsync(false, false, 30, ct);
         var compared = 0;
         foreach (var o in production.Orders.Where(o => view.ContainsKey(o.Name)))
         {

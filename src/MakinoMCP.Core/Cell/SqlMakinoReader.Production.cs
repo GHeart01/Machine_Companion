@@ -28,11 +28,8 @@ public sealed partial class SqlMakinoReader
     internal static OrderQuantities? OrderQuantityColumns(SchemaInfo schema, bool inProcess)
     {
         const string q = "Quantities";
-        var fromTable = schema.HasTable(q) && schema.HasTable("Processes")
-            && schema.Has(q, "OrderID") && schema.Has(q, "ProcessID")
-            && schema.Has("Processes", "ProcessID") && schema.Has("Processes", "PartID") && schema.Has("Processes", "ProcessNumber");
         var missing = new List<string>();
-        if (fromTable)
+        if (QuantitiesFromTable(schema))
         {
             string Sum(string column, string where, string name, string words)
             {
@@ -95,6 +92,47 @@ public sealed partial class SqlMakinoReader
         return null;
     }
 
+    /// <summary>Whether the quantities come from the cell's own table (by order id), not the vendor's view.</summary>
+    private static bool QuantitiesFromTable(SchemaInfo schema) =>
+        schema.HasTable("Quantities") && schema.HasTable("Processes")
+        && schema.Has("Quantities", "OrderID") && schema.Has("Quantities", "ProcessID")
+        && schema.Has("Processes", "ProcessID") && schema.Has("Processes", "PartID") && schema.Has("Processes", "ProcessNumber");
+
+    /// <summary>Parts sent to an external process, from the quantity table (the vendor's view doesn't have them); null
+    /// when the cell can't give them.</summary>
+    private static string? OutProcessColumn(SchemaInfo schema) =>
+        QuantitiesFromTable(schema) && schema.Has("Quantities", "OutProcessQuantity")
+            ? "(SELECT SUM(q.OutProcessQuantity) FROM Quantities q WHERE q.OrderID = o.OrderID) AS OutProcessQty"
+            : null;
+
+    internal const string NoOutProcess = "parts at an external process";
+
+    /// <summary>The order's machining and work-set station minutes in the cell's results (alias o, part alias pa),
+    /// matched by order name, part and revision from the order's registration on (a day early); null for a side this
+    /// cell's results can't be matched for.</summary>
+    private static (string? Machining, string? WorkSet) CycleColumns(SchemaInfo schema)
+    {
+        var since = schema.Has("Orders", "RegistrationDate") ? " AND x.StartDateTime >= DATEADD(day, -1, CAST(o.RegistrationDate AS date))" : "";
+        string? Sum(string table, string order, string part, string revision)
+        {
+            if (!schema.HasTable(table) || !new[] { "StartDateTime", "FinishDateTime", order, part, revision }.All(c => schema.Has(table, c))
+                || !schema.Has("Parts", "PartName") || !schema.Has("Parts", "Revision")) return null;
+            return $"(SELECT SUM(DATEDIFF(minute, x.StartDateTime, x.FinishDateTime)) FROM {table} x " +
+                   $"WHERE x.{order} = o.OrderName AND x.{part} = pa.PartName AND ISNULL(x.{revision}, '') = ISNULL(pa.Revision, '') " +
+                   $"AND x.FinishDateTime >= x.StartDateTime{since})";
+        }
+        return (Sum("MachineResults", "OrderName", "PartName", "Revision"),
+                Sum("WorkSetResults", "ClampOrderName", "ClampPartName", "ClampRevision"));
+    }
+
+    internal const string CycleTimeNote =
+        "Approximate, like the console's Part Cycle Time report: the minutes from start to finish of every machining and " +
+        "work-set result of the order (matched by order name, part and revision, from its registration on) within the " +
+        "history the cell keeps. Work-set minutes run from the station's start to its finish, so time the station " +
+        "waited for the operator is in them, and a work-set operation on several fixtures is counted once per fixture; " +
+        "machiningMinutesPerPart divides by the parts made so far (completed + scrap) although parts still in process " +
+        "have used time too, so it reads high while an order runs.";
+
     private static List<string> NoQuantityColumns(bool inProcess) =>
     [
         "CAST(NULL AS int) AS CompletedQty", "CAST(NULL AS int) AS ScrapQty", "CAST(NULL AS int) AS RemainingQty",
@@ -146,7 +184,7 @@ public sealed partial class SqlMakinoReader
     /// status; most produced in the window first, then latest due) with their quantities and window sums; the daily
     /// counts since @from (cap + 1, newest first, days with nothing left out): one total per day across those orders
     /// (OrderID NULL), or per order when an order or part is named; and the count of active orders left out.</summary>
-    internal static string ProductionSql(SchemaInfo schema, bool byOrder, bool byPart, bool includeIdle)
+    internal static string ProductionSql(SchemaInfo schema, bool byOrder, bool byPart, bool includeIdle, bool includeCycleTime = false)
     {
         var conditions = new List<string>();
         if (byOrder) conditions.Add(NameMatch("Orders", "OrderName", "o", "order"));
@@ -189,7 +227,14 @@ public sealed partial class SqlMakinoReader
             .. OrderQuantityColumns(schema, inProcess: true)?.Columns ?? NoQuantityColumns(inProcess: true),
             windowCompleted is null ? "CAST(NULL AS int) AS WindowCompleted" : $"{windowCompleted} AS WindowCompleted",
             windowScrap is null ? "CAST(NULL AS int) AS WindowScrap" : $"{windowScrap} AS WindowScrap",
+            OutProcessColumn(schema) ?? "CAST(NULL AS int) AS OutProcessQty",
         ];
+        if (includeCycleTime)
+        {
+            var (machining, workSet) = CycleColumns(schema);
+            cols.Add(machining is null ? "CAST(NULL AS int) AS MachiningMinutes" : $"{machining} AS MachiningMinutes");
+            cols.Add(workSet is null ? "CAST(NULL AS int) AS WorkSetMinutes" : $"{workSet} AS WorkSetMinutes");
+        }
         const string from = "FROM Orders o LEFT JOIN Parts pa ON pa.PartID = o.PartID";
         var picked = $"SELECT TOP (@take) o.OrderID {from} WHERE {where} ORDER BY {order}";
         var perOrder = byOrder || byPart;
@@ -258,7 +303,12 @@ public sealed partial class SqlMakinoReader
         return parts.Count > 0 ? string.Join(" OR ", parts) : null;
     }
 
-    public async Task<ProductionList> GetProductionAsync(int days, string? order, string? part, bool includeIdle, CancellationToken ct)
+    // A property: static fields of a partial class across files initialize in no set order.
+    private static string[] ProductionParameterNames =>
+        [.. OrderParameterNames, "NormalFinIncludeLastOutProc", "ProbePartCountMacroVariable"];
+
+    public async Task<ProductionList> GetProductionAsync(
+        int days, string? order, string? part, bool includeIdle, bool includeCycleTime, CancellationToken ct)
     {
         var window = Days(days);
         var byOrder = !string.IsNullOrWhiteSpace(order);
@@ -273,9 +323,16 @@ public sealed partial class SqlMakinoReader
         if (Daily(schema) == DailySource.None) notAvailable.Add("daily quantities");
         else if (Daily(schema) == DailySource.View && ViewPartMatch(schema, "ViewDayOrderCompletedQty", "d", "pa") is null
                  && !notAvailable.Contains(ViewNameOnly)) notAvailable.Add(ViewNameOnly);
-        var settings = await SystemParametersAsync(s, ct, OrderParameterNames);
+        if (OutProcessColumn(schema) is null) notAvailable.Add(NoOutProcess);
+        if (includeCycleTime)
+        {
+            var (machining, workSet) = CycleColumns(schema);
+            if (machining is null) notAvailable.Add("machining minutes per order (the machining results can't be matched to orders)");
+            if (workSet is null) notAvailable.Add("work-set minutes per order (the station results can't be matched to orders)");
+        }
+        var settings = await SystemParametersAsync(s, ct, ProductionParameterNames);
 
-        using var cmd = Command(s.Connection, ProductionSql(schema, byOrder, byPart, includeIdle));
+        using var cmd = Command(s.Connection, ProductionSql(schema, byOrder, byPart, includeIdle, includeCycleTime));
         AddTake(cmd);
         cmd.Parameters.Add("@from", System.Data.SqlDbType.DateTime).Value = s.Now.Date.AddDays(1 - window);
         if (byOrder)
@@ -300,7 +357,20 @@ public sealed partial class SqlMakinoReader
                 CompletedQty = Int(r, "CompletedQty"), ScrapQty = Int(r, "ScrapQty"), RemainingQty = Int(r, "RemainingQty"),
                 InProcessQty = Int(r, "InProcessQty"), ClampedQty = Int(r, "ClampedQty"),
                 CompletedInWindow = Int(r, "WindowCompleted"), ScrapInWindow = Int(r, "WindowScrap"),
+                OutProcessQty = Int(r, "OutProcessQty") is { } outQty and not 0 ? outQty : null,
             }));
+            if (includeCycleTime)
+            {
+                var o = orders[^1].Order;
+                var machining = Int(r, "MachiningMinutes");
+                var made = (o.CompletedQty ?? 0) + (o.ScrapQty ?? 0);
+                orders[^1] = (orders[^1].Id, o with
+                {
+                    MachiningMinutes = machining,
+                    WorkSetMinutes = Int(r, "WorkSetMinutes"),
+                    MachiningMinutesPerPart = machining is > 0 && made > 0 ? Math.Round((double)machining.Value / made, 1) : null,
+                });
+            }
         }
 
         await r.NextResultAsync(ct);
@@ -334,6 +404,10 @@ public sealed partial class SqlMakinoReader
             NotAvailable = notAvailable.Count > 0 ? notAvailable : null,
             Note = ProductionNote(order, part, shown.Count),
             OtherActiveOrders = others,
+            CompletedIncludesLastOutProcess = settings is null ? null : ToInt(settings.GetValueOrDefault("NormalFinIncludeLastOutProc")) == 1,
+            ProbePartCount = ToInt(settings?.GetValueOrDefault("ProbePartCountMacroVariable")) is > 0 ? true : null,
+            AutoDelete = AutoDeleteWords(settings),
+            CycleTimeNote = includeCycleTime ? CycleTimeNote : null,
         };
     }
 

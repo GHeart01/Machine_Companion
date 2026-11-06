@@ -67,7 +67,7 @@ internal sealed class FakeMakinoReader : IMakinoReader
             new ActivityItem("machining", "MC1", Now.AddHours(-2), Now.AddHours(-1), 7, "O1234", "normal"),
         ]), ct, device);
 
-    public Task<OrderList> GetOrdersAsync(bool activeOnly, CancellationToken ct) =>
+    public Task<OrderList> GetOrdersAsync(bool activeOnly, bool includeArchive, int archiveDays, CancellationToken ct) =>
         Answer(() => new OrderList(Now, false,
         [
             new OrderInfo("ORDER-001", "CONTOSO-BRACKET", "in progress", 10, null, Now.AddDays(1), null)
@@ -80,10 +80,21 @@ internal sealed class FakeMakinoReader : IMakinoReader
             },
         ]), ct);
 
-    public Task<PalletList> GetPalletsAsync(CancellationToken ct) =>
+    public Task<PalletList> GetPalletsAsync(int? pallet, bool includeFixtures, CancellationToken ct) =>
         Answer(() => new PalletList(Now, false,
         [
-            new PalletInfo(7, "P7", "waiting for machining", "not completed (no result yet)", "MC1 table", ["FIXTURE-A"]),
+            new PalletInfo(7, "P7", "waiting for machining", "not completed (no result yet)", "MC1, table",
+                pallet is null && !includeFixtures ? ["fixture 1: machining suspended"] : null)
+            {
+                FixtureDetails = pallet is null && !includeFixtures ? null :
+                [
+                    new FixtureDetail(1, "FIXTURE-A")
+                    {
+                        Order = "ORDER-001", Part = "CONTOSO-BRACKET", Process = 1, Job = "machining, job 2",
+                        JobStatus = "waiting for processing", States = ["machining suspended"],
+                    },
+                ],
+            },
         ]), ct);
 
     public Task<ToolList> GetToolsAsync(string? device, string? filter, int? tool, CancellationToken ct) =>
@@ -162,7 +173,7 @@ internal sealed class FakeMakinoReader : IMakinoReader
             };
         }, ct);
 
-    public Task<ProductionList> GetProductionAsync(int days, string? order, string? part, bool includeIdle, CancellationToken ct) =>
+    public Task<ProductionList> GetProductionAsync(int days, string? order, string? part, bool includeIdle, bool includeCycleTime, CancellationToken ct) =>
         Answer(() => new ProductionList(Now, false, days,
         [
             new OrderProduction("ORDER-001", "CONTOSO-BRACKET", "active", 100)
