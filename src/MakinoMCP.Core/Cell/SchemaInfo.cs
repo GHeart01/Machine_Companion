@@ -31,6 +31,7 @@ public sealed class SchemaInfo
         "UserSysData",
         "CommonValues", "PartSerialNumberTracking", "WorkSetCommandQuantity", // new tools: macro values, serials, work-set quantities
         "ONumbers", "MainPrograms", "OffsetFiles", // routing: program O-numbers, tool study, offset files
+        "OrderResults", "PalletFeasibleDevice", // orders: the order archive and the pallets' feasible devices
     ];
 
     /// <summary>How long one synonym probe's command may run.</summary>

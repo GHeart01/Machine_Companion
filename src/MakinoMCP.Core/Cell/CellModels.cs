@@ -291,6 +291,26 @@ public sealed record OrderList(DateTime ServerTime, bool Capped, IReadOnlyList<O
     /// order view is readable.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? NotAvailable { get; init; }
+
+    /// <summary>Where the orders' DashboardStatus comes from, when any order shows one.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DashboardStatusFrom { get; init; }
+
+    /// <summary>The cell's automatic order deletion, in words (with finished orders listed, or the archive); null when
+    /// the settings can't be read or finished orders weren't asked for.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? AutoDelete { get; init; }
+
+    /// <summary>Finished and deleted orders from the cell's archive, newest first (only with includeArchive).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<ArchivedOrder>? Archive { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ArchiveDays { get; init; }
+
+    /// <summary>True when more archived orders existed than the row limit let through.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? ArchiveCapped { get; init; }
 }
 
 /// <summary>Quantity is the order's required quantity; Completed the time it completed. CompletedQty: good parts out
@@ -328,16 +348,75 @@ public sealed record OrderInfo(
     [JsonPropertyName("remainingQty"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? RemainingQtyShown => NonZero(RemainingQty);
 
+    /// <summary>Parts started and not finished (clamped plus waiting for a later process); read to tell whether the
+    /// order's material has been taken, not shown.</summary>
+    [JsonIgnore]
+    public int? InProcessQty { get; init; }
+
+    /// <summary>The cell's dashboard word for an active order (running, waiting for material), only when it differs
+    /// from Status; see OrderList.DashboardStatusFrom.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DashboardStatus { get; init; }
+
+    /// <summary>The start date, only when it is still to come or the order is inactive.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTime? Start { get; init; }
+
+    /// <summary>The order's priority, only when not 0.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Priority { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Comment { get; init; }
+
+    /// <summary>What the order waits for, when it isn't running: its start date, a quantity, material, an operator's
+    /// release, or a fixture to take its material.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? WaitingFor { get; init; }
+
+    /// <summary>True for an order of a quick-data part (never deleted automatically).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? QuickData { get; init; }
+
     private static int? NonZero(int? n) => n is 0 ? null : n;
 }
 
-public sealed record PalletList(DateTime ServerTime, bool Capped, IReadOnlyList<PalletInfo> Pallets);
+/// <summary>NotAvailable: what this cell or login can't show (fixture work, feasible devices, …).</summary>
+public sealed record PalletList(DateTime ServerTime, bool Capped, IReadOnlyList<PalletInfo> Pallets)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? NotAvailable { get; init; }
+}
 
 /// <summary>Status and WorkStatus are the cell's dashboard words (idle, waiting for machining, …; not completed,
 /// normal, abnormal, cancel). For pallet types the cell's dashboard doesn't track, it stores status 0 and a raw work
-/// status, so both show "code N".</summary>
+/// status, so both show "code N". Fixtures: one short line per fixture (number, own name, non-default states);
+/// FixtureDetails instead when one pallet or the details were asked for.</summary>
 public sealed record PalletInfo(
-    int Number, string Name, string Status, string WorkStatus, string Location, IReadOnlyList<string> Fixtures);
+    int Number, string Name, string Status, string WorkStatus, string Location,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<string>? Fixtures)
+{
+    /// <summary>The pallet type, only when not standard.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Type { get; init; }
+
+    /// <summary>The pallet's transport priority, only when not 0.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Priority { get; init; }
+
+    /// <summary>The raised priority of a queued pallet, only when not 0 (the cell also sets it itself for manual and
+    /// synchronous transports; it clears when the pallet leaves the queue).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? OperatorPriority { get; init; }
+
+    /// <summary>Machines and work-set stations the pallet may not go to (its feasible-device list lacks them); null
+    /// when it may go to every one.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? NotFeasibleFor { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<FixtureDetail>? FixtureDetails { get; init; }
+}
 
 /// <summary>CanWrite is true when the login could change the cell database (MakinoMCP never does).</summary>
 public sealed record LoginRightsInfo(bool CanWrite, int DeviceCount, string Summary);
@@ -820,6 +899,25 @@ public sealed record ProductionList(DateTime ServerTime, bool Capped, int Days, 
     /// a fixture that isn't suspended or on hold); null when every active order is listed.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? OtherActiveOrders { get; init; }
+
+    /// <summary>True when completedQty also counts parts sent to an external process after the last process (the
+    /// cell's NormalFinIncludeLastOutProc); null when the settings can't be read.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? CompletedIncludesLastOutProcess { get; init; }
+
+    /// <summary>True when the machines' probe reports how many parts are really clamped (the cell's
+    /// ProbePartCountMacroVariable): the clamped quantity is then lowered at machining, so fewer parts than a
+    /// fixture's clamp quantity is by design.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? ProbePartCount { get; init; }
+
+    /// <summary>As <see cref="OrderList.AutoDelete"/>.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? AutoDelete { get; init; }
+
+    /// <summary>Only with includeCycleTime: how the minutes are counted.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CycleTimeNote { get; init; }
 }
 
 /// <summary>One order's counts, as the cell's own order screen counts them. Quantity: required. CompletedQty: good
@@ -850,8 +948,24 @@ public sealed record OrderProduction(string Name, string Part, string Status, in
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? ScrapInWindow { get; init; }
 
+    /// <summary>Parts sent to an external process (any process), only when not 0. They are in neither InProcessQty nor
+    /// CompletedQty (unless the cell counts the last process's as completed).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? OutProcessQty { get; init; }
+
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<DailyQty>? Daily { get; init; }
+
+    /// <summary>Only with includeCycleTime: machining and work-set station minutes in the cell's results for this order
+    /// (matched by order name, part and revision), and machining minutes per part made (completed + scrap).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MachiningMinutes { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? WorkSetMinutes { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? MachiningMinutesPerPart { get; init; }
 }
 
 public sealed record DailyQty(DateOnly Date, int Completed, int Scrap);

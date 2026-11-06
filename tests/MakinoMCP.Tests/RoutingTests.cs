@@ -330,7 +330,7 @@ public class RoutingTests(ITestOutputHelper output)
         var reader = new SqlMakinoReader(load.Settings!.Makino, new Limits(500, load.Settings.Limits.MaxFileKB));
         var ct = CancellationToken.None;
 
-        var orders = await reader.GetOrdersAsync(true, ct);
+        var orders = await reader.GetOrdersAsync(true, false, 30, ct);
         var parts = orders.Orders.Select(o => o.Part.Split(" rev ")[0]).Distinct().Take(8).ToList();
         Skip.If(parts.Count == 0, "no active orders");
         foreach (var name in parts)
