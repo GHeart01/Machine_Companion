@@ -145,7 +145,7 @@ public sealed partial class SqlMakinoReader
 
         string? waiting = f.Status switch
         {
-            OrderInactive when start is { } at => $"starts {at:yyyy-MM-dd}",
+            OrderInactive when start is { } at && at.Date > now.Date => $"starts {at:yyyy-MM-dd}",
             OrderNoQuantity => "no required quantity",
             OrderSuspended when newOrdersSuspended && f.Registered is { } reg && f.Updated is { } upd
                                 && (upd - reg).Duration() <= UntouchedSinceCreated =>
@@ -371,7 +371,7 @@ public sealed partial class SqlMakinoReader
             };
         }
 
-        return new FixtureDetail(f.Fixture, FixtureLabel(f))
+        return new FixtureDetail(f.Fixture, NonEmpty(FixtureLabel(f)))
         {
             Processes = f.ProcessCount is > 1 ? f.ProcessCount : null,
             Empty = hasWork ? null : true,

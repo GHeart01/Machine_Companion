@@ -12,7 +12,8 @@ namespace MakinoMCP.Core.Cell;
 /// cleaning or deburring skipped), then MakinoMCP's additions (reclamp timeout, lacking tools, clamp-wait hold
 /// disabled). OperatorCall: why the fixture stops for the operator (its own setting, or a remaining machining job's).
 /// WorkStatus: only scrap (with how the cycle ended) or cancelled, the results still waiting to be unloaded.</summary>
-public sealed record FixtureDetail(int? Fixture, string Label)
+public sealed record FixtureDetail(
+    int? Fixture, [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Label)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? Processes { get; init; }

@@ -250,6 +250,10 @@ public class OrdersTests
         var later = SqlMakinoReader.OrderNotes(Order(), new(1, 1, Now.Date.AddDays(2), null, null), Now, false);
         Assert.Equal(Now.Date.AddDays(2), later.Start);
         Assert.Equal("starts 2026-11-08", later.WaitingFor);
+        // Inactive with a start already past: the cell activates it at its next check; no "starts" note.
+        var due = SqlMakinoReader.OrderNotes(Order(), new(1, 1, Now.Date.AddDays(-1), null, null), Now, false);
+        Assert.Equal(Now.Date.AddDays(-1), due.Start);
+        Assert.Null(due.WaitingFor);
         Assert.Null(SqlMakinoReader.OrderNotes(Order(), new(2, 2, new DateTime(1900, 1, 1), null, null), Now, false).Start);
     }
 
