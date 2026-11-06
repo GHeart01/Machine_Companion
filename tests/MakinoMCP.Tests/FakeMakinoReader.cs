@@ -201,6 +201,43 @@ internal sealed class FakeMakinoReader : IMakinoReader
                 },
             ], ["which vehicle can reach each device (dedicated vehicles)"]), ct);
 
+    public Task<MacroValueList> GetMacroValuesAsync(int days, string? device, int? variable, int? pallet, CancellationToken ct) =>
+        Answer(() => new MacroValueList(Now, false, days,
+        [
+            new MacroValue(Now.AddMinutes(-20), "MC1", 500, 12.345)
+            {
+                Pallet = 7, MainProgram = "O1234", Part = "CONTOSO-BRACKET", Process = 1, Program = "CONTOSO-BRACKET-OP1",
+            },
+        ]), ct, device);
+
+    public Task<WorkSetView> GetWorkSetAsync(string? device, CancellationToken ct) =>
+        Answer(() => new WorkSetView(Now, false,
+        [
+            new StationWork("WSS1", [new PalletSpot("table", 7, "processing")],
+            [
+                new FixtureWork(7, 1, "unclamp and clamp (clamp 1)")
+                {
+                    LeavesAs = "machining",
+                    Unclamp = new WorkSide { Order = "ORDER-001", Part = "CONTOSO-BRACKET", Process = 1, Machine = "MC1", MachiningFinish = "normal" },
+                    Clamp = new WorkSide { Order = "ORDER-001", Part = "CONTOSO-BRACKET", Process = 1, Quantity = 1 },
+                },
+            ])
+            {
+                Status = "busy", Instruction = "unclamp and clamp", Since = Now.AddMinutes(-5),
+            },
+        ]), ct, device);
+
+    public Task<SerialSearch> FindSerialAsync(string serial, int days, string? device, CancellationToken ct) =>
+        Answer(() => string.IsNullOrWhiteSpace(serial)
+            ? new SerialSearch(Now, false, "", days, []) { Note = SqlMakinoReader.NoSerialGiven }
+            : new SerialSearch(Now, false, serial, days,
+            [
+                new SerialMatch(Now.AddHours(-4), "MC1", "machining", [new SerialCode(1, "SN-0001")])
+                {
+                    Fixture = 1, Quantity = 1, Pallet = 7, Order = "ORDER-001", Part = "CONTOSO-BRACKET",
+                },
+            ]), ct, device);
+
     public Task<LoginRightsInfo> GetLoginRightsAsync(CancellationToken ct) =>
         Answer(() => new LoginRightsInfo(CanWrite, Devices.Count, CanWrite ? "can write" : "read only"), ct);
 }

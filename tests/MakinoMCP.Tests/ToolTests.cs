@@ -17,8 +17,8 @@ public sealed class ToolTests : IDisposable
     [
         "get_cell_overview", "get_alarms", "get_alarm_summary", "get_utilization", "get_recent_activity", "get_orders",
         "get_pallets", "get_tools", "get_tool_changes", "get_tool_alarms", "get_tool_movements", "get_part_routing",
-        "get_production", "get_attention", "get_pallet_diagnosis", "list_shared_folders",
-        "list_files", "read_file", "search_files",
+        "get_production", "get_attention", "get_pallet_diagnosis", "get_macro_values", "get_work_set", "find_serial",
+        "list_shared_folders", "list_files", "read_file", "search_files", "explain_ade_file",
     ];
 
     private readonly string _base = Path.Combine(Path.GetTempPath(), "makinomcp-tools-" + Guid.NewGuid().ToString("N"));
@@ -68,10 +68,14 @@ public sealed class ToolTests : IDisposable
         ("get_production", c => CellTools.GetProduction(c, ct: CancellationToken.None)),
         ("get_attention", c => CellTools.GetAttention(c, ct: CancellationToken.None)),
         ("get_pallet_diagnosis", c => CellTools.GetPalletDiagnosis(c, 7, CancellationToken.None)),
+        ("get_macro_values", c => CellTools.GetMacroValues(c, ct: CancellationToken.None)),
+        ("get_work_set", c => CellTools.GetWorkSet(c, ct: CancellationToken.None)),
+        ("find_serial", c => CellTools.FindSerial(c, "SN-0001", ct: CancellationToken.None)),
         ("list_shared_folders", c => FolderTools.ListSharedFolders(c, CancellationToken.None)),
         ("list_files", c => FolderTools.ListFiles(c, "logs", ct: CancellationToken.None)),
         ("read_file", c => FolderTools.ReadFile(c, "logs", "cell.log", ct: CancellationToken.None)),
         ("search_files", c => FolderTools.SearchFiles(c, "logs", "ALARM", ct: CancellationToken.None)),
+        ("explain_ade_file", c => CellTools.ExplainAdeFile(c, "logs", "cell.log", CancellationToken.None)),
     ];
 
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement;
@@ -113,7 +117,7 @@ public sealed class ToolTests : IDisposable
             Fail = () => new InvalidOperationException($"Login failed for 'your-login' with Password={Password}; server down"),
         });
 
-        foreach (var (_, call) in AllTools.Take(14))
+        foreach (var (_, call) in AllTools.Take(18))
         {
             var json = await call(context);
             var error = ErrorOf(json);

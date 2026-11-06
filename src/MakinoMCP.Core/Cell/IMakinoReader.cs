@@ -60,5 +60,17 @@ public interface IMakinoReader
     /// An unknown pallet number throws ArgumentException.</summary>
     Task<PalletDiagnosis> GetPalletDiagnosisAsync(int pallet, CancellationToken ct);
 
+    /// <summary>Macro variable values the machines uploaded in the last <paramref name="days"/>, newest first, each
+    /// with the machining result running then. <paramref name="variable"/> and <paramref name="pallet"/> filter (null
+    /// for none).</summary>
+    Task<MacroValueList> GetMacroValuesAsync(int days, string? device, int? variable, int? pallet, CancellationToken ct);
+
+    /// <summary>The work-set stations as their monitor shows them: state, and each fixture's instruction.</summary>
+    Task<WorkSetView> GetWorkSetAsync(string? device, CancellationToken ct);
+
+    /// <summary>Serial number records of the last <paramref name="days"/> containing <paramref name="serial"/>
+    /// (case-insensitive), newest first, with the result each belongs to.</summary>
+    Task<SerialSearch> FindSerialAsync(string serial, int days, string? device, CancellationToken ct);
+
     Task<LoginRightsInfo> GetLoginRightsAsync(CancellationToken ct);
 }
