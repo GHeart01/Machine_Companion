@@ -258,7 +258,8 @@ public class ToolReaderTests
         // A pair one half of which is missing is neither compared nor selected.
         var old = SqlMakinoReader.ToolChangesSql(SchemaWithout("PresetResults.HWearNew", "PresetResults.M6Flag"), false);
         Assert.DoesNotContain("HWear", old);
-        Assert.DoesNotContain("M6Flag", old);
+        Assert.DoesNotContain("p.M6Flag", old); // not compared; selected only as a NULL (who wrote the row: unknown)
+        Assert.Contains("CAST(NULL AS bit) AS M6Flag", old);
     }
 
     [Fact]
