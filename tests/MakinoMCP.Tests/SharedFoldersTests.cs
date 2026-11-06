@@ -486,4 +486,182 @@ public sealed class SharedFoldersTests : IDisposable
         Assert.Contains("folder", Assert.Throws<FolderAccessException>(() => f.ReadFile("Logs", "d", null, null, null)).Message);
         Assert.Throws<FolderAccessException>(() => f.ReadFile("Logs", "a.txt", 5, 2, null));
     }
+
+    // ---------------------------------------------------------------- vendor secrets
+
+    [Theory]
+    [InlineData("AlarmNotification.xml")]
+    [InlineData("alarmnotificationSETTINGS.XML")]
+    [InlineData("AlarmNotification.xml.")]
+    public void AlarmNotification_files_are_refused_by_name(string name)
+    {
+        Write(@"cfg\AlarmNotification.xml", "<Smtp><Pass>SMTP-SECRET</Pass></Smtp>");
+        Write(@"cfg\AlarmNotificationSettings.xml", "<Smtp><Pass>SMTP-SECRET</Pass></Smtp>");
+        Write(@"cfg\AlarmNotification.log", "sent SMTP-SECRET-LOG");
+        Write(@"cfg\AlarmNotify.xml", "<x>near miss</x>");
+        var f = Make(); // no protected paths at all
+        var e = Assert.Throws<FolderAccessException>(() => f.ReadFile("Logs", @"cfg\" + name, null, null, null));
+        Assert.Contains("AlarmNotification", e.Message);
+        Assert.DoesNotContain("SMTP-SECRET", e.Message);
+        Assert.Empty(f.Search("Logs", "SMTP-SECRET", "*.xml", null).Hits);
+        var names = f.ListFiles("Logs", "cfg", null, null).Entries.Select(x => x.Path).OrderBy(x => x).ToList();
+        Assert.Equal([@"cfg\AlarmNotification.log", @"cfg\AlarmNotify.xml"], names);
+        // Names that only look alike are still readable.
+        Assert.Equal("sent SMTP-SECRET-LOG", f.ReadFile("Logs", @"cfg\AlarmNotification.log", null, null, null).Text);
+        Assert.Equal("<x>near miss</x>", f.ReadFile("Logs", @"cfg\AlarmNotify.xml", null, null, null).Text);
+    }
+
+    [SkippableFact]
+    public void File_link_to_an_AlarmNotification_file_is_hidden()
+    {
+        var target = Write(@"cfg\AlarmNotification.xml", "<Smtp>SMTP-SECRET</Smtp>");
+        var link = Path.Combine(_shared, "cfg", "mail.txt");
+        try { File.CreateSymbolicLink(link, target); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Skip.If(true, "Creating a file symbolic link needs Developer Mode or administrator rights: " + e.Message);
+        }
+        var f = Make();
+        Assert.Throws<FolderAccessException>(() => f.ReadFile("Logs", @"cfg\mail.txt", null, null, null));
+        Assert.Empty(f.Search("Logs", "SMTP-SECRET", null, null).Hits);
+        Assert.Empty(f.ListFiles("Logs", "cfg", null, null).Entries);
+    }
+
+    private static readonly string[] VendorConfig =
+    [
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>",
+        "<configuration>",
+        "  <connectionStrings>",
+        "    <add name=\"Cell\" connectionString=\"Data Source=MAKINO-CELL-PC;User ID=your-login;Password=secret123;Initial Catalog=Makino\" />",
+        "    <add name=\"Spare\" connectionString=\"Server=MAKINO-CELL-PC;UID=your-login;pwd=secret123\" />",
+        "  </connectionStrings>",
+        "  <Password>secret123</Password>",
+        "  <cfg:SmtpPwd enc=\"1\">secret123</cfg:SmtpPwd>",
+        "  <Login user=\"your-login\" password=\"secret123\" pwd='secret123' />",
+        "  <appSettings><add key=\"SmtpPassword\" value=\"secret123\" /></appSettings>",
+        "  <PasswordFormat>Clear</PasswordFormat>",
+        "  <Timeout>30</Timeout>",
+        "</configuration>",
+    ];
+
+    private static readonly string[] VendorConfigMasked =
+    [
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>",
+        "<configuration>",
+        "  <connectionStrings>",
+        "    <add name=\"Cell\" connectionString=\"Data Source=MAKINO-CELL-PC;User ID=your-login;Password=***;Initial Catalog=Makino\" />",
+        "    <add name=\"Spare\" connectionString=\"Server=MAKINO-CELL-PC;UID=your-login;pwd=***\" />",
+        "  </connectionStrings>",
+        "  <Password>***</Password>",
+        "  <cfg:SmtpPwd enc=\"1\">***</cfg:SmtpPwd>",
+        "  <Login user=\"your-login\" password=\"***\" pwd='***' />",
+        "  <appSettings><add key=\"SmtpPassword\" value=\"***\" /></appSettings>",
+        "  <PasswordFormat>Clear</PasswordFormat>",
+        "  <Timeout>30</Timeout>",
+        "</configuration>",
+    ];
+
+    [Theory]
+    [InlineData("SystemConsole.exe.config")]
+    [InlineData("settings.XML")]
+    public void Passwords_in_config_and_xml_files_are_masked_when_read(string name)
+    {
+        Write(name, string.Join("\r\n", VendorConfig));
+        var r = Make().ReadFile("Logs", name, null, null, null);
+        Assert.DoesNotContain("secret123", r.Text);
+        Assert.Equal(VendorConfigMasked, r.Text.Split('\n'));
+        Assert.Equal(VendorConfig.Length, r.TotalLines);
+        Assert.Equal(VendorConfig.Length, r.LastLine);
+        Assert.False(r.Truncated);
+        // A range keeps its line numbers.
+        var one = Make().ReadFile("Logs", name, null, 7, 1);
+        Assert.Equal("  <Password>***</Password>", one.Text);
+        Assert.Equal(7, one.FirstLine);
+    }
+
+    [Fact]
+    public void Passwords_in_config_files_are_masked_in_search_and_never_match()
+    {
+        Write(@"cfg\SystemConsole.exe.config", string.Join("\n", VendorConfig));
+        var f = Make();
+        Assert.Empty(f.Search("Logs", "secret123", null, null).Hits);
+        var hits = f.Search("Logs", "your-login", null, null).Hits;
+        Assert.Equal([4, 5, 9], hits.Select(h => h.Line));
+        Assert.All(hits, h => Assert.Equal(VendorConfigMasked[h.Line - 1], h.Text));
+        Assert.All(hits, h => Assert.Equal(@"cfg\SystemConsole.exe.config", h.Path));
+    }
+
+    [Theory]
+    [InlineData("Password=secret123", "Password=***")]
+    [InlineData("PASSWORD = secret123 ; x=1", "PASSWORD = ***; x=1")]
+    [InlineData("Pwd=secret123'tail", "Pwd=***'tail")]
+    [InlineData("<connectionString>Server=x;Password=secret123</connectionString>", "<connectionString>Server=x;Password=***</connectionString>")]
+    [InlineData("connectionString='Server=x;Password=\"a;b\";'", "connectionString='Server=x;Password=\"***\";'")]
+    [InlineData("<add password=\"secret123", "<add password=\"***")]
+    [InlineData("<x:Password xmlns:x=\"urn:x\">secret123</x:Password>", "<x:Password xmlns:x=\"urn:x\">***</x:Password>")]
+    [InlineData("<Password><![CDATA[secret123]]></Password>", "<Password>***</Password>")]
+    [InlineData("<Password>secret123", "<Password>***")]
+    [InlineData("<Password/><Password></Password><Password />", "<Password/><Password></Password><Password />")]
+    [InlineData("<PasswordChar>*</PasswordChar> requiresPasswordReset=\"true\"", "<PasswordChar>*</PasswordChar> requiresPasswordReset=\"true\"")]
+    [InlineData("<add key=\"Timeout\" value=\"30\" />", "<add key=\"Timeout\" value=\"30\" />")]
+    public void Mask_line_forms(string line, string expected)
+    {
+        Assert.Equal(expected, VendorSecrets.MaskLine(line));
+    }
+
+    [Fact]
+    public void Password_in_a_txt_file_is_not_masked()
+    {
+        Write("notes.txt", "Password=secret123;\n<Password>secret123</Password>");
+        var f = Make();
+        Assert.Equal("Password=secret123;\n<Password>secret123</Password>", f.ReadFile("Logs", "notes.txt", null, null, null).Text);
+        Assert.Equal(2, f.Search("Logs", "secret123", null, null).Hits.Count);
+    }
+
+    [Fact]
+    public void Masking_keeps_the_size_limit_and_line_count()
+    {
+        // 3000 lines of about 40 characters: well over a 1 KB limit, so the read stops and says where.
+        Write("big.config", string.Join("\n", Enumerable.Range(1, 3000).Select(i => $"<add Password=\"s{i}\" note=\"{i}\" />")));
+        var r = Make(new Limits(500, 1)).ReadFile("Logs", "big.config", null, null, null);
+        Assert.True(r.Truncated);
+        Assert.True(r.Text.Length <= 1024);
+        Assert.DoesNotContain("\"s1\"", r.Text);
+        Assert.StartsWith("<add Password=\"***\" note=\"1\" />", r.Text);
+        var tail = Make().ReadFile("Logs", "big.config", 2, null, null);
+        Assert.Equal(3000, tail.TotalLines);
+        Assert.Equal("<add Password=\"***\" note=\"2999\" />\n<add Password=\"***\" note=\"3000\" />", tail.Text);
+    }
+
+    [Theory]
+    [InlineData("pass.pwdx-")]        // name-like runs that never complete a key
+    [InlineData("<add key=\"password")] // appSettings keys that never close
+    [InlineData("<Password a=\"1\" ")]  // opening tags that never close
+    [InlineData("<Password><![CDATA[")] // CDATA that never ends
+    [InlineData("password=\"")]         // quoted values that never close
+    public void Masking_a_long_line_is_quick(string unit)
+    {
+        // Worst cases for a careless pattern: about 250 KB on one line, the read limit's size.
+        var line = string.Concat(Enumerable.Repeat(unit, 250_000 / unit.Length)) + " Pwd=secret123";
+        var sw = Stopwatch.StartNew();
+        var masked = VendorSecrets.MaskLine(line);
+        sw.Stop();
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(2), $"took {sw.Elapsed}");
+        Assert.DoesNotContain("secret123", masked);
+    }
+
+    [SkippableFact]
+    public void File_link_with_a_txt_name_to_a_config_file_is_masked()
+    {
+        var target = Write(@"cfg\app.config", "Password=secret123;");
+        var link = Path.Combine(_shared, "cfg", "notes.txt");
+        try { File.CreateSymbolicLink(link, target); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Skip.If(true, "Creating a file symbolic link needs Developer Mode or administrator rights: " + e.Message);
+        }
+        var f = Make();
+        Assert.Equal("Password=***;", f.ReadFile("Logs", @"cfg\notes.txt", null, null, null).Text);
+        Assert.Empty(f.Search("Logs", "secret123", null, null).Hits);
+    }
 }

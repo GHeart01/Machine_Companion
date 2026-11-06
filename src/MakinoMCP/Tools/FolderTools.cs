@@ -29,7 +29,8 @@ public static class FolderTools
     [McpServerTool(Name = "list_files", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("What is in a shared folder, newest first? Files and subfolders with size and last-modified time. " +
                  "Defaults: the folder's top level, every name, up to the row limit (500 unless the settings say " +
-                 "otherwise). Use pattern (e.g. *.log) or subpath to narrow a large folder.")]
+                 "otherwise). Use pattern (e.g. *.log) or subpath to narrow a large folder. AlarmNotification*.xml " +
+                 "files (they hold the cell's e-mail password) are never listed.")]
     public static Task<string> ListFiles(
         ToolContext context,
         [Description(FolderParam)] string folder,
@@ -44,7 +45,8 @@ public static class FolderTools
                  "binary files are refused). Default: .log files show their last 500 lines, other files from the top. " +
                  "Reads stop at the size limit (256 KB unless set otherwise) and say they were cut; then use tailLines " +
                  "for the end, or fromLine with lineCount for a range. The result gives the line numbers shown and the " +
-                 "file's total lines.")]
+                 "file's total lines. Password values in .config and .xml files show as ***; AlarmNotification*.xml " +
+                 "files are refused.")]
     public static Task<string> ReadFile(
         ToolContext context,
         [Description(FolderParam)] string folder,
@@ -60,7 +62,8 @@ public static class FolderTools
                  "(case-insensitive, plain text, not a regex) and returns matching lines with file and line number, " +
                  "capped at the row limit. Use it to find an alarm number, program name, pallet or error message in " +
                  "the cell's logs. Defaults: every file, any age; narrow with pattern (e.g. *.log) and sinceHours on " +
-                 "large folders.")]
+                 "large folders. Password values in .config and .xml files show as *** (and never match); " +
+                 "AlarmNotification*.xml files are skipped.")]
     public static Task<string> SearchFiles(
         ToolContext context,
         [Description(FolderParam)] string folder,
