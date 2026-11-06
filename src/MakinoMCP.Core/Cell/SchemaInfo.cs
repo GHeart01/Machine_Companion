@@ -29,6 +29,7 @@ public sealed class SchemaInfo
         "ViewOrders", "ViewDayOrderCompletedQty",
         // 0.4: the cell's runtime settings (duty mode, power-off state).
         "UserSysData",
+        "ONumbers", "MainPrograms", "OffsetFiles", // routing: program O-numbers, tool study, offset files
     ];
 
     /// <summary>How long one synonym probe's command may run.</summary>

@@ -211,17 +211,37 @@ public static class CellTools
                  "(case-insensitive), else the one part whose name contains the text; when several match, it lists " +
                  "them as candidates (name, revision, process count) and shows no routing, so ask again with the exact " +
                  "name. Parts split per operation (…-OP1, …-OP2) are separate parts. otherMatches names other parts " +
-                 "containing the text next to an exact match. The routing: processes in order (number, name, status, " +
-                 "maxFixtures, the fixtures that can hold it as \"pallet N fixture M\"), their operations (parts per " +
-                 "clamp) and jobs in order: type (work setting, machining, …), workSet (load/unload) and infoFile " +
-                 "(work instructions), program (NC program), minutes (planned time; for work setting an operator-entered " +
-                 "plan, never measured), operatorCall, feasibleDevices. " +
+                 "containing the text next to an exact match. Routings change under running production and the cell keeps " +
+                 "no versions: updated (the part, its processes and operations) and programUpdated (any edit of the " +
+                 "program file's data) say when they last changed. The routing: processes in order (number, name, status, " +
+                 "maxFixtures: the most fixtures the cell gives this process at once, cell-wide, inUse: how many hold it " +
+                 "now, and fixtures: the pallet places that can hold it, as \"pallet N fixture M: free\", \"…: this " +
+                 "process\" or \"…: in use: PART process N\", with suspended, work-set hold, damaged, pre-machining " +
+                 "suspended and the offset file the cell would send), their operations (clampQuantity: material pieces " +
+                 "loaded per fixture; unclampPerClamp: parts out per piece) and jobs in order: type (work setting, " +
+                 "machining, …), workSet (load/unload) and infoFile (work instructions), program (NC program), oNumber " +
+                 "(the O-number the cell starts), programType, minutes (planned time; for work setting an " +
+                 "operator-entered plan the station's expected finish uses, never measured), operatorCall (permanent: " +
+                 "every cycle; one-shot: once per fixture, or the next pallet only where the cell is set so; a call can " +
+                 "also come from the fixture's own setting), timeStudy (the planned minutes will be replaced by the next " +
+                 "normal cycle's time), blockSkips (optional block skips set on the job), toolStudy (the program's tool " +
+                 "study mode and when, where and on which pallet it was last studied), feasibleDevices ([] with a note " +
+                 "when the job is assigned to none: the cell won't schedule it). " +
                  "With includeTools (default), each machining job lists the tool types (ftn, name) its main program " +
-                 "needs, how many (needed), the life one run uses (cutting), how many usable tools of that type " +
-                 "(status ready or life warning) sit on each feasible machine (usable) and missingOn: the machines " +
-                 "with too few. That check is approximate (toolCheck): it uses the tool set the cell registered for the " +
-                 "program, subprograms included, and doesn't check remaining life. notAvailable names what this cell or " +
-                 "login can't show.")]
+                 "needs, how many (needed; neededForType when the cell adds up several PTNs of one type), the life one run " +
+                 "uses (cutting), how many usable tools of that type (status ready or life warning) sit on each feasible " +
+                 "machine (usable; usableButFlagged: how many of those are prohibited or absent), missingOn: the " +
+                 "machines with too few, elsewhere: usable tools of the type on other devices, and toolSet: per " +
+                 "machine the console's tool set status (ready, lacking, life warning, alarm, offset error: any tool of " +
+                 "a needed type there in that state; unknown). That check is approximate (toolCheck says how this " +
+                 "cell's own lacking rule differs). blockers: why the part's processes may not be running, by the " +
+                 "console's Process Diagnosis: reasons (no active order, a process not assigned to a fixture or with no " +
+                 "pallet carrying one, no free fixture place, at its fixture limit, a job assigned to no machine, or no " +
+                 "assigned machine or station that can take it: not ready, closed, transport cancelled, lacking tools, " +
+                 "off-duty holds), orders (the part's active orders with status; otherOrders: the ones not listed), " +
+                 "devices (each assigned machine's or station's own state) and notChecked (what the console keeps in " +
+                 "memory). For one pallet's fixtures in detail use get_pallet_diagnosis. notAvailable names what this " +
+                 "cell or login can't show.")]
     public static Task<string> GetPartRouting(
         ToolContext context,
         [Description("The part name, or part of it.")] string part,
