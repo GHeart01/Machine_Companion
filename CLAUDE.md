@@ -67,15 +67,17 @@ Machine-specific notes (which share it is published to, the live-test settings, 
 |---|---|
 | `src/MakinoMCP.Core` | net10.0, no UI or MCP: `Settings` (file model and store), `Cell` (`SqlMakinoReader` split by area (`Alarms`, `History`, `Orders`, `Overview`, `Tools`, `Routing`, `Production`, `Attention`), `SchemaInfo` probing with `SchemaCache` (a failed probe is retried later), `Codes`, `ErrorText`), `Folders` (`SharedFolders`) |
 | `src/MakinoMCP` | net10.0-windows WinExe `MakinoMCP.exe`: `serve` = MCP host (`Tools/CellTools`, `Tools/FolderTools`, `ToolContext` with time budgets 45 s DB / 20 s folders), no args or `setup` = WinForms setup window (`Setup/`), including the "Use MakinoMCP in Claude on this PC" switch (`ClaudeSwitch`: `claude mcp add/remove` via `ClaudeRegistration`, Cowork's config via `CoworkConfig`, stops this user's `serve` processes via `RunningServers`) |
-| `src/MakinoMCP.Launcher` | net48 WinExe, also named `MakinoMCP.exe`, the file users run from a share: reads `current.txt`, runs the local copy in `%LOCALAPPDATA%\MakinoMCP\app\<v>\`; setup mode copies first behind `CopyProgressForm`; serve mode on a fresh PC runs the share copy and prefetches in a detached process (`CreateProcessW`, no inherited handles); `VersionCopier` is the one copy routine |
+| `src/MakinoMCP.Launcher` | net48 WinExe, also named `MakinoMCP.exe`, the file users run from a share: reads `current.txt`, runs the local copy in `%LOCALAPPDATA%\MakinoMCP\app\<build>\` and removes older local builds nothing runs from; setup mode copies first behind `CopyProgressForm`; serve mode on a fresh PC runs the share copy and prefetches in a detached process (`CreateProcessW`, no inherited handles); `VersionCopier` is the one copy routine |
 | `tests/MakinoMCP.Tests` | xUnit (SkippableFact for live, junction and symlink tests); `StdioSpikeTests` drive a real launcher layout through an MCP client |
 | `scripts/check-private.ps1` | fails on private names (patterns from `-Patterns` or env `PRIVATE_PATTERNS`); never prints the patterns |
 | `site/` | the GitHub Pages docs page (single self-contained HTML) |
 | `.github/workflows` | `ci.yml` (build, test, private check), `release.yml` (on `v*` tags: zip + SHA-256 + provenance attestation), `pages.yml` |
 
 Published layout (what a share or the release zip holds): `MakinoMCP.exe` (launcher) + `.config`, `current.txt`,
-`versions\<v>\MakinoMCP.exe` (self-contained, single file, compressed), `MakinoMCP.settings.example.json`, README,
-LICENSE, and the user's own `MakinoMCP.settings.json` (never shipped, never overwritten).
+`MakinoMCP.settings.example.json`, `versions\<build>\` (`MakinoMCP.exe` self-contained, single file, compressed;
+`build.txt`, `version.txt`, `LICENSE`), and the user's own `MakinoMCP.settings.json` (never shipped, never
+overwritten). A build is `<Version>-<yyyyMMdd-HHmm>`, new on every publish. On a share, `versions\old-launchers\` holds
+launchers replaced while sessions ran them; the zip adds README.md and LICENSE at its top.
 
 ## Everyday commands
 
@@ -87,19 +89,21 @@ dotnet test MakinoMCP.slnx -c Release                         # run this too bef
 $env:MAKINOMCP_LIVE_SETTINGS = '<path to a settings file>'; dotnet test MakinoMCP.slnx --filter "FullyQualifiedName~Live"
 .\scripts\check-private.ps1 -Patterns "<one regex per line>"  # before every push
 .\publish.ps1 -Zip                                            # build artifacts\layout and artifacts\MakinoMCP-<v>-win-x64.zip
-.\publish.ps1 -Target \\server\Tools\MakinoMCP                # mirror to a share; refuses a version already there
+.\publish.ps1 -Target \\server\Tools\MakinoMCP                # publish a new build to a share
 ```
 
 ## Releasing
 
-1. Raise `<Version>` in `src/MakinoMCP/MakinoMCP.csproj`. `publish.ps1 -Target` refuses to overwrite a version folder
-   that already exists (`-Overwrite` only for a version no PC has used yet), because PCs that already copied a version
-   never re-copy it.
+1. Raise `<Version>` in `src/MakinoMCP/MakinoMCP.csproj` for a release. A share publish between releases needs no bump:
+   every publish is a new build folder (`<Version>-<yyyyMMdd-HHmm>`), and PCs copy each build once by its name.
 2. Commit, push, and wait for CI (`main` requires the `build` check; the owner can bypass).
 3. `git tag v<version>` and `git push origin v<version>`: the Release workflow builds and attaches the zip.
-4. Publish to a share with `publish.ps1 -Target`: it writes the new `versions\<v>`, replaces the launcher only if its
-   hash changed (renaming the old one to `.old-<stamp>`, since running sessions hold it open), and writes
-   `current.txt` last.
+4. Publish to a share with `publish.ps1 -Target` (the same layout as Engineering Tracker's share). It refuses a target
+   holding files it didn't put there (`-AllowOtherFiles`) and a checkout missing the commit the share runs, from its
+   `build.txt` (`-AllowBehindShare` for a rollback). It writes `versions\<build>`, replaces the launcher only if its
+   hash changed (moving a running one to `versions\old-launchers`, deleted by a later publish once no session holds
+   it open), writes `current.txt` last, and keeps the newest three builds. The launcher removes a PC's older copies
+   that nothing runs from. Roll back by writing an older build name into `current.txt`.
 
 ## Open items
 

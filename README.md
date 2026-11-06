@@ -43,11 +43,21 @@ A login that can only read is recommended: then the database enforces the promis
 Windows SmartScreen may warn that the program is from an unknown publisher: it is not code-signed. Choose **More info**,
 then **Run anyway** only if you downloaded it from the release above.
 
-`MakinoMCP.exe` is a small launcher. `current.txt` names the current version in the `versions` folder; the launcher copies
-that version once to `%LOCALAPPDATA%\MakinoMCP\app\<version>` and from then on runs the PC's own copy (on the very first
+`MakinoMCP.exe` is a small launcher. `current.txt` names the current build in the `versions` folder; the launcher copies
+that build once to `%LOCALAPPDATA%\MakinoMCP\app\<build>` and from then on runs the PC's own copy (on the very first
 start it runs straight from the share while the copy is made in the background). Because PCs run their own copies, a new
-version can be put on the share while people are connected (see [Updating](#updating)). If the share is unreachable it
+build can be put on the share while people are connected (see [Updating](#updating)). If the share is unreachable it
 runs the newest copy already on the PC. Settings are saved in `MakinoMCP.settings.json` beside the launcher.
+
+The share holds:
+
+| | |
+|---|---|
+| `MakinoMCP.exe`, `MakinoMCP.exe.config` | the launcher: Claude starts it; open it yourself for setup |
+| `MakinoMCP.settings.json` | your cell login and shared folders, written by the setup window |
+| `MakinoMCP.settings.example.json` | an example settings file |
+| `current.txt` | the build the launcher starts |
+| `versions\<build>\` | the app (`MakinoMCP.exe`), `build.txt` (where and when it was built), `version.txt`, `LICENSE` |
 
 ## Connect Claude
 
@@ -77,19 +87,19 @@ The Cowork route is not yet tested. If Cowork doesn't list the MakinoMCP tools a
 
 1. Put the new version on the share, either way:
    - From a source checkout: `.\publish.ps1 -Target \\server\Tools\MakinoMCP`.
-   - From a release zip: copy its `versions\<version>` folder into the share's `versions` folder, then `MakinoMCP.exe`
+   - From a release zip: copy its `versions\<build>` folder into the share's `versions` folder, then `MakinoMCP.exe`
      and `MakinoMCP.exe.config` if they changed, and `current.txt` last. Keep the share's `MakinoMCP.settings.json`.
-     Windows won't overwrite a launcher that is running but does let you rename it, so rename the old `MakinoMCP.exe`
-     aside first (for example to `MakinoMCP.exe.old`).
-2. Open `MakinoMCP.exe` once on each PC. The first time, it copies the new version to the PC (about a minute on a slow
-   network). After that Claude connects in a second.
+     Windows won't overwrite a launcher that is running but does let you move it, so move the old `MakinoMCP.exe`
+     aside first (for example to `versions\old-launchers\MakinoMCP.exe.<date>`).
+2. Open `MakinoMCP.exe` once on each PC. The first time, it copies the new build to the PC (about a minute on a slow
+   network) and removes the PC's older copies. After that Claude connects in a second.
 
-Claude sessions already running keep using their version until they are restarted.
+Claude sessions already running keep using their build until they are restarted.
 
-Every update needs a new version number: a PC that already has a version never copies it again. `publish.ps1` therefore
-refuses a version that is already on the share. `-Overwrite` replaces it anyway, and is only for a version no PC has used
-yet. `publish.ps1` replaces the launcher only when it changed, renaming the old one to `MakinoMCP.exe.old-<time>`. Old
-`versions\*` folders and `.old-*` files can be deleted once no PC uses them.
+Every publish is a new build, named `<version>-<date>-<time>` (for example `0.2.0-20261106-0930`), and each PC copies
+each build once. `publish.ps1` replaces the launcher only when it changed: one that running sessions still hold open is
+moved into `versions\old-launchers` and deleted by a later publish once nothing uses it. It keeps the newest three
+builds on the share. To roll back, write an older build's folder name (see `versions`) into `current.txt`.
 
 ## What to ask Claude
 
@@ -172,8 +182,7 @@ dotnet test MakinoMCP.slnx
 ```
 
 The layout is written to `artifacts\layout`. `.\publish.ps1 -Target \\server\Tools\MakinoMCP` puts it on a share without
-touching the settings file already there; raise `<Version>` in `src\MakinoMCP\MakinoMCP.csproj` first (see
-[Updating](#updating)).
+touching the settings file already there, as a new build (see [Updating](#updating)).
 
 ## Licence
 

@@ -68,6 +68,30 @@ namespace MakinoMCP.Launcher
             catch { }
         }
 
+        // Deletes the other builds copied to this PC, keeping `keep` and every folder inUse says a running MakinoMCP
+        // uses (Windows 11 lets a running exe be deleted, so a failed delete is no guard). Temp folders are left to
+        // CleanStale. Never throws: a folder that can't be deleted now is tried again on the next start.
+        internal static void RemoveOtherVersions(string local, string keep, Func<string, bool> inUse)
+        {
+            try
+            {
+                if (!Directory.Exists(local)) return;
+                foreach (string d in Directory.GetDirectories(local))
+                {
+                    string name = Path.GetFileName(d);
+                    if (string.Equals(name, keep, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (name.IndexOf(".tmp", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                    if (inUse(d)) continue;
+                    // Renamed first, so an interrupted delete never leaves a build folder without its exe; CleanStale
+                    // removes a leftover .tmp folder later.
+                    string doomed = d + ".tmp-del-" + Guid.NewGuid().ToString("N");
+                    try { Directory.Move(d, doomed); } catch { continue; }
+                    TryDelete(doomed);
+                }
+            }
+            catch { }
+        }
+
         private static void TryDelete(string dir)
         {
             try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }

@@ -1,29 +1,69 @@
 <#
 .SYNOPSIS
-  Builds MakinoMCP into artifacts\layout (the folder you share), optionally mirrors it to a target and zips it.
+  Builds MakinoMCP into artifacts\layout and, with -Target, publishes it to a share. -Zip also writes the release zip.
+
+.DESCRIPTION
+  Every publish is a new build, <Version>-<yyyyMMdd-HHmm> (e.g. 0.2.0-20261106-0930), so it reaches every PC without
+  raising <Version>: a PC copies each build once, by its folder name. Raise <Version> for a release (the GitHub tag and
+  the zip name carry it).
+
+  Share layout (-Target):
+    MakinoMCP.exe, MakinoMCP.exe.config   the launcher: Claude starts it with "serve"; opened without arguments it is
+                                          the setup window
+    MakinoMCP.settings.json               the cell login and shared folders, written by the setup window (never
+                                          shipped, never overwritten)
+    MakinoMCP.settings.example.json       this build's example, replaced every publish
+    current.txt                           the build the launcher starts
+    versions\<build>\                     MakinoMCP.exe (self-contained, single file), build.txt, version.txt, LICENSE
+    versions\old-launchers\               launchers replaced while Claude sessions still ran them; each publish deletes
+                                          the ones no session holds open any more
+
+  current.txt is switched to the new build last, so a Claude session starting during a publish still gets the previous,
+  complete build. All but the newest three builds are then removed from the share, in the background. The launcher
+  copies each build to %LOCALAPPDATA%\MakinoMCP\app\<build> and runs it there (the first session after a publish runs
+  the share copy while the PC copies it), and removes the PC's older copies.
+
+  Roll back: write an older build's folder name (see versions\) into current.txt.
+
 .PARAMETER Target
-  A folder (for example a network share) to mirror the layout into. An existing MakinoMCP.settings.json there is never touched
-  and older versions\* folders are left alone. A version already in versions\ there is refused (PCs that have used it keep
-  their local copy and would never see the change): raise <Version> instead. The launcher (MakinoMCP.exe and its .config)
-  is replaced only when it changed, after renaming the running one aside. current.txt is written last.
+  The share folder, e.g. \\server\Tools\MakinoMCP. Without it the app is only built into artifacts\layout.
 .PARAMETER Version
   Defaults to <Version> in src\MakinoMCP\MakinoMCP.csproj.
-.PARAMETER Overwrite
-  With -Target: replace versions\<version> even though it is already there. Only for a version no PC has used yet.
 .PARAMETER Zip
-  Also write artifacts\MakinoMCP-<version>-win-x64.zip and its .sha256.
+  Also write artifacts\MakinoMCP-<version>-win-x64.zip (the layout plus README.md and LICENSE) and its .sha256.
+.PARAMETER AllowOtherFiles
+  Publish even though the target holds files this app did not put there.
+.PARAMETER AllowBehindShare
+  Publish even though this checkout does not contain the commit of the build the share runs now (its build.txt).
+  Without it that publish stops, since it would remove whatever that build added; use it for a deliberate rollback.
 #>
-param([string]$Target, [string]$Version, [switch]$Overwrite, [switch]$Zip)
+param([string]$Target, [string]$Version, [switch]$Zip, [switch]$AllowOtherFiles, [switch]$AllowBehindShare)
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $main = Join-Path $root 'src\MakinoMCP\MakinoMCP.csproj'
 $launcher = Join-Path $root 'src\MakinoMCP.Launcher\MakinoMCP.Launcher.csproj'
+$launcherFiles = 'MakinoMCP.exe', 'MakinoMCP.exe.config'
 
 function Run([string]$what, [scriptblock]$cmd) {
     & $cmd
     if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)" }
 }
+
+function Get-Git([string[]]$arguments) {
+    # Output is kept, and a copy without git history must still publish.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { return (& git -C $root @arguments 2>$null | Out-String).Trim() } catch { return '' } finally { $ErrorActionPreference = $previous }
+}
+
+# True when nobody has the file open: no Claude session runs this launcher any more (a running exe holds its file open
+# on the file server, so an exclusive open fails).
+function Test-Unused([string]$path) {
+    try { ([IO.File]::Open($path, 'Open', 'Read', 'None')).Close(); return $true } catch { return $false }
+}
+
+# ── Version ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 if (-not $Version) {
     $Version = ([xml](Get-Content -LiteralPath $main -Raw)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
@@ -31,95 +71,191 @@ if (-not $Version) {
 }
 $Version = $Version.Trim()
 if ($Version -notmatch '^[0-9A-Za-z][0-9A-Za-z.+-]*$') { throw "Bad version '$Version'." }
+$build = "$Version-$(Get-Date -Format 'yyyyMMdd-HHmm')"
+$commit = Get-Git @('rev-parse', '--short', 'HEAD')
+if (-not $commit) { $commit = 'unknown' }
+$dirty = [bool](Get-Git @('status', '--porcelain'))
+Write-Host "MakinoMCP $build (commit $commit$(if ($dirty) { ', with uncommitted changes' }))"
+if ($dirty) { Write-Warning 'The working tree has uncommitted changes; they are included in this build.' }
 
-$artifacts = Join-Path $root 'artifacts'
-$layout = Join-Path $artifacts 'layout'
-$versionDir = Join-Path $layout "versions\$Version"
+# ── Before any work: the target ───────────────────────────────────────────────────────────────────────────────────
 
-# Checked before building, and before anything at -Target changes. A PC that has already copied a version never copies it
-# again, so re-publishing the same version would not reach it.
-if ($Target -and -not $Overwrite -and (Test-Path -LiteralPath (Join-Path $Target "versions\$Version"))) {
-    throw ("Version $Version is already at $(Join-Path $Target "versions\$Version"). Nothing was copied. PCs that have " +
-        "used it keep their own copy and would not see a change: raise <Version> in src\MakinoMCP\MakinoMCP.csproj and " +
-        "publish again. Use -Overwrite only for a version no PC has used yet.")
+if ($Target) {
+    $Target = $Target.TrimEnd('\')
+    if (Test-Path -LiteralPath $Target) {
+        # README.md, LICENSE and *.old-* at the top are what earlier publishes left there; this one tidies them away.
+        $ours = $launcherFiles + @('MakinoMCP.settings.json', 'MakinoMCP.settings.example.json', 'current.txt', 'current.txt.tmp',
+            'versions', 'README.md', 'LICENSE')
+        $other = @(Get-ChildItem -LiteralPath $Target -Force | Where-Object { $ours -notcontains $_.Name -and $_.Name -notlike '*.old-*' -and $_.Name -notlike '*.old' })
+        if ($other.Count -gt 0 -and -not $AllowOtherFiles) {
+            $list = ($other | Select-Object -First 10 | ForEach-Object { "  $($_.Name)" }) -join "`n"
+            throw "$Target holds files this app did not put there:`n$list`nPublish to an empty folder, or add -AllowOtherFiles if they belong there."
+        }
+    }
+
+    $currentFile = Join-Path $Target 'current.txt'
+    $live = if (Test-Path -LiteralPath $currentFile) { "$(Get-Content -LiteralPath $currentFile -TotalCount 1)".Trim() } else { '' }
+    if ($live -eq $build) { throw "The share already runs $build (published this minute). Wait a minute and publish again." }
+
+    # The build people run now must be part of this one, or publishing would remove what it added.
+    $liveInfo = if ($live) { Join-Path $Target "versions\$live\build.txt" } else { '' }
+    if ($commit -ne 'unknown' -and $liveInfo -and (Test-Path -LiteralPath $liveInfo)) {
+        $info = @{}
+        foreach ($line in Get-Content -LiteralPath $liveInfo) { $k, $v = $line -split '=', 2; if ($null -ne $v) { $info[$k] = $v } }
+        $liveCommit = "$($info['commit'])".Trim()
+        if ($liveCommit -and $liveCommit -ne 'unknown') {
+            $previous = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try { & git -C $root merge-base --is-ancestor $liveCommit HEAD 2>$null; $code = $LASTEXITCODE } finally { $ErrorActionPreference = $previous }
+            if ($code -eq 1) {
+                $why = "The share runs $live from commit $liveCommit, which this checkout (commit $commit) does not contain: publishing would remove what it added."
+                if (-not $AllowBehindShare) { throw "$why Merge it in, or add -AllowBehindShare to publish anyway (a rollback)." }
+                Write-Warning $why
+            } elseif ($code -ne 0) {
+                Write-Warning "Could not check that this checkout contains the share's build $live (commit $liveCommit is not in this repository)."
+            }
+        }
+    }
 }
+
+# ── Tests and build ───────────────────────────────────────────────────────────────────────────────────────────────
 
 Run 'tests' { dotnet test (Join-Path $root 'MakinoMCP.slnx') -c Release --nologo }
 
+$artifacts = Join-Path $root 'artifacts'
+$layout = Join-Path $artifacts 'layout'
+$buildDir = Join-Path $layout "versions\$build"
 if (Test-Path -LiteralPath $layout) { Remove-Item -LiteralPath $layout -Recurse -Force }
-New-Item -ItemType Directory -Path $versionDir -Force | Out-Null
+New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
 
 Run 'main publish' {
     dotnet publish $main -c Release -r win-x64 --self-contained -p:PublishSingleFile=true `
-        -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:Version=$Version -o $versionDir --nologo
+        -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:Version=$Version `
+        "-p:InformationalVersion=$build" -p:IncludeSourceRevisionInInformationalVersion=false -o $buildDir --nologo
 }
 Run 'launcher publish' { dotnet publish $launcher -c Release -o $layout --nologo }
 
 Get-ChildItem -LiteralPath $layout -File -Filter '*.pdb' | Remove-Item -Force
-Get-ChildItem -LiteralPath $versionDir -File -Filter '*.pdb' | Remove-Item -Force
+Get-ChildItem -LiteralPath $buildDir -File -Filter '*.pdb' | Remove-Item -Force
+Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination $buildDir
 Copy-Item -LiteralPath (Join-Path $root 'MakinoMCP.settings.example.json') -Destination $layout
-Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination $layout
-Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination $layout
-# current.txt last: a launcher that sees it finds the version folder complete.
-[System.IO.File]::WriteAllText((Join-Path $layout 'current.txt'), $Version)
-Write-Host "Layout ready: $layout (version $Version)"
+[IO.File]::WriteAllText((Join-Path $buildDir 'version.txt'), $build)
+[IO.File]::WriteAllLines((Join-Path $buildDir 'build.txt'), [string[]]@(
+    "build=$build", "commit=$commit", "uncommittedChanges=$dirty", "publishedBy=$env:USERDOMAIN\$env:USERNAME",
+    "machine=$env:COMPUTERNAME", "at=$(Get-Date -Format s)"))
+# current.txt last: a launcher that sees it finds the build folder complete.
+[IO.File]::WriteAllText((Join-Path $layout 'current.txt'), $build)
+foreach ($required in "MakinoMCP.exe", "MakinoMCP.exe.config", "versions\$build\MakinoMCP.exe") {
+    if (-not (Test-Path -LiteralPath (Join-Path $layout $required))) { throw "The layout has no $required" }
+}
+Write-Host "Layout ready: $layout (build $build)"
+
+# ── Share ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 if ($Target) {
-    $targetVersion = Join-Path $Target "versions\$Version"
-    New-Item -ItemType Directory -Path $targetVersion -Force | Out-Null
-    # 1. This version, complete, in its own folder; other versions are never touched.
-    Copy-Item -Path (Join-Path $versionDir '*') -Destination $targetVersion -Recurse -Force
+    $versions = Join-Path $Target 'versions'
+    $oldLaunchers = Join-Path $versions 'old-launchers'
+    $targetBuild = Join-Path $versions $build
 
-    # 2. The launcher runs for a whole Claude session on every PC, so it can't be overwritten while anyone is connected.
-    #    Copy it only when it changed, after renaming the old one aside (Windows allows renaming a running exe).
-    $launcherFiles = 'MakinoMCP.exe', 'MakinoMCP.exe.config'
+    # 1. This build, complete, in its own folder. A folder left by a failed publish in this same minute starts afresh.
+    if (Test-Path -LiteralPath $targetBuild) { Remove-Item -LiteralPath $targetBuild -Recurse -Force }
+    New-Item -ItemType Directory -Path $targetBuild -Force | Out-Null
+    Copy-Item -Path (Join-Path $buildDir '*') -Destination $targetBuild -Recurse -Force
+    foreach ($f in Get-ChildItem -LiteralPath $buildDir -File) {
+        $copy = Get-Item -LiteralPath (Join-Path $targetBuild $f.Name) -ErrorAction SilentlyContinue
+        if (-not $copy -or $copy.Length -ne $f.Length) {
+            throw "The copy on the share is incomplete ($($f.Name)). current.txt still names $live."
+        }
+    }
+
+    # 2. The launcher runs for a whole Claude session, so it can't be overwritten while anyone is connected. Replace
+    #    it only when it changed; one still in use is moved into versions\old-launchers (Windows allows moving a
+    #    running exe), one nobody uses is deleted.
+    New-Item -ItemType Directory -Path $oldLaunchers -Force | Out-Null
     $stamp = Get-Date -Format 'yyyyMMddHHmmss'
     foreach ($name in $launcherFiles) {
         $new = Join-Path $layout $name
         $old = Join-Path $Target $name
-        if (-not (Test-Path -LiteralPath $new)) { continue }
-        $aside = $null
         if (Test-Path -LiteralPath $old) {
             if ((Get-FileHash -LiteralPath $new -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $old -Algorithm SHA256).Hash) {
                 Write-Host "$name unchanged, left in place."
                 continue
             }
-            try { Rename-Item -LiteralPath $old -NewName "$name.old-$stamp" }
+            $aside = Join-Path $oldLaunchers "$name.$stamp"
+            try { Move-Item -LiteralPath $old -Destination $aside }
             catch {
-                throw ("$old is in use and could not be renamed aside ($($_.Exception.Message)). versions\$Version was " +
-                    "copied but NOT activated: current.txt still names the previous version. Try again when it is free; " +
-                    "no PC has used $Version yet, so add -Overwrite.")
+                throw ("$old could not be moved aside ($($_.Exception.Message)). versions\$build was copied but NOT " +
+                    "activated: current.txt still names $live. Try again in a minute.")
             }
-            $aside = Join-Path $Target "$name.old-$stamp"
-            Write-Host "Old $name renamed to $name.old-$stamp (delete it once no one is using it)."
-        }
-        try { Copy-Item -LiteralPath $new -Destination $old }
-        catch {
-            # Never leave the share without a launcher: put the old one back.
-            if ($aside) { Rename-Item -LiteralPath $aside -NewName $name }
-            throw ("Could not copy the new $name to $Target ($($_.Exception.Message)). versions\$Version was copied but " +
-                "NOT activated: current.txt still names the previous version.")
+            try { Copy-Item -LiteralPath $new -Destination $old }
+            catch {
+                # Never leave the share without a launcher: put the old one back.
+                Move-Item -LiteralPath $aside -Destination $old
+                throw ("Could not copy the new $name to $Target ($($_.Exception.Message)). versions\$build was copied " +
+                    "but NOT activated: current.txt still names $live.")
+            }
+            Write-Host "$name replaced (the old one is in versions\old-launchers until no session uses it)."
+        } else {
+            Copy-Item -LiteralPath $new -Destination $old
         }
     }
 
-    # 3. Everything else beside the launcher, never the settings file.
-    Get-ChildItem -LiteralPath $layout -File |
-        Where-Object { $_.Name -notin (@('current.txt', 'MakinoMCP.settings.json') + $launcherFiles) } |
-        ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $Target -Force }
+    # 3. The example settings beside the launcher; the share's own MakinoMCP.settings.json is never touched.
+    Copy-Item -LiteralPath (Join-Path $layout 'MakinoMCP.settings.example.json') -Destination $Target -Force
 
-    # 4. current.txt last, swapped in whole: a launcher that reads it finds the version folder complete.
+    # 4. current.txt last, swapped in whole: a launcher that reads it finds the build folder complete.
     $currentTmp = Join-Path $Target 'current.txt.tmp'
-    [System.IO.File]::WriteAllText($currentTmp, $Version)
+    [IO.File]::WriteAllText($currentTmp, $build)
     Move-Item -LiteralPath $currentTmp -Destination (Join-Path $Target 'current.txt') -Force
-    Write-Host "Published $Version to $Target (settings file untouched)."
+    Write-Host "Published $build to $Target (settings file untouched)."
+
+    # 5. Tidy up. Launchers set aside earlier (in old-launchers, or *.old-* at the top from publishes before this
+    #    layout): deleted when no session holds them open, otherwise moved into old-launchers for a later publish.
+    #    README.md and LICENSE at the top came from those publishes too (LICENSE now ships in each build).
+    $setAside = @(Get-ChildItem -LiteralPath $oldLaunchers -File) +
+        @(Get-ChildItem -LiteralPath $Target -File | Where-Object { $_.Name -like 'MakinoMCP.exe*.old-*' -or $_.Name -like 'MakinoMCP.exe*.old' })
+    foreach ($f in $setAside) {
+        if (Test-Unused $f.FullName) { Remove-Item -LiteralPath $f.FullName -Force; Write-Host "Deleted old launcher $($f.Name)" }
+        elseif ($f.DirectoryName -ne $oldLaunchers) {
+            try { Move-Item -LiteralPath $f.FullName -Destination (Join-Path $oldLaunchers "$($f.Name).$stamp") } catch { Write-Warning "Could not move $($f.Name): $($_.Exception.Message)" }
+        }
+    }
+    foreach ($name in 'README.md', 'LICENSE') { Remove-Item -LiteralPath (Join-Path $Target $name) -Force -ErrorAction SilentlyContinue }
+
+    # Keep the newest three builds on the share, and always the one that was live until now (a rollback target). A
+    # PC's first session after a publish runs the build straight from the share, so a build whose exe is still open is
+    # kept for a later publish. Deleting over the network can take a while, so it goes on after the publish ends, in a
+    # hidden window; a build left half-deleted is deleted again by the next publish.
+    Get-ChildItem -LiteralPath $versions -Directory |
+        Where-Object { $_.Name -ne $build -and $_.Name -ne $live -and $_.Name -ne 'old-launchers' } |
+        Sort-Object CreationTimeUtc -Descending |
+        Select-Object -Skip 1 |
+        Where-Object {
+            $exe = Join-Path $_.FullName 'MakinoMCP.exe'
+            if ((Test-Path -LiteralPath $exe) -and -not (Test-Unused $exe)) { Write-Host "Keeping old build $($_.Name): a session still runs it"; $false } else { $true }
+        } |
+        ForEach-Object {
+            Start-Process -FilePath 'cmd.exe' -ArgumentList "/d /c rmdir /s /q `"$($_.FullName)`"" -WindowStyle Hidden `
+                -WorkingDirectory ([IO.Path]::GetTempPath())
+            Write-Host "Removing old build $($_.Name) in the background"
+        }
 }
+
+# ── Release zip ───────────────────────────────────────────────────────────────────────────────────────────────────
 
 if ($Zip) {
     $zipPath = Join-Path $artifacts "MakinoMCP-$Version-win-x64.zip"
     if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    [System.IO.Compression.ZipFile]::CreateFromDirectory($layout, $zipPath, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+    [IO.Compression.ZipFile]::CreateFromDirectory($layout, $zipPath, [IO.Compression.CompressionLevel]::Optimal, $false)
+    # Someone unpacking the zip gets the instructions and licence at the top.
+    $archive = [IO.Compression.ZipFile]::Open($zipPath, [IO.Compression.ZipArchiveMode]::Update)
+    try {
+        foreach ($name in 'README.md', 'LICENSE') {
+            [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, (Join-Path $root $name), $name)
+        }
+    } finally { $archive.Dispose() }
     $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    [System.IO.File]::WriteAllText("$zipPath.sha256", "$hash  $(Split-Path $zipPath -Leaf)`n")
+    [IO.File]::WriteAllText("$zipPath.sha256", "$hash  $(Split-Path $zipPath -Leaf)`n")
     Write-Host "Zip: $zipPath"
 }

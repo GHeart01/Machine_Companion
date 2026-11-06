@@ -123,7 +123,27 @@ namespace MakinoMCP.Launcher
                 string version = File.ReadAllText(currentTxt).Trim();
                 if (!IsValidVersion(version)) throw new InvalidDataException("current.txt does not hold a valid version");
                 string target = Path.Combine(local, version);
-                if (Directory.Exists(target)) return Path.Combine(target, "MakinoMCP.exe");
+                if (Directory.Exists(target) && !File.Exists(Path.Combine(target, "MakinoMCP.exe")))
+                {
+                    // A copy cut short by an interrupted delete: drop it, so this start copies the build again.
+                    try { Directory.Delete(target, true); } catch { }
+                }
+                if (File.Exists(Path.Combine(target, "MakinoMCP.exe")))
+                {
+                    // Every publish is a new build folder, so older copies pile up: remove those no MakinoMCP runs from.
+                    // In the background (the launcher lives for the whole session), silent like everything before Run.
+                    // Matched by build name under an app\ folder, so a short (8.3) LOCALAPPDATA path can't hide one.
+                    Task.Run(() =>
+                    {
+                        var running = RunningFolders()
+                            .Where(f => string.Equals(Path.GetFileName(Path.GetDirectoryName(f)), "app", StringComparison.OrdinalIgnoreCase))
+                            .Select(Path.GetFileName)
+                            .ToList();
+                        VersionCopier.RemoveOtherVersions(local, version,
+                            d => running.Contains(Path.GetFileName(d), StringComparer.OrdinalIgnoreCase));
+                    });
+                    return Path.Combine(target, "MakinoMCP.exe");
+                }
 
                 // First start on this PC: the copy is far slower than a client's connect timeout, so serve this
                 // session straight from the share and copy in a detached background process for the next start.
@@ -164,6 +184,40 @@ namespace MakinoMCP.Launcher
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool CloseHandle(IntPtr handle);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr OpenProcess(int access, bool inheritHandle, int processId);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool QueryFullProcessImageNameW(IntPtr process, int flags, StringBuilder name, ref int size);
+
+        private const int ProcessQueryLimitedInformation = 0x1000;
+
+        // The folders every running MakinoMCP.exe on this PC was started from (any user, any bitness: this asks Windows
+        // for the image path instead of reading the process's modules). A process that can't be asked is skipped.
+        private static System.Collections.Generic.HashSet<string> RunningFolders()
+        {
+            var folders = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (Process p in Process.GetProcessesByName("MakinoMCP"))
+            {
+                try
+                {
+                    IntPtr h = OpenProcess(ProcessQueryLimitedInformation, false, p.Id);
+                    if (h == IntPtr.Zero) continue;
+                    try
+                    {
+                        var name = new StringBuilder(1024);
+                        int size = name.Capacity;
+                        if (QueryFullProcessImageNameW(h, 0, name, ref size))
+                            folders.Add(Path.GetDirectoryName(name.ToString()).TrimEnd('\\'));
+                    }
+                    finally { CloseHandle(h); }
+                }
+                catch { }
+                finally { p.Dispose(); }
+            }
+            return folders;
+        }
 
         private const int CreateNoWindow = 0x08000000;
 
