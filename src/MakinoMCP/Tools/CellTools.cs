@@ -5,7 +5,7 @@ namespace MakinoMCP.Tools;
 
 /// <summary>The cell database tools: thin, the reader does the SQL and the words, ToolContext the rest.</summary>
 [McpServerToolType]
-public static class CellTools
+public static partial class CellTools
 {
     private const string DeviceParam =
         "Only this device, by its name as get_cell_overview shows it (e.g. a machine or vehicle). Leave empty for every device.";
