@@ -36,6 +36,38 @@ public sealed record CellOverview(DateTime ServerTime, IReadOnlyList<DeviceState
     /// <summary>Cell-level sections this cell or login can't show (duty, power-off, recovery policy).</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? NotAvailable { get; init; }
+
+    // 0.6: software version, retention, scheduling rules, NC download and the cell's file locations.
+
+    /// <summary>The cell database's software version (SystemConfig.DBVersion), as stored.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SoftwareVersion { get; init; }
+
+    /// <summary>How many months the cell keeps tool data changes (presetter results) and tool moves; the purge's own
+    /// fallback (12 and 3) with *Assumed when the cell has no setting. Purges run as rows are added, so these are
+    /// minimums.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? PresetHistoryMonths { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? PresetHistoryMonthsAssumed { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ToolMoveHistoryMonths { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? ToolMoveHistoryMonthsAssumed { get; init; }
+
+    /// <summary>How the cell orders waiting transports.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SchedulingRules? SchedulingRules { get; init; }
+
+    /// <summary>When the cell downloads NC programs to the machines.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? NcProgramDownload { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CellFiles? CellFiles { get; init; }
 }
 
 /// <summary>A scheduled auto power-off: its state, and the start and release times as the cell stores them.</summary>
@@ -135,6 +167,31 @@ public sealed record DeviceState(
     /// <summary>Machines, when the cell sets the recovery policy per device: as CellOverview.RecoveryPolicy.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyDictionary<string, string>? RecoveryPolicy { get; init; }
+
+    // 0.6: system mode, transport cancel, waits, NC memory, inspection countdown.
+
+    /// <summary>Machines: system (the cell runs it) or standalone; left out while disconnected.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SystemMode { get; init; }
+
+    /// <summary>True when transport to the device is cancelled at the console (only on cells that use transport
+    /// cancel; a closed device shows open: false instead).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? TransportCancelled { get; init; }
+
+    /// <summary>Machines: what the machine waits for before it can go on (an extra tool pallet).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? WaitingFor { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public NcMemory? NcMemory { get; init; }
+
+    /// <summary>Machines on cells that inspect every N parts per machine: parts until the next CMM or gauge check.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? NextCmmIn { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? NextGageIn { get; init; }
 }
 
 /// <summary>O-numbers as "O1234"; Executing is null when the cell doesn't say. Name: the NC program of the job
@@ -676,21 +733,41 @@ public sealed record AttentionList(
     /// setting); null when the cell doesn't mark fixtures lacking tools or its settings can't be read.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? LackingToolScope { get; init; }
+
+    /// <summary>The tools the lacking-tool fixtures' programs are short of, per program (see MissingToolGroup).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<MissingToolGroup>? MissingTools { get; init; }
+
+    /// <summary>What this cell's settings mean for reading the list (one line each).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? Notes { get; init; }
 }
 
-/// <summary>Fixtures parked by operators (machining suspended or held at the work-set station): how many, how many of
-/// them are also lacking tools, and per place (where their pallets are: a device, or "pallet stocker") and condition.
-/// get_attention with includeParked lists them one by one with the reason typed.</summary>
+/// <summary>Fixtures held back on purpose (machining suspended or held at the work-set station by an operator, their
+/// order's machining suspended, or held by the cell's off-duty rules): how many, how many of them are also lacking
+/// tools, how many hold back a job that is waiting now (Blocking), and per place (where their pallets are: a device, or
+/// "pallet stocker") and condition. get_attention with includeParked lists them one by one with the reason typed.</summary>
 public sealed record ParkedFixtures(int Fixtures, IReadOnlyList<ParkedGroup> Groups)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? LackingTools { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Blocking { get; init; }
 }
 
+/// <summary>Blocking: fixtures whose waiting job the condition holds back now (the rest have the flag set with no work
+/// waiting). WithParts: fixtures on work-set hold that still hold parts (the rest are empty).</summary>
 public sealed record ParkedGroup(string Place, string Condition, int Fixtures)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? LackingTools { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Blocking { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? WithParts { get; init; }
 }
 
 /// <summary>Kind: device, work set, manual transport, fixture, tools or maintenance. What: its conditions, joined.
@@ -717,6 +794,14 @@ public sealed record AttentionItem(string Kind, string What)
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DateTime? Since { get; init; }
+
+    /// <summary>Items that stand for several fixtures (waiting work blocked, a pallet held): how many, and their
+    /// pallets (at most a few listed).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Fixtures { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<int>? Pallets { get; init; }
 }
 
 // 0.5: get_pallet_diagnosis.

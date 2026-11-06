@@ -33,6 +33,7 @@ public sealed partial class SqlMakinoReader
         ("MachineStatus", "DeviceOpen", "open or closed"),
         ("MachineStatus", "StartDateTime", "machining start"),
         ("MachineStatus", "JobID", "running program name"),
+        ("MachineStatus", "SystemMode", "system mode"),
         ("WorkSetStatus", "WSSMode", "station mode"),
         ("WorkSetStatus", "DeviceSkip", "skip"),
         ("WorkSetStatus", "TablePalletID", "table pallet"),
@@ -63,6 +64,7 @@ public sealed partial class SqlMakinoReader
         ("ViewVehicleStatus", "PalletNumber", "buffer pallets"),
         ("ViewVehicleStatus", "DeviceOpen", "open or closed"),
         ("ViewVehicleStatus", "StartDateTime", "transport start"),
+        ("ViewVehicleStatus", "SystemMode", "vehicle mode"),
     ];
 
     private static readonly string[] MachineSpots = ["Table", "Front", "Back"];
@@ -79,6 +81,15 @@ public sealed partial class SqlMakinoReader
         public int? PowerStatus { get; init; }
         public int? PowerOffResult { get; init; }
         public int? MainONumber { get; init; }
+        public bool? SystemMode { get; init; }
+        public bool? TransProhibit { get; init; }
+        public long? FreePage { get; init; }
+        public int? FreeFiles { get; init; }
+        public int? ExtraToolPallet { get; init; }
+        public int? CmmCycle { get; init; }
+        public int? CmmCount { get; init; }
+        public int? GageCycle { get; init; }
+        public int? GageCount { get; init; }
     }
 
     private sealed record VehicleRow(
@@ -89,6 +100,7 @@ public sealed partial class SqlMakinoReader
         public DateTime? Start { get; init; }
         public int? PowerStatus { get; init; }
         public int? PowerOffResult { get; init; }
+        public bool? SystemMode { get; init; }
     }
 
     // DeviceDashStatus busy: a work-set station shows an instruction while busy.
@@ -117,16 +129,26 @@ public sealed partial class SqlMakinoReader
 
         // The cell's settings, read first: one open reader per connection.
         var system = await SystemParametersAsync(s, ct,
-            ["DutyManagement", "RecoverySettingType", "WorkOffsetONumber", .. RecoveryKinds.Select(k => k.Parameter)]);
+            ["DutyManagement", "RecoverySettingType", "WorkOffsetONumber", .. RecoveryKinds.Select(k => k.Parameter),
+                .. OverviewSettings]);
         var perDevice = await DeviceParametersAsync(s, ct,
-            ["DataserverONumber", "WorkOffsetONumber", "DisableOperation", .. RecoveryKinds.Select(k => "Device" + k.Parameter)]);
+            ["DataserverONumber", "WorkOffsetONumber", "DisableOperation", "MaxNCMemorySize", "MaxNCProgramFiles",
+                .. RecoveryKinds.Select(k => "Device" + k.Parameter)]);
         var runtime = await UserSysDataAsync(s, ct,
-            "DutyMode", "DutyManageMode", "PowerOffStatus", "PowerOffStartDateTime", "PowerOffReleaseDateTime");
+            ["DutyMode", "DutyManageMode", "PowerOffStatus", "PowerOffStartDateTime", "PowerOffReleaseDateTime", .. SchedulingNames]);
+        var version = await SoftwareVersionAsync(s, ct);
         var deviceRecovery = ToInt(system?.GetValueOrDefault("RecoverySettingType")) == 1;
         var cellNotAvailable = new List<string>();
-        if (system is null) cellNotAvailable.Add("cell settings (duty, recovery policy)");
+        if (system is null) cellNotAvailable.Add("cell settings (duty, recovery policy, transport cancel, retention, file locations)");
         var duty = DutyFrom(system, runtime);
-        if (system is not null && duty is null) cellNotAvailable.Add("duty mode and power-off state");
+        if (system is not null && duty is null) cellNotAvailable.Add("duty mode, power-off state and scheduling rules");
+        // Transport cancel counts only on cells that use it, as on the console.
+        var transportCancel = ToInt(system?.GetValueOrDefault("TransportCancel")) == 1;
+        var extraToolPallets = ToInt(system?.GetValueOrDefault("ExtraToolPalletTransport")) is > 0;
+        var inspection = ToInt(system?.GetValueOrDefault("InspectionType")) ?? 0;
+        if (transportCancel && !(schema.Has("MachineStatus", "DeviceTransProhibit") && schema.Has("WorkSetStatus", "DeviceTransProhibit")))
+            cellNotAvailable.Add("transport cancelled per device");
+        if ((inspection & ProcessInspectionBits) != 0) cellNotAvailable.Add(ProcessInspectionNotRead);
 
         // The vehicle's status and the history length are sections some cells (or logins) don't have.
         var vehicleSql = VehicleSql(schema);
@@ -206,6 +228,12 @@ public sealed partial class SqlMakinoReader
                         PowerStatus = NonDefault(mt.PowerStatus, Codes.DevicePowerStatus),
                         PowerOffResult = NonDefault(mt.PowerOffResult, Codes.DevicePowerOffResult),
                         RecoveryPolicy = deviceRecovery ? RecoveryPolicyFrom(own, "Device") : null,
+                        SystemMode = mt.SystemMode is { } sm ? Live(mt.Connected, Codes.MachineSystemMode(sm)) : null,
+                        TransportCancelled = TransportCancelledFlag(transportCancel, mt.Open, mt.TransProhibit),
+                        WaitingFor = extraToolPallets && mt.ExtraToolPallet is > 0 ? $"extra tool pallet {mt.ExtraToolPallet}" : null,
+                        NcMemory = mt.Connected == false ? null : NcMemoryFrom(mt.FreePage, mt.FreeFiles, own),
+                        NextCmmIn = Countdown((inspection & MachineCmmBit) != 0, mt.CmmCycle, mt.CmmCount),
+                        NextGageIn = Countdown((inspection & MachineGageBit) != 0, mt.GageCycle, mt.GageCount),
                     };
                 }
             }
@@ -232,6 +260,7 @@ public sealed partial class SqlMakinoReader
                         PowerStatus = NonDefault(wt.PowerStatus, Codes.DevicePowerStatus),
                         PowerOffResult = NonDefault(wt.PowerOffResult, Codes.DevicePowerOffResult),
                         DisabledOperations = DisabledOperationsFrom(own?.GetValueOrDefault("DisableOperation")),
+                        TransportCancelled = TransportCancelledFlag(transportCancel, wt.Open, wt.TransProhibit),
                     };
                 }
             }
@@ -242,7 +271,9 @@ public sealed partial class SqlMakinoReader
                     ? state with
                     {
                         Connected = v.Connected, Emergency = Live(v.Connected, v.Emergency),
-                        Mode = Live(v.Connected, Words(v.Mode, Codes.VehicleMode)),
+                        // Through the vendor view only the system-mode bit tells the mode.
+                        Mode = Live(v.Connected, v.Mode is not null ? Codes.VehicleMode(v.Mode)
+                            : v.SystemMode is { } vsm ? Codes.VehicleSystemMode(vsm) : null),
                         Action = Words(v.Command, Codes.VehicleCommand), Pallets = v.Pallets, NotAvailable = missing,
                         Status = Words(v.Status, Codes.DeviceDashStatus), RecoveryRequest = v.Recovery,
                         TransportFrom = v.From.Length > 0 ? v.From : null, TransportTo = v.To.Length > 0 ? v.To : null,
@@ -255,12 +286,20 @@ public sealed partial class SqlMakinoReader
             }
             devices.Add(state);
         }
+        var (presetMonths, presetAssumed) = KeepMonths(system, "PresetResultKeepMonth", DefaultPresetKeepMonths);
+        var (moveMonths, moveAssumed) = KeepMonths(system, "ToolInOutResultKeepMonth", DefaultToolMoveKeepMonths);
         return new CellOverview(s.Now, devices)
         {
             HistoryDays = historyDays, HistoryDaysAssumed = Assumed(historyAssumed),
             Duty = duty, DutySchedule = duty is null ? null : DutyScheduleFrom(runtime), PowerOff = PowerOffFrom(runtime),
             RecoveryPolicy = deviceRecovery ? null : RecoveryPolicyFrom(system, ""),
             NotAvailable = cellNotAvailable.Count > 0 ? cellNotAvailable : null,
+            SoftwareVersion = version,
+            PresetHistoryMonths = presetMonths, PresetHistoryMonthsAssumed = Assumed(presetAssumed),
+            ToolMoveHistoryMonths = moveMonths, ToolMoveHistoryMonthsAssumed = Assumed(moveAssumed),
+            SchedulingRules = SchedulingRulesFrom(runtime, system),
+            NcProgramDownload = system is null ? null : Codes.NcDownloadType(ToInt(system.GetValueOrDefault("NCProgramAutoDownloadType")) ?? 0),
+            CellFiles = CellFilesFrom(system),
         };
     }
 
@@ -373,11 +412,14 @@ public sealed partial class SqlMakinoReader
         OptionalStatus.Where(o => o.Table == table && !schema.Has(table, o.Column)).Select(o => o.Words).ToList();
 
     /// <summary>What a vehicle can't show: the status table's missing columns; through the vendor view (when the login
-    /// can't read the table) also the mode and buffer status the view leaves out; neither readable, the whole status.</summary>
+    /// can't read the table, as with the stock reporting login) also the buffer status the view leaves out (its mode is
+    /// only system or not); neither readable, the whole status.</summary>
     internal static IReadOnlyList<string> VehicleMissing(SchemaInfo schema)
     {
         if (schema.HasTable("VehicleStatus")) return Missing(schema, "VehicleStatus");
-        if (schema.HasTable("ViewVehicleStatus")) return ["vehicle mode", "buffer status", .. Missing(schema, "ViewVehicleStatus")];
+        // The view (readable on real cells even where the stock scripts don't grant it) tells only whether the
+        // vehicle is in system mode, and no buffer status.
+        if (schema.HasTable("ViewVehicleStatus")) return ["buffer status", .. Missing(schema, "ViewVehicleStatus")];
         return ["vehicle status"];
     }
 
@@ -413,6 +455,15 @@ public sealed partial class SqlMakinoReader
             Opt(schema, table, "s", "PowerOffResult"),
             Opt(schema, table, "s", "SystemMode", type: "bit"),
             Opt(schema, table, "s", "DeviceTransProhibit", type: "bit"),
+            Opt(schema, table, "s", "FreePage", type: "bigint"),
+            Opt(schema, table, "s", "FreeFiles"),
+            Opt(schema, table, "s", "CMMCycle"), Opt(schema, table, "s", "CMMCount"),
+            Opt(schema, table, "s", "GageCycle"), Opt(schema, table, "s", "GageCount"),
+            Opt(schema, table, "s", "HelpRequest"), Opt(schema, table, "s", "OpeTimeout"),
+            Opt(schema, table, "s", "NeedExtraToolPalletID"),
+            PalletNumberOf(schema, table, "NeedExtraToolPalletID", "ExtraToolPalletNumber"),
+            ExtraToolPalletPlaceSql(schema, table),
+            ExtraToolPalletTransportSql(schema, table),
             machine && schema.Has(table, "JobID") && schema.Has("MachineJobs", "JobID") && schema.Has("MachineJobs", "NCProgramFileID")
                     && schema.Has("NCProgramFiles", "NCProgramFileID") && schema.Has("NCProgramFiles", "Name")
                 ? $"(SELECT TOP 1 n.Name FROM MachineJobs mj JOIN NCProgramFiles n ON n.NCProgramFileID = mj.NCProgramFileID WHERE mj.JobID = s.JobID) AS ProgramName"
@@ -442,9 +493,13 @@ public sealed partial class SqlMakinoReader
             var pallets = new List<PalletSpot>();
             foreach (var spot in spots)
             {
-                if (Int(r, spot + "PalletID") is not > 0) continue;
-                pallets.Add(new PalletSpot(spot.ToLowerInvariant(), Int(r, spot + "PalletNumber"),
-                    Codes.DevicePositionStatus(Int(r, spot + "Status"))));
+                var status = Int(r, spot + "Status");
+                if (Int(r, spot + "PalletID") is > 0)
+                    pallets.Add(new PalletSpot(spot.ToLowerInvariant(), Int(r, spot + "PalletNumber"), Codes.DevicePositionStatus(status)));
+                // A position with no pallet but a state (other than one reserved for a pallet on its way) is shown too:
+                // it can be a position status error.
+                else if (EmptyPositionShown(status, Int(r, spot + "ReservedPalletID") is > 0))
+                    pallets.Add(new PalletSpot(spot.ToLowerInvariant(), null, Codes.DevicePositionStatus(status)));
             }
             foreach (var spot in spots)
             {
@@ -462,6 +517,11 @@ public sealed partial class SqlMakinoReader
                 Open = Bool(r, "DeviceOpen"), Start = Date(r, "StartDateTime"), Finish = Date(r, "FinishDateTime"),
                 Command = Int(r, "Command"), PowerStatus = Int(r, "PowerStatus"), PowerOffResult = Int(r, "PowerOffResult"),
                 MainONumber = Int(r, "MainONumber"),
+                SystemMode = Bool(r, "SystemMode"), TransProhibit = Bool(r, "DeviceTransProhibit"),
+                FreePage = Long(r, "FreePage"), FreeFiles = Int(r, "FreeFiles"),
+                ExtraToolPallet = Int(r, "NeedExtraToolPalletID") is > 0 ? Int(r, "ExtraToolPalletNumber") : null,
+                CmmCycle = Int(r, "CMMCycle"), CmmCount = Int(r, "CMMCount"),
+                GageCycle = Int(r, "GageCycle"), GageCount = Int(r, "GageCount"),
             };
         }
         return rows;
@@ -476,8 +536,9 @@ public sealed partial class SqlMakinoReader
     }
 
     /// <summary>The vehicle's state: from VehicleStatus when the login can read it, else from the vendor's
-    /// ViewVehicleStatus (no mode or buffer status; rows carry the device's number and name, not its id); null when
-    /// neither is readable. Both give the same column names.</summary>
+    /// ViewVehicleStatus, the normal path for the stock reporting login (only the system-mode bit for the mode, no
+    /// buffer status; rows carry the device's number and name, not its id); null when neither is readable. Both give
+    /// the same column names.</summary>
     internal static string? VehicleSql(SchemaInfo schema)
     {
         if (schema.HasTable("VehicleStatus"))
@@ -502,7 +563,8 @@ public sealed partial class SqlMakinoReader
                 Opt(schema, t, "v", "DeviceOpen", type: "bit"),
                 Opt(schema, t, "v", "StartDateTime", type: "datetime"),
                 Opt(schema, t, "v", "PowerStatus"),
-                Opt(schema, t, "v", "PowerOffResult"));
+                Opt(schema, t, "v", "PowerOffResult"),
+                Opt(schema, t, "v", "SystemMode", type: "bit"));
             return $"SELECT {cols} FROM VehicleStatus v;";
         }
         if (schema.HasTable("ViewVehicleStatus"))
@@ -525,7 +587,8 @@ public sealed partial class SqlMakinoReader
                 Opt(schema, t, "v", "TotalCycleCount"),
                 Opt(schema, t, "v", "DeviceOpen", type: "bit"),
                 Opt(schema, t, "v", "StartDateTime", type: "datetime"),
-                "CAST(NULL AS int) AS PowerStatus", "CAST(NULL AS int) AS PowerOffResult");
+                "CAST(NULL AS int) AS PowerStatus", "CAST(NULL AS int) AS PowerOffResult",
+                Opt(schema, t, "v", "SystemMode", type: "bit"));
             return $"SELECT {cols} FROM ViewVehicleStatus v;";
         }
         return null;
@@ -551,6 +614,7 @@ public sealed partial class SqlMakinoReader
             {
                 Open = Bool(r, "DeviceOpen"), Start = Date(r, "StartDateTime"),
                 PowerStatus = Int(r, "PowerStatus"), PowerOffResult = Int(r, "PowerOffResult"),
+                SystemMode = Bool(r, "SystemMode"),
             };
         }
         return rows;

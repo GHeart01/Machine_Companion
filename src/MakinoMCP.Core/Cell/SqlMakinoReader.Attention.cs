@@ -29,6 +29,8 @@ public sealed partial class SqlMakinoReader
     private const int ToolAlarm = 4;              // ToolStatus (derived): alarm
     private const int ToolOffsetError = 3;        // ToolStatus: offset error
     private const int NoWorkSetOperation = 0;     // WorkSetStationOperationType: nothing
+    private const int ClampOperation = 1;         // WorkSetStationOperationType: clamp
+    private const int UnclampCancelled = 4;       // WorkSetStationOperationStatus: unclamp cancelled
     private const string ClosedTransports = "4, 5"; // ManualTransportStatus: finished, cancelled
 
     internal sealed record AttentionDevice(string Name, int Type)
@@ -50,6 +52,22 @@ public sealed partial class SqlMakinoReader
         public int? Command { get; init; }
         public string From { get; init; } = "";
         public string To { get; init; } = "";
+        public int Id { get; init; }
+        public bool? SystemMode { get; init; }
+        public bool? TransProhibit { get; init; }
+        public int PmcAlarms { get; init; }
+        public int AllAlarms { get; init; }
+        public int? CncRun { get; init; }
+        public int? HelpRequest { get; init; }
+        public int? OpeTimeout { get; init; }
+        public int? ExtraToolPallet { get; init; }
+        public bool ExtraToolPalletOutside { get; init; }
+        public bool ExtraToolPalletTransport { get; init; }
+        public int? TableStatus { get; init; }
+        public bool TableReserved { get; init; }
+        public bool? ApcDirect { get; init; }
+        public bool VirtualStation { get; init; }
+        public int? ManualTransportSendCommand { get; init; }
     }
 
     internal sealed record AttentionFixture(int? Pallet, int? Fixture)
@@ -66,9 +84,23 @@ public sealed partial class SqlMakinoReader
         public int? Process { get; init; }
     }
 
-    internal sealed record AttentionCommand(string Device, int? Pallet, int? Fixture, int? Operation, int? Status, string? Order, int? Quantity);
+    internal sealed record AttentionCommand(string Device, int? Pallet, int? Fixture, int? Operation, int? Status, string? Order, int? Quantity)
+    {
+        public bool ReMachine { get; init; }
+        public int? ReMachineJob { get; init; }
+        public string? ReMachineProgram { get; init; }
+        public bool InspectionCheck { get; init; }
+        public bool InspectionConfirmed { get; init; }
+        public int? OperatorCallStatus { get; init; }
+    }
 
-    internal sealed record AttentionTransport(int? Pallet, string To, int? Status, DateTime? Since);
+    /// <summary>DestDevice: the destination device's name when it is one device (null for "any work-set station").</summary>
+    internal sealed record AttentionTransport(int? Pallet, string To, int? Status, DateTime? Since)
+    {
+        public int? Type { get; init; }
+        public int? DestType { get; init; }
+        public string? DestDevice { get; init; }
+    }
 
     internal sealed record AttentionTools(string Device, int Alarm, int OffsetError);
 
@@ -92,6 +124,13 @@ public sealed partial class SqlMakinoReader
         /// <summary>True when the cell raises a machine recovery for missing tools (LackingToolsMachineRecovery set,
         /// or tool resource management that only informs).</summary>
         public bool LackingToolRecovery { get; init; }
+
+        /// <summary>The waiting fixtures sorted into blocked work, holds and pallet holds; null when not read.</summary>
+        public WaitingAnalysis? Waiting { get; init; }
+
+        public AttentionSettings Settings { get; init; } = new();
+
+        public IReadOnlyList<MissingToolGroup>? MissingTools { get; init; }
     }
 
     /// <summary>The words for the all-closed roll-up; the database keeps no record of why, so the cause is a guess.</summary>
@@ -132,6 +171,28 @@ public sealed partial class SqlMakinoReader
     private static bool IsParked(AttentionFixture f) =>
         (f.Suspend || f.Hold) && !f.Damaged && !f.PreMcSuspend && f.Reclamp is null or 0;
 
+    // Code values compared against in the device checks (meanings and words are in Codes).
+    private const int PreparationAction = 2;      // MachineAction: preparation
+    private const int CncHold = 2;                // CNCRunStatus: hold
+    private const int OtherOperation = 6;         // WorkSetStationOperationType: other
+    private const int InputOperation = 7;         // WorkSetStationOperationType: input
+    private const int OutputOperation = 8;        // WorkSetStationOperationType: output
+    private const int TransportWaiting = 1;       // ManualTransportStatus: waiting for transport
+    private const int TransportToFinish = 3;      // ManualTransportStatus: waiting to finish
+    private const int ExtraToolPalletTransportType = 6; // ManualTransportType
+    private const int PalletChangeTransportType = 7;    // ManualTransportType
+    private const int ReclampTransportType = 10;        // ManualTransportType
+    private const int WarmUpTransportType = 14;         // ManualTransportType
+    private const int ManualTransAvailWss = 1;          // ManualTransAvailType: work-set station must be closed
+
+    internal const string ProbePartCountNote =
+        "the cell lowers a fixture's part count from its probe at machining (ProbePartCountMacroVariable), so fewer parts " +
+        "to unclamp than were clamped is by design";
+
+    internal const string AllFixtureToolsNote =
+        "the cell machines a pallet only when every fixture on it has its tools (AllFixtureTsReady); pallet holds here " +
+        "are by each fixture's lacking-tools flag, while the cell's own per-machine tool-set check is kept in memory";
+
     /// <summary>The items, most severe first (then newest first where the cell says since when), capped; the counts
     /// and each machine's tool status as context.</summary>
     internal static AttentionList BuildAttention(
@@ -148,6 +209,9 @@ public sealed partial class SqlMakinoReader
             if (n > 0) counts[key] = n;
             else counts.Remove(key);
         }
+        var settings = rows.Settings;
+        var byName = new Dictionary<string, AttentionDevice>(StringComparer.OrdinalIgnoreCase);
+        foreach (var d in rows.Devices) byName.TryAdd(d.Name, d);
 
         var toolStatus = new Dictionary<string, string>();
         // Pallets whose fixtures lack tools: a machine recovery with such a pallet on the table is a lacking-tool recovery.
@@ -155,6 +219,10 @@ public sealed partial class SqlMakinoReader
         // Devices that can be opened and closed; when every one is closed, one roll-up item replaces theirs.
         var openable = rows.Devices.Where(d => d.Open is not null).ToList();
         var allClosed = openable.Count > 1 && openable.All(d => d.Open == false);
+        // Where pallets are on their way to: a reserved position with no pallet is fine while one heads there.
+        var heading = rows.Devices.Where(d => d.Type == VehicleType && d.To.Length > 0).Select(d => d.To)
+            .Concat(rows.Transports.Select(t => t.DestDevice).OfType<string>())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var d in rows.Devices)
         {
             var what = new List<string>();
@@ -174,6 +242,25 @@ public sealed partial class SqlMakinoReader
                 what.Add($"operator call ({Codes.OperatorCall(d.OperatorCall)})");
                 Count("operator call");
             }
+            // A machine waiting on a person mid-preparation, or held mid-cycle; a recovery request says more.
+            if (d.Type == MachineType && d.Recovery != true && d.Connected != false)
+            {
+                if (d.Action == PreparationAction && Codes.MachineOperatorWait(d.SubAction) is { } wait)
+                {
+                    what.Add(wait);
+                    Count("machine waiting on the operator");
+                }
+                else if (d.Action == MachiningAction && d.CncRun == CncHold && d.OperatorCall is not > 0)
+                {
+                    what.Add("feed hold (the dashboard still reads busy)");
+                    Count("feed hold");
+                }
+            }
+            if (d.Type == StationType && d.Connected != false)
+            {
+                if (d.HelpRequest is > 0) what.Add(Codes.WssHelpRequest(d.HelpRequest));
+                if (d.OpeTimeout is > 0) what.Add(Codes.WssOperationTimeout(d.OpeTimeout));
+            }
             if (what.Count > 0)
             {
                 var detail = lackingRecovery
@@ -181,6 +268,29 @@ public sealed partial class SqlMakinoReader
                         "the machine holds the pallet until the missing tools are loaded, then Retry at the console")
                     : RecoveryContext(d, rows.Commands);
                 items.Add((RankDevice, new AttentionItem("device", string.Join(", ", what)) { Device = d.Name, Detail = detail }));
+            }
+            // The machine waits for an extra tool pallet that is outside the cell or still on a manual transport.
+            if (d.Type == MachineType && settings.ExtraToolPalletTransport && d.ExtraToolPallet is > 0
+                && (d.ExtraToolPalletOutside || d.ExtraToolPalletTransport))
+            {
+                items.Add((RankTransport, new AttentionItem("device", $"waiting for extra tool pallet {d.ExtraToolPallet}")
+                {
+                    Device = d.Name, Pallet = d.ExtraToolPallet,
+                    Detail = d.ExtraToolPalletOutside
+                        ? "the pallet is outside the cell: bring it in with a manual transport"
+                        : "its manual transport isn't finished",
+                }));
+                Count("waiting for an extra tool pallet");
+            }
+            if (PositionStatusError(d, heading))
+            {
+                items.Add((RankFixtureBlocked, new AttentionItem("device", "position status error (possibly)")
+                {
+                    Device = d.Name,
+                    Detail = $"the table holds no pallet but reads \"{Codes.DevicePositionStatus(d.TableStatus)}\"; " +
+                             "check it in the console's Device Diagnosis",
+                }));
+                Count("position status error (possibly)");
             }
             // Closed or skipped devices get no automatic work; the dashboard status still reads idle.
             if (d.Open == false)
@@ -211,6 +321,27 @@ public sealed partial class SqlMakinoReader
             }
         }
 
+        // A station's other/input/output instruction and the manual transport of the same pallet are one item.
+        var wholePallet = rows.Commands.Where(c => c.Operation is OtherOperation or InputOperation or OutputOperation && c.Pallet is not null)
+            .Select(c => c.Pallet!.Value).ToHashSet();
+        var mergedTransports = new Dictionary<int, string>();
+        foreach (var t in rows.Transports)
+        {
+            var detail = TransportDetail(t, byName, settings);
+            if (t.Pallet is { } p && wholePallet.Contains(p))
+            {
+                mergedTransports.TryAdd(p, Join($"manual transport {Codes.ManualTransportStatus(t.Status)}", detail ?? ""));
+                Count("manual transports open");
+                continue;
+            }
+            items.Add((RankTransport, new AttentionItem("manual transport", Codes.ManualTransportStatus(t.Status))
+            {
+                Pallet = t.Pallet, Detail = detail, Since = t.Since,
+            }));
+            Count("manual transports open");
+        }
+        if (rows.TransportTotal is { } transportTotal) Total("manual transports open", transportTotal);
+
         foreach (var c in rows.Commands)
         {
             var detail = new List<string>();
@@ -218,6 +349,10 @@ public sealed partial class SqlMakinoReader
             // as WorkSetStationOperationStatus): how far the operator has got with the instruction.
             if (c.Status is > 0) detail.Add($"status {Codes.WorkSetOperation(c.Status)}");
             if (c.Quantity is > 0) detail.Add($"quantity {c.Quantity}");
+            detail.AddRange(CommandNotes(c, settings));
+            if (c.Pallet is { } p && mergedTransports.TryGetValue(p, out var transport)) detail.Add(transport);
+            if (byName.TryGetValue(c.Device, out var station) && station.VirtualStation)
+                detail.Add("finished on the console (a virtual station)");
             items.Add((RankWorkSet, new AttentionItem("work set", Codes.WorkSetCommandOperation(c.Operation))
             {
                 Device = c.Device, Pallet = c.Pallet, Fixture = c.Fixture, Order = c.Order,
@@ -226,16 +361,6 @@ public sealed partial class SqlMakinoReader
             Count("work-set instructions");
         }
         if (rows.CommandTotal is { } commandTotal) Total("work-set instructions", commandTotal);
-
-        foreach (var t in rows.Transports)
-        {
-            items.Add((RankTransport, new AttentionItem("manual transport", Codes.ManualTransportStatus(t.Status))
-            {
-                Pallet = t.Pallet, Detail = t.To.Length > 0 ? $"to {t.To}" : null, Since = t.Since,
-            }));
-            Count("manual transports open");
-        }
-        if (rows.TransportTotal is { } transportTotal) Total("manual transports open", transportTotal);
 
         foreach (var t in rows.Tools)
         {
@@ -253,9 +378,19 @@ public sealed partial class SqlMakinoReader
             Count("tools with an offset error on machines", t.OffsetError);
         }
 
+        // Fixtures the cell's rules hold (order machining suspend, off duty): parked-like, counted with the parked ones.
+        var holds = rows.Waiting?.Holds ?? [];
+        var holdOf = new Dictionary<(int?, int?), AttentionHold>();
+        foreach (var h in holds)
+        {
+            holdOf.TryAdd((h.Pallet, h.Fixture), h);
+            Count(h.Condition);
+        }
+        var holdItems = new HashSet<(int?, int?)>();
         foreach (var f in rows.Fixtures)
         {
             var conditions = new List<(string Words, string Key, int Rank)>();
+            var hold = holdOf.GetValueOrDefault((f.Pallet, f.Fixture));
             if (f.Damaged) conditions.Add(("damaged", "damaged", RankFixtureBlocked));
             if (f.PreMcSuspend)
             {
@@ -268,20 +403,52 @@ public sealed partial class SqlMakinoReader
                 conditions.Add((words, words, f.Reclamp == ReclampTimeoutAlarm ? RankFixtureBlocked : RankMaintenance));
             }
             // A suspended or held fixture won't run, so its missing tools wait with it.
-            if (f.LackingTool) conditions.Add(("lacking tools", "lacking tools", f.Suspend || f.Hold ? RankParked : RankLackingTools));
+            if (f.LackingTool)
+                conditions.Add(("lacking tools", "lacking tools", f.Suspend || f.Hold || hold is not null ? RankParked : RankLackingTools));
             if (f.Hold) conditions.Add(("work-set hold", "work-set hold", RankParked));
             if (f.Suspend) conditions.Add(("machining suspended", "machining suspended", RankParked));
             if (conditions.Count == 0) continue;
             if (rows.FixtureCounts is null) foreach (var c in conditions) Count(c.Key);
-            if (!includeParked && IsParked(f)) continue; // counted in Parked instead
+            var parkedLike = IsParked(f) || (hold is not null && conditions.All(c => c.Rank == RankParked));
+            if (hold is not null)
+            {
+                conditions.Add((hold.Words, hold.Condition, RankParked));
+                holdItems.Add((f.Pallet, f.Fixture));
+            }
+            if (!includeParked && parkedLike) continue; // counted in Parked instead
             items.Add((conditions.Min(c => c.Rank), new AttentionItem("fixture", string.Join(", ", conditions.Select(c => c.Words)))
             {
                 Pallet = f.Pallet, Fixture = f.Fixture, Order = f.Order, Process = f.Process, Detail = NonEmpty(OneLine(f.Reason)),
             }));
         }
+        if (includeParked)
+        {
+            foreach (var h in holds.Where(h => !holdItems.Contains((h.Pallet, h.Fixture))))
+                items.Add((RankParked, new AttentionItem("fixture", h.Words) { Pallet = h.Pallet, Fixture = h.Fixture, Order = h.Order }));
+        }
         if (rows.FixtureCounts is not null)
         {
             foreach (var (key, n) in rows.FixtureCounts) Count(key, n);
+        }
+
+        // Waiting work no feasible device can take, grouped; and pallets held because one fixture lacks tools.
+        foreach (var b in rows.Waiting?.Blocked ?? [])
+        {
+            items.Add((RankLackingTools, new AttentionItem("waiting work", $"{b.What} blocked: no feasible device can take it")
+            {
+                Detail = b.Devices, Fixtures = b.Fixtures, Pallets = FewPallets(b.Pallets),
+            }));
+            Count("waiting work blocked", b.Fixtures);
+        }
+        foreach (var h in rows.Waiting?.PalletHolds ?? [])
+        {
+            items.Add((RankLackingTools, new AttentionItem("pallet", "pallet held: a fixture lacks tools")
+            {
+                Pallet = h.Pallet,
+                Detail = $"fixture {string.Join(", ", h.Lacking)} lacks tools and holds back fixture {string.Join(", ", h.HeldBack)} " +
+                         "(the cell machines the pallet only when every fixture has its tools)",
+            }));
+            Count("pallets held for missing tools");
         }
         if (allClosed) items.Add((RankClosed, new AttentionItem("cell", AllClosed) { Detail = AllClosedDetail }));
 
@@ -292,17 +459,127 @@ public sealed partial class SqlMakinoReader
             .Select(i => i.Item)
             .ToList();
         var capped = sorted.Count > cap;
-        var parked = rows.Parked is { Count: > 0 } groups
+        var groups = WithHolds(rows.Parked ?? [], holds);
+        var parked = groups.Count > 0
             ? new ParkedFixtures(groups.Sum(g => g.Fixtures), groups)
             {
                 LackingTools = groups.Sum(g => g.LackingTools ?? 0) is > 0 and var lacking ? lacking : null,
+                Blocking = groups.Sum(g => g.Blocking ?? 0) is > 0 and var blocking ? blocking : null,
             }
             : null;
+        var notes = new List<string>();
+        if (settings.ProbePartCount > 0) notes.Add(ProbePartCountNote);
+        if (settings.AllFixtureTsReady && settings.ToolsHoldWork) notes.Add(AllFixtureToolsNote);
         return new AttentionList(now, capped, counts, capped ? sorted.GetRange(0, cap) : sorted, notAvailable)
         {
             MachineToolStatus = toolStatus.Count > 0 ? toolStatus : null,
             Parked = parked,
+            MissingTools = rows.MissingTools,
+            Notes = notes.Count > 0 ? notes : null,
         };
+    }
+
+    /// <summary>A table position that reads busy with no pallet on it, by the console's Device Diagnosis rule for
+    /// direct-table machines and work-set stations: its state is neither empty nor finished, and it isn't reserved for
+    /// a pallet on its way (none reserved and no transport heading to the device). The console also compares the
+    /// vehicle's final destination, kept in memory, so this is only "possibly".</summary>
+    internal static bool PositionStatusError(AttentionDevice d, IReadOnlySet<string> heading) =>
+        d.Connected != false && (d.Type == StationType || (d.Type == MachineType && d.ApcDirect == true))
+        && d.TablePallet is not > 0 && d.TableStatus is { } s && s != PositionEmpty && s != PositionFinished
+        && (s != PositionReserved || (!d.TableReserved && !heading.Contains(d.Name)));
+
+    /// <summary>What a station instruction waits for beyond its status: a whole-pallet operation, an inspection
+    /// confirmation, re-machining.</summary>
+    internal static List<string> CommandNotes(AttentionCommand c, AttentionSettings s)
+    {
+        var notes = new List<string>();
+        switch (c.Operation)
+        {
+            case OtherOperation:
+                notes.Add("pallet brought by manual transport or fixture change: no clamping expected; the operator presses FINISH when done");
+                break;
+            case InputOperation:
+                notes.Add("the whole pallet is loaded into the cell by hand");
+                break;
+            case OutputOperation:
+                notes.Add("the whole pallet is taken out of the cell by hand");
+                break;
+        }
+        // Unclamp operations with an inspection mark (or a scrap unclamp) wait for the operator to confirm the inspection.
+        if (s.InspectionConfirmation && c.Operation is 2 or 3 or 4 or 5 && (c.InspectionCheck || c.Operation is 3 or 5) && !c.InspectionConfirmed)
+            notes.Add("waiting for inspection confirmation at the station");
+        if (c.ReMachine)
+        {
+            var from = c.ReMachineJob is > 0 ? $"re-machining from job {c.ReMachineJob}" : "re-machining";
+            notes.Add(c.ReMachineProgram is { } program ? $"{from} ({program})" : from);
+            if (c.OperatorCallStatus == 3) notes.Add("the machine will wait for an operator to start it");
+        }
+        return notes;
+    }
+
+    /// <summary>A manual transport's detail: its kind, destination, and what it waits for (the destination's open or
+    /// closed state the cell requires, or who finishes it).</summary>
+    internal static string? TransportDetail(AttentionTransport t, IReadOnlyDictionary<string, AttentionDevice> devices, AttentionSettings s)
+    {
+        var parts = new List<string>();
+        if (t.Type is > 1) parts.Add(Codes.ManualTransportType(t.Type)); // undefined and standard say nothing
+        if (t.To.Length > 0) parts.Add($"to {t.To}");
+        var dest = t.DestDevice is { } name ? devices.GetValueOrDefault(name) : null;
+        if (t.Status == TransportWaiting)
+        {
+            parts.Add("not picked up yet (can still be cancelled)");
+            if (dest is not null && t.Type != WarmUpTransportType && WaitsFor(t, dest, s) is { } waits) parts.Add(waits);
+        }
+        else if (t.Status == TransportToFinish)
+        {
+            if (t.DestType == StationType)
+                parts.Add(dest?.ManualTransportSendCommand == 0 || dest?.VirtualStation == true
+                    ? "Complete it on the console's Manual Transport screen"
+                    : "the operator presses FINISH at the station");
+            else if (t.DestType == MachineType) parts.Add("Complete it on the console's Manual Transport screen");
+        }
+        return parts.Count > 0 ? string.Join(", ", parts) : null;
+    }
+
+    /// <summary>Whether a waiting manual transport waits for its destination to be opened or closed: a machine takes a
+    /// manual transport only closed (an extra tool pallet either way, a pallet change only open); a station follows
+    /// the cell's ManualTransAvailType (closed when its work-set station bit is set, else open; a reclamp always open).</summary>
+    private static string? WaitsFor(AttentionTransport t, AttentionDevice dest, AttentionSettings s)
+    {
+        bool? mustBeOpen = null;
+        var why = "";
+        if (dest.Type == MachineType)
+        {
+            if (t.Type == ExtraToolPalletTransportType) return null;
+            (mustBeOpen, why) = t.Type == PalletChangeTransportType
+                ? (true, "a pallet change needs the machine open")
+                : (false, "a manual transport goes only to a closed machine");
+        }
+        else if (dest.Type == StationType)
+        {
+            if (t.Type == ReclampTransportType) (mustBeOpen, why) = (true, "a reclamp needs the station open");
+            else if (s.ManualTransAvailType is { } avail)
+                (mustBeOpen, why) = (avail & ManualTransAvailWss) != 0
+                    ? (false, "the cell sends manual transports only to a closed station")
+                    : (true, "the cell sends manual transports only to an open station");
+        }
+        if (mustBeOpen is null || dest.Open is null) return null;
+        if (mustBeOpen == true && dest.Open == false) return $"waits for {dest.Name} to be opened ({why})";
+        if (mustBeOpen == false && dest.Open == true) return $"waits for {dest.Name} to be closed ({why})";
+        return null;
+    }
+
+    /// <summary>The parked groups with the fixtures the cell's rules hold added, per place and condition.</summary>
+    internal static List<ParkedGroup> WithHolds(IReadOnlyList<ParkedGroup> parked, IReadOnlyList<AttentionHold> holds)
+    {
+        var groups = parked.ToList();
+        foreach (var g in holds.GroupBy(h => (h.Place, h.Condition)))
+        {
+            var lacking = g.Count(h => h.LackingTool);
+            // A hold is on a job that waits now, so each one is blocking.
+            groups.Add(new ParkedGroup(g.Key.Place, g.Key.Condition, g.Count()) { LackingTools = lacking > 0 ? lacking : null, Blocking = g.Count() });
+        }
+        return groups.OrderByDescending(g => g.Fixtures).ToList();
     }
 
     /// <summary>Rows of <see cref="AttentionParkedSql"/> (pallet place type and number, suspended, held, fixtures,
@@ -310,22 +587,35 @@ public sealed partial class SqlMakinoReader
     /// name; any other (the stocker shelves) its device type's words, so all shelves are one place.</summary>
     internal static List<ParkedGroup> MergeParked(
         IEnumerable<(int? Type, int? Number, bool Suspended, bool Held, int N, int Lacking)> rows,
+        IReadOnlyList<(int Type, int Number, string Name)> devices) =>
+        MergeParked(rows.Select(r => (r.Type, r.Number, r.Suspended, r.Held, r.N, r.Lacking, 0, 0)), devices);
+
+    /// <summary>The same, with how many of each group hold back a waiting job (Blocking) and, for work-set holds, still
+    /// hold parts (WithParts).</summary>
+    internal static List<ParkedGroup> MergeParked(
+        IEnumerable<(int? Type, int? Number, bool Suspended, bool Held, int N, int Lacking, int Blocking, int WithParts)> rows,
         IReadOnlyList<(int Type, int Number, string Name)> devices)
     {
-        var merged = new List<(string Place, string Condition, int N, int Lacking)>();
+        var merged = new List<(string Place, string Condition, int N, int Lacking, int Blocking, int WithParts)>();
         foreach (var r in rows)
         {
-            var place = r.Type is null ? "unknown"
-                : r.Type == OutOfSystem ? OutOfSystemWords
-                : devices.FirstOrDefault(d => d.Type == r.Type && d.Number == r.Number).Name ?? Codes.DeviceType(r.Type);
+            var place = PlaceName(r.Type, r.Number, devices);
             var condition = string.Join(", ", new[] { r.Suspended ? "machining suspended" : null, r.Held ? "work-set hold" : null }.OfType<string>());
             var i = merged.FindIndex(m => m.Place == place && m.Condition == condition);
-            if (i < 0) merged.Add((place, condition, r.N, r.Lacking));
-            else merged[i] = (place, condition, merged[i].N + r.N, merged[i].Lacking + r.Lacking);
+            if (i < 0) merged.Add((place, condition, r.N, r.Lacking, r.Blocking, r.WithParts));
+            else
+            {
+                var m = merged[i];
+                merged[i] = (place, condition, m.N + r.N, m.Lacking + r.Lacking, m.Blocking + r.Blocking, m.WithParts + r.WithParts);
+            }
         }
+        static int? Some(int n) => n > 0 ? n : null;
         return merged
             .OrderByDescending(m => m.N)
-            .Select(m => new ParkedGroup(m.Place, m.Condition, m.N) { LackingTools = m.Lacking > 0 ? m.Lacking : null })
+            .Select(m => new ParkedGroup(m.Place, m.Condition, m.N)
+            {
+                LackingTools = Some(m.Lacking), Blocking = Some(m.Blocking), WithParts = Some(m.WithParts),
+            })
             .ToList();
     }
 
@@ -502,11 +792,25 @@ public sealed partial class SqlMakinoReader
                 ? $"(SELECT TOP 1 l.{column} FROM PalletLocation l WHERE l.PalletID = pf.PalletID) AS {column}"
                 : $"CAST(NULL AS int) AS {column}";
         string Bit(string column, string condition) => schema.Has(t, column) ? $"CASE WHEN {condition} THEN 1 ELSE 0 END" : "0";
+        // Blocking: the flag holds back the job waiting now (suspend: machining, turning and deburring jobs; work-set
+        // hold: work setting). WithParts: a held fixture that still holds parts.
+        var job = schema.Has(t, "PalletFixtureID") && schema.Has("FixtureRun", "PalletFixtureID") && schema.Has("FixtureRun", "CurJobID")
+                  && schema.Has("FixtureRun", "CurJobStatus") && schema.Has("Jobs", "JobID") && schema.Has("Jobs", "JobType");
+        var suspendBlocks = schema.Has(t, "Suspend") ? $"(pf.Suspend = 1 AND j.JobType IN ({MachiningJob}, {TurningJob}, {DeburringJob}))" : "1 = 0";
+        var holdBlocks = schema.Has(t, "WorkSetHold") ? $"(pf.WorkSetHold = 1 AND j.JobType = {WorkSettingJob})" : "1 = 0";
+        var blocking = job
+            ? $"CASE WHEN EXISTS (SELECT 1 FROM FixtureRun fr JOIN Jobs j ON j.JobID = fr.CurJobID WHERE fr.PalletFixtureID = pf.PalletFixtureID AND fr.CurJobStatus = {FixtureWaiting} AND ({suspendBlocks} OR {holdBlocks})) THEN 1 ELSE 0 END"
+            : "0";
+        var withParts = schema.Has(t, "WorkSetHold") && schema.Has(t, "PalletFixtureID") && schema.Has("FixtureQuantity", "PalletFixtureID")
+                        && schema.Has("FixtureQuantity", "ClampedQuantity")
+            ? "CASE WHEN pf.WorkSetHold = 1 AND (SELECT SUM(q.ClampedQuantity) FROM FixtureQuantity q WHERE q.PalletFixtureID = pf.PalletFixtureID) > 0 THEN 1 ELSE 0 END"
+            : "0";
         return $"""
-            SELECT x.CurDeviceType, x.CurDeviceNumber, x.Suspended, x.Held, COUNT(*) AS N, SUM(x.Lacking) AS Lacking FROM (
+            SELECT x.CurDeviceType, x.CurDeviceNumber, x.Suspended, x.Held, COUNT(*) AS N, SUM(x.Lacking) AS Lacking,
+                   SUM(x.Blocking) AS Blocking, SUM(x.WithParts) AS WithParts FROM (
                 SELECT {Place("CurDeviceType")}, {Place("CurDeviceNumber")},
                        {Bit("Suspend", "pf.Suspend = 1")} AS Suspended, {Bit("WorkSetHold", "pf.WorkSetHold = 1")} AS Held,
-                       {Bit("LackingTool", "pf.LackingTool = 1")} AS Lacking
+                       {Bit("LackingTool", "pf.LackingTool = 1")} AS Lacking, {blocking} AS Blocking, {withParts} AS WithParts
                 FROM PalletFixtures pf
                 WHERE {parked}) x
             GROUP BY x.CurDeviceType, x.CurDeviceNumber, x.Suspended, x.Held;
@@ -522,17 +826,37 @@ public sealed partial class SqlMakinoReader
         return sums.Count == 0 ? null : $"SELECT {string.Join(", ", sums)} FROM PalletFixtures pf;";
     }
 
-    /// <summary>Instructions set at a work-set station (cap + 1). Null without the
-    /// OperationType column.</summary>
+    // The *Check columns of FixtureRun: each holds the machines (device ids) that marked the fixture for that check.
+    private static readonly string[] InspectionChecks =
+    [
+        "FirstToolCheck", "InsToolLifeCheck", "InsTotalToolLifeCheck", "McCMMCheck", "McGageCheck", "ProcCMMCheck",
+        "ProcCMMFullCheck", "ProcGageCheck",
+    ];
+
+    /// <summary>Instructions set at a work-set station (cap + 1). A clamp the console shows nothing for is left out:
+    /// nothing to clamp (clamp plus move quantity 0), or its move partner cancelled (the partner's unclamp was
+    /// cancelled or is re-machined, or the partner isn't an unclamp). Other, input and output rows have no fixture:
+    /// their pallet is the one on the station's table. Null without the OperationType column.</summary>
     internal static string? WorkSetCommandsSql(SchemaInfo schema)
     {
         const string t = "WorkSetCommand";
         if (!schema.Has(t, "OperationType") || !schema.Has(t, "DeviceID")) return null;
-        var pallet = schema.Has(t, "PalletFixtureID") && schema.Has("PalletFixtures", "PalletFixtureID") && schema.Has("PalletFixtures", "PalletID")
-                     && schema.Has("Pallets", "PalletNumber")
-            ? "(SELECT TOP 1 p.PalletNumber FROM PalletFixtures pf JOIN Pallets p ON p.PalletID = pf.PalletID WHERE pf.PalletFixtureID = c.PalletFixtureID) AS PalletNumber"
-            : "CAST(NULL AS int) AS PalletNumber";
-        var orderId = (schema.Has(t, "ClampOrderID"), schema.Has(t, "UnclampOrderID")) switch
+        bool Has(string column) => schema.Has(t, column);
+        var fixturePallet = Has("PalletFixtureID") && schema.Has("PalletFixtures", "PalletFixtureID") && schema.Has("PalletFixtures", "PalletID")
+                            && schema.Has("Pallets", "PalletNumber")
+            ? "(SELECT TOP 1 p.PalletNumber FROM PalletFixtures pf JOIN Pallets p ON p.PalletID = pf.PalletID WHERE pf.PalletFixtureID = c.PalletFixtureID)"
+            : null;
+        var tablePallet = schema.Has("WorkSetStatus", "DeviceID") && schema.Has("WorkSetStatus", "TablePalletID") && schema.Has("Pallets", "PalletNumber")
+            ? "(SELECT TOP 1 p.PalletNumber FROM WorkSetStatus w JOIN Pallets p ON p.PalletID = w.TablePalletID WHERE w.DeviceID = c.DeviceID)"
+            : null;
+        var pallet = (fixturePallet, tablePallet) switch
+        {
+            (not null, not null) => $"COALESCE({fixturePallet}, {tablePallet}) AS PalletNumber",
+            (not null, null) => $"{fixturePallet} AS PalletNumber",
+            (null, not null) => $"{tablePallet} AS PalletNumber",
+            _ => "CAST(NULL AS int) AS PalletNumber",
+        };
+        var orderId = (Has("ClampOrderID"), Has("UnclampOrderID")) switch
         {
             (true, true) => "COALESCE(NULLIF(c.ClampOrderID, 0), c.UnclampOrderID)",
             (true, false) => "c.ClampOrderID",
@@ -542,18 +866,51 @@ public sealed partial class SqlMakinoReader
         var order = orderId is not null && schema.Has("Orders", "OrderName")
             ? $"(SELECT TOP 1 o.OrderName FROM Orders o WHERE o.OrderID = {orderId}) AS OrderName"
             : $"CAST(NULL AS {Text}) AS OrderName";
+        // Re-machining: the job it restarts from, by number and program.
+        var reJob = Has("ReMachineJobID") && schema.Has("Jobs", "JobID") && schema.Has("Jobs", "JobNumber")
+            ? "(SELECT TOP 1 j.JobNumber FROM Jobs j WHERE j.JobID = c.ReMachineJobID) AS ReMachineJobNumber"
+            : "CAST(NULL AS int) AS ReMachineJobNumber";
+        var reProgram = Has("ReMachineJobID") && schema.Has("MachineJobs", "JobID") && schema.Has("MachineJobs", "NCProgramFileID")
+                        && schema.Has("NCProgramFiles", "NCProgramFileID") && schema.Has("NCProgramFiles", "Name")
+            ? "(SELECT TOP 1 n.Name FROM MachineJobs mj JOIN NCProgramFiles n ON n.NCProgramFileID = mj.NCProgramFileID WHERE mj.JobID = c.ReMachineJobID) AS ReMachineProgram"
+            : $"CAST(NULL AS {Text}) AS ReMachineProgram";
+        // Inspection marks: a *Check column naming a machine (any non-zero digit), or the fixture gauge flag.
+        var marks = InspectionChecks.Where(col => schema.Has("FixtureRun", col)).Select(col => $"fr.{col} LIKE '%[1-9]%'").ToList();
+        if (schema.Has("FixtureRun", "FixtureGageCheck")) marks.Add("fr.FixtureGageCheck = 1");
+        var check = marks.Count > 0 && Has("PalletFixtureID") && schema.Has("FixtureRun", "PalletFixtureID")
+            ? $"CASE WHEN EXISTS (SELECT 1 FROM FixtureRun fr WHERE fr.PalletFixtureID = c.PalletFixtureID AND ({string.Join(" OR ", marks)})) THEN 1 ELSE 0 END AS InspectionCheck"
+            : "CAST(0 AS int) AS InspectionCheck";
+        var callStatus = Has("PalletFixtureID") && schema.Has("PalletFixtures", "OperatorCallStatus")
+            ? "(SELECT TOP 1 pf.OperatorCallStatus FROM PalletFixtures pf WHERE pf.PalletFixtureID = c.PalletFixtureID) AS OperatorCallStatus"
+            : "CAST(NULL AS int) AS OperatorCallStatus";
         var cols = string.Join(", ",
             "c.DeviceID", pallet, "COUNT(*) OVER () AS Total",
             Opt(schema, t, "c", "FixtureNumber"),
             Opt(schema, t, "c", "OperationType"),
             Opt(schema, t, "c", "OperationStatus"),
             Opt(schema, t, "c", "ClampQuantity"),
-            order);
-        var then = schema.Has(t, "FixtureNumber") ? ", c.FixtureNumber" : "";
+            Opt(schema, t, "c", "ReMachine", type: "bit"),
+            Opt(schema, t, "c", "InspectionConfirmation", type: "bit"),
+            order, reJob, reProgram, check, callStatus);
+
+        // The clamps the console shows nothing for.
+        var hidden = "";
+        if (Has("ClampQuantity"))
+        {
+            var quantity = Has("MoveQuantity") ? "c.ClampQuantity + c.MoveQuantity" : "c.ClampQuantity";
+            var partner = Has("MovePalletFixtureID") && Has("PalletFixtureID")
+                ? " OR (c.MovePalletFixtureID > 0 AND EXISTS (SELECT 1 FROM WorkSetCommand m WHERE m.DeviceID = c.DeviceID " +
+                  "AND m.PalletFixtureID = c.MovePalletFixtureID AND (m.OperationType NOT IN (2, 3, 4, 5)" +
+                  (Has("ReMachine") ? " OR m.ReMachine = 1" : "") +
+                  (Has("OperationStatus") ? $" OR m.OperationStatus = {UnclampCancelled}" : "") + ")))"
+                : "";
+            hidden = $" AND NOT (c.OperationType = {ClampOperation} AND ({quantity} = 0{partner}))";
+        }
+        var then = Has("FixtureNumber") ? ", c.FixtureNumber" : "";
         return $"""
             SELECT TOP (@take) {cols}
             FROM WorkSetCommand c
-            WHERE c.OperationType <> {NoWorkSetOperation}
+            WHERE c.OperationType <> {NoWorkSetOperation}{hidden}
             ORDER BY c.DeviceID{then};
             """;
     }
@@ -570,6 +927,7 @@ public sealed partial class SqlMakinoReader
             Opt(schema, t, "t", "DestDeviceNumber"),
             Opt(schema, t, "t", "DestDevicePosition"),
             Opt(schema, t, "t", "Status"),
+            Opt(schema, t, "t", "TransportType"),
             Opt(schema, t, "t", "EntryDate", type: "datetime"));
         var order = schema.Has(t, "EntryDate") ? "t.EntryDate DESC" : "PalletNumber";
         return $"""
@@ -589,6 +947,22 @@ public sealed partial class SqlMakinoReader
         return "SELECT DeviceID, ParameterValue FROM DeviceParameters WHERE ParameterName = 'WarningCycleCount';";
     }
 
+    /// <summary>Open alarms per device: Alarms (non-warning PMC plus CNC, as the overview counts them), PmcAlarms
+    /// (non-warning PMC only: what keeps a machine from automatic work) and AllAlarms (every open alarm and warning:
+    /// what keeps a station from it).</summary>
+    internal static string AttentionAlarmSql(SchemaInfo schema)
+    {
+        var warning = schema.Has("PMCAlarms", "IsWarning") ? "IsWarning = 1" : "1 = 0";
+        return $"""
+            SELECT DeviceID, SUM(A) AS Alarms, SUM(P) AS PmcAlarms, COUNT(*) AS AllAlarms FROM (
+                SELECT DeviceID, CASE WHEN {warning} THEN 0 ELSE 1 END AS A, CASE WHEN {warning} THEN 0 ELSE 1 END AS P
+                FROM PMCAlarms WHERE ResetTime IS NULL
+                UNION ALL
+                SELECT DeviceID, 1, 0 FROM CNCAlarms WHERE ResetTime IS NULL) a
+            GROUP BY DeviceID;
+            """;
+    }
+
     // --- reading ---
 
     public async Task<AttentionList> GetAttentionAsync(bool includeParked, CancellationToken ct)
@@ -599,8 +973,12 @@ public sealed partial class SqlMakinoReader
 
         // With the cell's lacking-tool setting off, LackingTool is always 0: the fixture queries act as if the column
         // weren't there, and notAvailable says why.
-        var toolSettings = await SystemParametersAsync(s, ct,
-            "FixtureToolLackInfo", "CheckLackToolsAllRemainingJobs", "LackingToolsMachineRecovery", "ToolResourceManagementType");
+        var toolSettings = await SystemParametersAsync(s, ct, AttentionSettingNames);
+        var runtime = await UserSysDataAsync(s, ct, "DutyMode");
+        var settings = AttentionSettingsFrom(toolSettings, runtime);
+        if (toolSettings is null) notAvailable.Add("the cell's settings (transport cancel, duty, order machining suspend, …)");
+        else if (runtime is null) notAvailable.Add("off-duty holds (the cell's duty mode can't be read)");
+        var perDevice = await DeviceParametersAsync(s, ct, "APCArmType", "ControlType", "ManualTransportSendCommand");
         var (lackComputed, lackScope) = LackingToolSetting(toolSettings);
         var fixtureSchema = schema;
         if (schema.Has("PalletFixtures", "LackingTool"))
@@ -613,9 +991,21 @@ public sealed partial class SqlMakinoReader
             else if (lackComputed is null) notAvailable.Add(LackingToolsSettingUnknown);
         }
 
-        var devices = s.Devices.ToDictionary(d => d.Id, d => new AttentionDevice(d.Name, d.Type));
+        var devices = s.Devices.ToDictionary(d => d.Id, d =>
+        {
+            var own = perDevice?.GetValueOrDefault(d.Id);
+            // APC arm type None (0) or Direct (3): the console's direct-table position check applies.
+            var apc = ToInt(own?.GetValueOrDefault("APCArmType"));
+            return new AttentionDevice(d.Name, d.Type)
+            {
+                Id = d.Id, ApcDirect = apc is null ? null : apc is 0 or 3,
+                VirtualStation = d.Type == StationType && IsVirtualControl(own?.GetValueOrDefault("ControlType")),
+                ManualTransportSendCommand = ToInt(own?.GetValueOrDefault("ManualTransportSendCommand")),
+            };
+        });
 
         // Device states; the extra columns (TotalCycleCount) come through the overview's own SQL.
+        var locations = schema.Has("PalletLocation", "PalletID") && schema.Has("PalletLocation", "CurDeviceType");
         async Task ReadStatus(string sql, Func<SqlDataReader, int?> idOf)
         {
             using var cmd = Command(s.Connection, sql);
@@ -637,6 +1027,18 @@ public sealed partial class SqlMakinoReader
                     Command = Has(r, "CommandType") ? Int(r, "CommandType") : null,
                     From = Has(r, "FromDeviceName") ? Str(r, "FromDeviceName") : "",
                     To = Has(r, "ToDeviceName") ? Str(r, "ToDeviceName") : "",
+                    SystemMode = Has(r, "SystemMode") ? Bool(r, "SystemMode") : null,
+                    TransProhibit = Has(r, "DeviceTransProhibit") ? Bool(r, "DeviceTransProhibit") : null,
+                    CncRun = Has(r, "CNCRun") ? Int(r, "CNCRun") : null,
+                    HelpRequest = Has(r, "HelpRequest") ? Int(r, "HelpRequest") : null,
+                    OpeTimeout = Has(r, "OpeTimeout") ? Int(r, "OpeTimeout") : null,
+                    ExtraToolPallet = Has(r, "NeedExtraToolPalletID") && Int(r, "NeedExtraToolPalletID") is > 0 ? Int(r, "ExtraToolPalletNumber") : null,
+                    // No PalletLocation row, or "out of system": the pallet is outside the cell.
+                    ExtraToolPalletOutside = locations && Has(r, "ExtraToolPalletPlace") && Int(r, "NeedExtraToolPalletID") is > 0
+                                             && Int(r, "ExtraToolPalletPlace") is null or OutOfSystem,
+                    ExtraToolPalletTransport = Has(r, "ExtraToolPalletTransport") && Int(r, "ExtraToolPalletTransport") == 1,
+                    TableStatus = Has(r, "TableStatus") ? Int(r, "TableStatus") : null,
+                    TableReserved = Has(r, "TableReservedPalletID") && Int(r, "TableReservedPalletID") is > 0,
                 };
             }
         }
@@ -649,12 +1051,18 @@ public sealed partial class SqlMakinoReader
 
         if (schema.HasTable("PMCAlarms") && schema.HasTable("CNCAlarms"))
         {
-            using var cmd = Command(s.Connection, OpenAlarmSql(schema));
+            using var cmd = Command(s.Connection, AttentionAlarmSql(schema));
             using var r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
             {
                 var id = Int(r, "DeviceID") ?? 0;
-                if (devices.TryGetValue(id, out var d)) devices[id] = d with { OpenAlarms = Int(r, "Alarms") ?? 0 };
+                if (devices.TryGetValue(id, out var d))
+                {
+                    devices[id] = d with
+                    {
+                        OpenAlarms = Int(r, "Alarms") ?? 0, PmcAlarms = Int(r, "PmcAlarms") ?? 0, AllAlarms = Int(r, "AllAlarms") ?? 0,
+                    };
+                }
             }
         }
 
@@ -736,11 +1144,11 @@ public sealed partial class SqlMakinoReader
             {
                 using var cmd = Command(s.Connection, parkedSql);
                 using var r = await cmd.ExecuteReaderAsync(ct);
-                var groups = new List<(int?, int?, bool, bool, int, int)>();
+                var groups = new List<(int?, int?, bool, bool, int, int, int, int)>();
                 while (await r.ReadAsync(ct))
                 {
                     groups.Add((Int(r, "CurDeviceType"), Int(r, "CurDeviceNumber"), Int(r, "Suspended") == 1, Int(r, "Held") == 1,
-                        Int(r, "N") ?? 0, Int(r, "Lacking") ?? 0));
+                        Int(r, "N") ?? 0, Int(r, "Lacking") ?? 0, Int(r, "Blocking") ?? 0, Int(r, "WithParts") ?? 0));
                 }
                 parked = MergeParked(groups, s.Devices.Select(d => (d.Type, d.Number, d.Name)).ToList());
             }
@@ -758,7 +1166,12 @@ public sealed partial class SqlMakinoReader
             {
                 commandTotal = Int(r, "Total");
                 commands.Add(new AttentionCommand(DeviceName(s, Int(r, "DeviceID")), Int(r, "PalletNumber"), Int(r, "FixtureNumber"),
-                    Int(r, "OperationType"), Int(r, "OperationStatus"), NonEmpty(Str(r, "OrderName")), Int(r, "ClampQuantity")));
+                    Int(r, "OperationType"), Int(r, "OperationStatus"), NonEmpty(Str(r, "OrderName")), Int(r, "ClampQuantity"))
+                {
+                    ReMachine = Bool(r, "ReMachine") == true, ReMachineJob = Int(r, "ReMachineJobNumber"),
+                    ReMachineProgram = NonEmpty(Str(r, "ReMachineProgram")), InspectionCheck = Int(r, "InspectionCheck") == 1,
+                    InspectionConfirmed = Bool(r, "InspectionConfirmation") == true, OperatorCallStatus = Int(r, "OperatorCallStatus"),
+                });
             }
         }
         else notAvailable.Add("work-set instructions");
@@ -772,18 +1185,43 @@ public sealed partial class SqlMakinoReader
             while (await r.ReadAsync(ct))
             {
                 transportTotal = Int(r, "Total");
-                var to = Location(s, Int(r, "DestDeviceType"), Int(r, "DestDeviceNumber"), Int(r, "DestDevicePosition"));
-                // A destination of type 0 or none is unset, not a place.
-                transports.Add(new AttentionTransport(Int(r, "PalletNumber"), to is "unknown" or OutOfSystemWords ? "" : to,
-                    Int(r, "Status"), Date(r, "EntryDate")));
+                var (type, number) = (Int(r, "DestDeviceType"), Int(r, "DestDeviceNumber"));
+                var device = s.Devices.FirstOrDefault(d => d.Type == type && d.Number == number && number is > 0)?.Name;
+                // A destination of type 0 or none is unset, not a place; a station numbered 0 is any station.
+                var to = type is null or OutOfSystem ? ""
+                    : type == StationType && number is 0 ? "any work-set station"
+                    : Join(device ?? $"{Codes.DeviceType(type)} {number}", Codes.DevicePosition(Int(r, "DestDevicePosition")));
+                transports.Add(new AttentionTransport(Int(r, "PalletNumber"), to, Int(r, "Status"), Date(r, "EntryDate"))
+                {
+                    Type = Int(r, "TransportType"), DestType = type, DestDevice = device,
+                });
             }
         }
         else notAvailable.Add("manual transports");
+        if (settings.ManualTransAvailType is null && toolSettings is not null
+            && transports.Any(t => t.DestType == StationType && t.Status == TransportWaiting))
+            notAvailable.Add("whether a manual transport waits for a work-set station to be open or closed (the cell has no ManualTransAvailType setting)");
+
+        // The fixtures whose job waits: blocked work, holds, pallet holds and the tools they miss.
+        WaitingAnalysis? waiting = null;
+        List<MissingToolGroup>? missing = null;
+        // The waiting fixtures feed grouped items and aren't listed, so they are bounded by the cell's size (a few
+        // hundred fixtures), not by the row limit, which would change the groups.
+        if (await ReadWaitingAsync(s, fixtureSchema, WaitingRowLimit + 1, ct) is { } read)
+        {
+            waiting = AnalyzeWaiting(read.Rows, read.Feasible, devices, settings);
+            if (read.Capped) notAvailable.Add($"waiting work past the first {WaitingRowLimit} waiting fixtures");
+            // Only for the fixtures that are items: parked and held ones wait for their flag first.
+            var held = waiting.Holds.Select(h => (h.Pallet, h.Fixture)).ToHashSet();
+            var open = read.Rows.Where(w => !w.Suspend && !w.Hold && !held.Contains((w.Pallet, w.Fixture))).ToList();
+            missing = await MissingToolsAsync(s, open, read.Feasible, ct);
+        }
+        else notAvailable.Add("waiting work blocked (needs FixtureRun, Jobs and JobFeasibleDevices)");
 
         var rows = new AttentionRows(s.Devices.Select(d => devices[d.Id]).ToList(), fixtures, commands, transports, tools)
         {
             FixtureCounts = fixtureCounts, Parked = parked, CommandTotal = commandTotal, TransportTotal = transportTotal,
-            LackingToolRecovery = LackingToolRecoveryOn(toolSettings),
+            LackingToolRecovery = LackingToolRecoveryOn(toolSettings), Waiting = waiting, Settings = settings, MissingTools = missing,
         };
         return BuildAttention(s.Now, _cap, rows, notAvailable, includeParked) with
         {

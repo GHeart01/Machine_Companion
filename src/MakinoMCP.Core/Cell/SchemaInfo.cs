@@ -29,6 +29,7 @@ public sealed class SchemaInfo
         "ViewOrders", "ViewDayOrderCompletedQty",
         // 0.4: the cell's runtime settings (duty mode, power-off state).
         "UserSysData",
+        "SystemConfig", // Devices: the software version (granted to the stock reporting login)
     ];
 
     /// <summary>How long one synonym probe's command may run.</summary>
