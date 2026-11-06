@@ -49,13 +49,13 @@ internal sealed class FakeMakinoReader : IMakinoReader
             new Alarm("PMC", "MC1", 1012, "alarm", "Coolant level low", Now.AddMinutes(-30), null, 30),
         ]), ct, device);
 
-    public Task<AlarmSummary> GetAlarmSummaryAsync(int days, string? device, CancellationToken ct) =>
+    public Task<AlarmSummary> GetAlarmSummaryAsync(int days, string? device, ShiftFilter? shift, CancellationToken ct) =>
         Answer(() => new AlarmSummary(Now, false,
         [
             new AlarmSummaryRow("MC1", "PMC", 1012, "Coolant level low", 4, 95.5, Now.AddDays(-6), Now.AddMinutes(-30)),
         ]), ct, device);
 
-    public Task<UtilizationList> GetUtilizationAsync(int days, string? device, CancellationToken ct) =>
+    public Task<UtilizationList> GetUtilizationAsync(int days, string? device, ShiftFilter? shift, CancellationToken ct) =>
         Answer(() => new UtilizationList(Now, false,
         [
             new UtilizationDay("MC1", Now.Date, 0, 2, 6, 0.5, 0.25, 68.6, null),

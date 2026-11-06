@@ -45,7 +45,14 @@ public static class CellTools
                  "device, number, level (alarm or warning), message, raised and reset time, and minutes open (to reset, " +
                  "or to serverTime when still open; reset is null while open). Defaults: the last 24 hours, every device, " +
                  "warnings included. Use openOnly=true for \"what is wrong right now\" (every alarm still open, however " +
-                 "old). History is limited: CNC alarms keep only about the last 200, PMC about three months.")]
+                 "old). History is limited: CNC alarms keep only about the last 200, PMC about three months. What blocks " +
+                 "work: a machine gets no pallets while it has an open PMC alarm that isn't a warning (its warnings and " +
+                 "CNC alarms don't stop transport); a work-set station is blocked by any open PMC or CNC alarm. " +
+                 "helpFiles: for each device with a PMC alarm in the list, the alarm help files the cell uses (paths on " +
+                 "the cell PC). A machine's .ini file has a section per alarm number ([10001]: the number as 5 digits, 6 " +
+                 "on a Pro5 control) with the title, cause and recovery; alarms 990000 and up use the second file when " +
+                 "there is one. If the cell's Message folder is a shared folder, look the number up there with " +
+                 "search_files or read_file. The vehicle's and stations' .mdb files are databases, not readable as text.")]
     public static Task<string> GetAlarms(
         ToolContext context,
         [Description("How many hours back to look, from serverTime. Default 24.")] int hours = 24,
@@ -59,34 +66,73 @@ public static class CellTools
     [Description("Which alarms keep coming back? Alarms of the last days grouped by device, source (PMC/CNC) and alarm " +
                  "number, most frequent first: count, total minutes open, first and last seen. Default: the last 7 " +
                  "days (today counts as one, and is only part of a day), every device. Use it for recurring problems; use get_alarms for the individual occurrences. " +
-                 "CNC alarm history keeps only about the last 200 alarms, so older CNC counts may be incomplete.")]
+                 "CNC alarm history keeps only about the last 200 alarms, so older CNC counts may be incomplete. " +
+                 "shiftStart/shiftEnd/weekdays count only alarms raised in that shift (total minutes still run to each " +
+                 "alarm's reset).")]
     public static Task<string> GetAlarmSummary(
         ToolContext context,
         [Description("How many days back to look (today counts as one). Default 7.")] int days = 7,
         [Description(DeviceParam)] string? device = null,
+        [Description(ShiftStartParam)] string? shiftStart = null,
+        [Description(ShiftEndParam)] string? shiftEnd = null,
+        [Description(WeekdaysParam)] string? weekdays = null,
         CancellationToken ct = default) =>
-        context.Database("get_alarm_summary", (r, t) => r.GetAlarmSummaryAsync(days, device, t), ct);
+        context.Database("get_alarm_summary", (r, t) =>
+            r.GetAlarmSummaryAsync(days, device, Core.Cell.ShiftFilter.Parse(shiftStart, shiftEnd, weekdays), t), ct);
+
+    private const string ShiftStartParam =
+        "Only this shift: its start as HH:mm on the cell's clock, with shiftEnd (e.g. 06:00). Leave empty for whole days.";
+
+    private const string ShiftEndParam =
+        "The shift's end as HH:mm, with shiftStart (e.g. 14:30; 22:00 to 06:00 is a night shift, counted on each date " +
+        "as the hours before 06:00 and after 22:00).";
+
+    private const string WeekdaysParam = "Only these weekdays, e.g. mon-fri or sat,sun. Leave empty for every day.";
 
     [McpServerTool(Name = "get_utilization", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("How has each device's time been spent? One row per device and day, newest first: hours down, idle, " +
-                 "busy, manual and in error, busy percent, and OEE percent where the cell keeps it. busyPercent is the " +
-                 "share of time in the busy status, not the console's Machine Utilization report, which counts all the " +
-                 "time a pallet is in the machine and usually reads higher. Default: the last 7 " +
-                 "days (today counts as one, and is only part of a day), every device.")]
+                 "busy, manual and in error and busyPercent (the share of time in the dashboard's busy status), OEE " +
+                 "with its availability, performance and quality (percent, where the cell keeps them), and for " +
+                 "machines spindleHours and spindlePercent (spindle running time, as a share of the day; of the day so " +
+                 "far for today). resultPercent, results and avgMinutes are the console's Utilization report, rebuilt " +
+                 "from the result records: the share of the day covered by machining (machineResultTime says how a " +
+                 "machine's time is counted: from prep start to finish, alarms and operator calls included, or the net " +
+                 "machining time), station visits (from the instruction to Finish, so the operator's wait is included; " +
+                 "a visit counts once however many fixtures it had; avgMinutes is time per visit, not labour) or " +
+                 "transports, how many results touch the day and their average minutes in it. It usually reads higher " +
+                 "than busyPercent. The day summaries go back about 12 months, so older questions can be answered here; " +
+                 "the result figures only as far as the cell keeps results (historyDays, see notAvailable). With " +
+                 "shiftStart/shiftEnd the result figures cover only the shift's hours; the status hours, spindle and " +
+                 "OEE stay whole-day figures (the cell keeps no time of day for them), and weekdays filter every row. " +
+                 "Default: the last 7 days (today counts as one, and is only part of a day), every device; long ranges " +
+                 "hit the row cap, so pick a device.")]
     public static Task<string> GetUtilization(
         ToolContext context,
-        [Description("How many days back (today counts as one). Default 7.")] int days = 7,
+        [Description("How many days back (today counts as one; up to about 12 months are kept). Default 7.")] int days = 7,
         [Description(DeviceParam)] string? device = null,
+        [Description(ShiftStartParam)] string? shiftStart = null,
+        [Description(ShiftEndParam)] string? shiftEnd = null,
+        [Description(WeekdaysParam)] string? weekdays = null,
         CancellationToken ct = default) =>
-        context.Database("get_utilization", (r, t) => r.GetUtilizationAsync(days, device, t), ct);
+        context.Database("get_utilization", (r, t) =>
+            r.GetUtilizationAsync(days, device, Core.Cell.ShiftFilter.Parse(shiftStart, shiftEnd, weekdays), t), ct);
 
     [McpServerTool(Name = "get_recent_activity", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("What has the cell actually done lately, and were there gaps? Machining, work-set station and " +
                  "vehicle transport results, newest first: kind, device, start and finish, pallet, detail (program or " +
                  "operation) and result (a machining result says \"abnormal finish\" when the cycle ended abnormally; " +
-                 "tool life or spare tool selected alone is information, not a fault). Default: started in the last 8 " +
-                 "hours, every device. A long gap between items " +
-                 "means nothing was finished in that time.")]
+                 "tool life or spare tool selected alone is information, not a fault). Machining items add, when known, " +
+                 "prepMinutes (preparation before the cycle), spindleMinutes (spindle running), netMinutes (the cycle " +
+                 "without its stops, where the cell measures it) and plannedMinutes (the job's planned time). Work-set " +
+                 "items say what the station asked for (clamp, unclamp and clamp, …) and, in the result, what was done " +
+                 "and the part counts (unclamped good, unclamped scrap, to external process, clamped; re-machine when " +
+                 "parts go back for machining); note says when the cell's probe count can lower a fixture's parts. What " +
+                 "the times cover: a work-set item runs from the instruction being issued (pallet at the station) to " +
+                 "Finish, so it includes the wait for the operator, and is written only at Finish (one in progress isn't " +
+                 "listed); a transport runs from the pickup command to set-down; a machining item from the cycle start " +
+                 "to its end. Machining run by hand at the machine isn't logged: a gap here plus manual hours in " +
+                 "get_utilization means manual work. Default: started in the last 8 hours, every device. A long gap " +
+                 "between items means nothing was finished in that time.")]
     public static Task<string> GetRecentActivity(
         ToolContext context,
         [Description("How many hours back, from serverTime. Default 8.")] int hours = 8,

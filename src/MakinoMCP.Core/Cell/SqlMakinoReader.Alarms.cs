@@ -41,20 +41,51 @@ public sealed partial class SqlMakinoReader
                 reset,
                 minutes));
         }
+        r.Close();
         var (alarms, capped) = Cap(rows);
-        return new AlarmList(s.Now, capped, alarms);
+
+        // The help files of the devices with a PMC alarm in the list (CNC alarm texts come from the control itself).
+        var withPmc = alarms.Where(a => a.Source == "PMC").Select(a => a.Device).ToHashSet(StringComparer.Ordinal);
+        IReadOnlyList<AlarmHelpFiles>? help = null;
+        if (withPmc.Count > 0 && await DeviceParametersAsync(s, ct, AlarmHelpParameters) is { } parameters)
+        {
+            help = AlarmHelp(s.Devices.Where(d => withPmc.Contains(d.Name)).Select(d => (d.Name, parameters.GetValueOrDefault(d.Id))));
+        }
+        return new AlarmList(s.Now, capped, alarms) { HelpFiles = help };
     }
 
-    public async Task<AlarmSummary> GetAlarmSummaryAsync(int days, string? device, CancellationToken ct)
+    /// <summary>The DeviceParameters naming a device's PMC alarm help files, in the order they are used.</summary>
+    internal static readonly string[] AlarmHelpParameters = ["PMCAlarmMessageFilename", "PMC2AlarmMessageFilename", "AlarmDBFilename"];
+
+    /// <summary>Each device's non-empty help file names, in <see cref="AlarmHelpParameters"/> order; devices without
+    /// any are left out, and null when none has one.</summary>
+    internal static IReadOnlyList<AlarmHelpFiles>? AlarmHelp(IEnumerable<(string Device, Dictionary<string, string>? Parameters)> devices)
+    {
+        var list = new List<AlarmHelpFiles>();
+        foreach (var (name, parameters) in devices)
+        {
+            if (parameters is null) continue;
+            var files = AlarmHelpParameters
+                .Select(p => parameters.TryGetValue(p, out var v) ? v.Trim() : "")
+                .Where(v => v.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (files.Count > 0) list.Add(new AlarmHelpFiles(name, files));
+        }
+        return list.Count > 0 ? list : null;
+    }
+
+    public async Task<AlarmSummary> GetAlarmSummaryAsync(int days, string? device, ShiftFilter? shift, CancellationToken ct)
     {
         await using var s = await OpenAsync(ct);
         var deviceId = FindDevice(s.Names(), device);
 
         s.Schema.Require("PMCAlarms", "CNCAlarms");
 
-        using var cmd = Command(s.Connection, AlarmSummarySql(s.Schema));
+        using var cmd = Command(s.Connection, AlarmSummarySql(s.Schema, shift));
         AddWindow(cmd, s.Now, deviceId, hours: Days(days) * 24);
         cmd.Parameters.Add("@days", System.Data.SqlDbType.Int).Value = Days(days);
+        if (shift is not null) AddShift(cmd, shift);
 
         var rows = new List<AlarmSummaryRow>();
         using var r = await cmd.ExecuteReaderAsync(ct);
@@ -71,14 +102,16 @@ public sealed partial class SqlMakinoReader
                 Date(r, "LastSeen")!.Value));
         }
         var (summary, capped) = Cap(rows);
-        return new AlarmSummary(s.Now, capped, summary);
+        return new AlarmSummary(s.Now, capped, summary) { Shift = shift?.Text };
     }
 
     /// <summary>Alarms grouped by device, source and number. Calendar days like get_utilization: days = 1 is today so
-    /// far, days = 7 starts at midnight six days ago.</summary>
-    internal static string AlarmSummarySql(SchemaInfo schema)
+    /// far, days = 7 starts at midnight six days ago. With a shift, only alarms raised in it count.</summary>
+    internal static string AlarmSummarySql(SchemaInfo schema, ShiftFilter? shift = null)
     {
-        var union = AlarmUnion(schema, "AlarmTime >= DATEADD(day, 1 - @days, CAST(CAST(@now AS date) AS datetime))", includeWarnings: true);
+        var where = "AlarmTime >= DATEADD(day, 1 - @days, CAST(CAST(@now AS date) AS datetime))";
+        if (shift is not null) where += " AND " + InShiftSql("AlarmTime");
+        var union = AlarmUnion(schema, where, includeWarnings: true);
 
         // Grouped by number, not message: a message with values in it would otherwise split one alarm into many rows.
         return $"""

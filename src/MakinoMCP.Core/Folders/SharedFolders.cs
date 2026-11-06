@@ -140,6 +140,7 @@ public sealed class SharedFolders
         string? note = capped
             ? $"Showing the newest {shown.Count} of {sorted.Count} matching entries (the limit is {take}). Use a pattern or a subfolder to narrow it."
             : null;
+        if (AdeHints.For(dir) is { } ade) note = note is null ? ade : $"{note} {ade}";
         return new FileListing(folder.Trim(), Relative(root, dir), shown, sorted.Count, capped, note);
     }
 
@@ -278,6 +279,7 @@ public sealed class SharedFolders
             truncated = true;
             notes.Add($"One or more very long lines were cut at {_maxFileKB} KB.");
         }
+        if (AdeHints.For(full) is { } ade) notes.Add(ade);
 
         var text = string.Join('\n', lines.Select(l => l.Text));
         var first = lines.Count > 0 ? lines[0].No : 0;
