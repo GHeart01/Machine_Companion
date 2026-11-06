@@ -129,6 +129,8 @@ public sealed partial class SqlMakinoReader
             words.Append("; the cell doesn't say how it manages tools, so whether it holds work for missing tools is unknown");
         else if (s.ToolResource == 2)
             words.Append("; this cell doesn't hold jobs for missing tools, it only warns");
+        else
+            words.Append("; this cell holds a machining job on a machine that lacks its tools");
         if (s.ToolResource is 1 or 3 or 4)
             words.Append($"; this cell also checks remaining life ({Codes.ToolResourceManagementType(s.ToolResource)}), this check doesn't, so a machine can still lack tools with enough of them there");
         else
@@ -983,7 +985,8 @@ public sealed partial class SqlMakinoReader
                         Name = NonEmpty(t.Name), Cutting = t.Cutting, Usable = usable, MissingOn = missing,
                         NeededForType = settings.SumsPerType && sum != t.Needed ? sum : null,
                         UsableButFlagged = flagged is { Count: > 0 } ? flagged : null,
-                        Note = t.Known == false ? "tool type not registered on this cell (its FTN was deleted)" : null,
+                        Note = t.Known == false ? "tool type not registered on this cell (its FTN was deleted)"
+                            : t.LifeType == -1 ? "life type undefined in the program's tool set (the tool type was deleted and registered again, or has no life type): its life use isn't counted" : null,
                     };
                 }).ToList();
                 if (tools.Count == 0) return job;
@@ -1215,7 +1218,7 @@ public sealed partial class SqlMakinoReader
                 var own = p.Places.Where(pl => pl.UseProcessId == p.Id).ToList();
                 var heldOwn = own.Where(pl => pl.Holds.Count > 0).ToList();
                 if (heldOwn.Count > 0)
-                    reasons.Add($"{name}: on {Named(heldOwn.Select(pl => $"{pl.Place} ({string.Join(", ", pl.Holds)})").ToList())}");
+                    reasons.Add($"{name}: held on {Named(heldOwn.Select(pl => $"{pl.Place} ({string.Join(", ", pl.Holds)})").ToList())}");
                 var canTake = p.Places.Any(pl => pl.Enabled && pl.Holds.Count == 0 && (pl.UseProcessId == 0 || pl.UseProcessId == p.Id));
                 if (own.Count == 0 && !canTake)
                 {

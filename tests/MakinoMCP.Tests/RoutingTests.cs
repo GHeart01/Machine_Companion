@@ -331,7 +331,7 @@ public class RoutingTests(ITestOutputHelper output)
         var ct = CancellationToken.None;
 
         var orders = await reader.GetOrdersAsync(true, ct);
-        var parts = orders.Orders.Select(o => o.Part.Split(" rev ")[0]).Distinct().Take(3).ToList();
+        var parts = orders.Orders.Select(o => o.Part.Split(" rev ")[0]).Distinct().Take(8).ToList();
         Skip.If(parts.Count == 0, "no active orders");
         foreach (var name in parts)
         {
