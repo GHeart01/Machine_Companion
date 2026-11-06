@@ -162,9 +162,10 @@ footer a { color: var(--muted); }
         <h1>Ask Claude what your Makino cell is doing.</h1>
         <p class="lede">MakinoMCP gives Claude a read-only view of a Makino MAS-A5 cell: which machines are running, which alarms are open, what the pallets are doing, and what the log files say.</p>
         <div class="actions">
-          <a class="btn" href="https://github.com/GHeart01/Machine_Companion/releases/latest">Download for Windows</a>
+          <a class="btn" id="download" href="https://github.com/GHeart01/Machine_Companion/releases/latest">Download for Windows</a>
           <a class="btn quiet" href="#setup">How to set it up</a>
         </div>
+        <p class="note" id="download-meta" hidden></p>
         <p class="note">Free and open source (MIT). It only reads: it never changes the cell, the database or any file.</p>
       </div>
 
@@ -238,7 +239,7 @@ footer a { color: var(--muted); }
       <h2 class="t" id="setup-h">Set it up</h2>
       <p class="prose">You need Windows 10 or 11, network access to the cell's SQL Server, and a SQL or Windows login that can read the Makino database.</p>
       <ol class="steps">
-        <li>Download <code>MakinoMCP-&lt;version&gt;-win-x64.zip</code> from the <a href="https://github.com/GHeart01/Machine_Companion/releases/latest">latest release</a> and check it against the <code>.sha256</code> file beside it.</li>
+        <li>Download <code>MakinoMCP-&lt;version&gt;-win-x64.zip</code> with the button at the top, or from the <a href="https://github.com/GHeart01/Machine_Companion/releases/latest">latest release</a>, and check it against the <code>.sha256</code> file on the release page.</li>
         <li>Unzip it to a folder, ideally on a share so every PC uses one copy.</li>
         <li>Run <code>MakinoMCP.exe</code>. Enter the server, database and login, choose <strong>Test connection</strong>, add any folders to share, then <strong>Save</strong>.</li>
         <li>Open <code>MakinoMCP.exe</code> once on each PC that will use Claude. The first time, it copies itself to the PC (about a minute on a slow network). After that Claude connects in a second.</li>
@@ -326,6 +327,27 @@ footer a { color: var(--muted); }
   </footer>
 </div>
 
+<script>
+// Point the download button straight at the latest release's zip. Asset names carry the version, so ask
+// GitHub which one is latest; if that fails the button keeps going to the release page.
+(function () {
+  var btn = document.getElementById('download'), meta = document.getElementById('download-meta');
+  fetch('https://api.github.com/repos/GHeart01/Machine_Companion/releases/latest', { headers: { Accept: 'application/vnd.github+json' } })
+    .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(function (rel) {
+      var zip = (rel.assets || []).filter(function (a) { return /-win-x64\.zip$/.test(a.name); })[0];
+      if (!zip) return;
+      btn.href = zip.browser_download_url;
+      var mb = Math.round(zip.size / 1048576);
+      meta.textContent = 'Version ' + String(rel.tag_name).replace(/^v/, '') + ', a ' + mb + ' MB zip. ';
+      var a = document.createElement('a');
+      a.href = rel.html_url; a.textContent = 'Checksum and release notes';
+      meta.appendChild(a);
+      meta.hidden = false;
+    })
+    .catch(function () { /* keep the release page link */ });
+})();
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.1/p5.min.js" integrity="sha512-265OeMthg1wxVfU0mpNMtNrz2E+OKxJ9CNbmv+oYCxNO93Lgmxq9pwqubnQqkSJgzvsqLju8Mr106tcMlwsZxg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script>
 // A pocket being cleared: offset passes from the middle out, rapids dashed, then the finishing pass on the wall.
