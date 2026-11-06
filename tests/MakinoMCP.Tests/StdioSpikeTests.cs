@@ -232,6 +232,57 @@ public class StdioSpikeTests
     }
 
     [Fact]
+    public async Task The_copy_survives_the_client_killing_the_sessions_process_tree()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var share = Path.Combine(root, "share");
+            var localAppData = Path.Combine(root, "localappdata");
+            Directory.CreateDirectory(localAppData);
+
+            var (launcherOut, mainOut) = BuildOutputs();
+            CopyDir(launcherOut, share);
+            File.WriteAllText(Path.Combine(share, "current.txt"), "0.0.0-test");
+            var version = Path.Combine(share, "versions", "0.0.0-test");
+            CopyDir(mainOut, version);
+            var pad = Directory.CreateDirectory(Path.Combine(version, "pad")).FullName;
+            for (var i = 0; i < 12000; i++) File.WriteAllText(Path.Combine(pad, $"f{i}.txt"), "x");
+
+            var psi = new System.Diagnostics.ProcessStartInfo(Path.Combine(share, "MakinoMCP.exe"), "serve")
+            {
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            psi.Environment["LOCALAPPDATA"] = localAppData;
+            using var launcher = System.Diagnostics.Process.Start(psi)!;
+            _ = launcher.StandardOutput.ReadToEndAsync();
+            _ = launcher.StandardError.ReadToEndAsync();
+            var app = Path.Combine(localAppData, "MakinoMCP", "app");
+            var started = DateTime.UtcNow.AddSeconds(20);
+            while (DateTime.UtcNow < started && !(Directory.Exists(app) && Directory.GetDirectories(app, "*.tmp*").Length > 0))
+                await Task.Delay(100);
+            Assert.True(Directory.GetDirectories(app, "*.tmp*").Length > 0, "the background copy never started");
+
+            // What an MCP client does when a session closes: end the whole tree, as taskkill /T /F does.
+            launcher.Kill(entireProcessTree: true);
+            launcher.WaitForExit(10000);
+
+            var installed = Path.Combine(app, "0.0.0-test", "MakinoMCP.exe");
+            var deadline = DateTime.UtcNow.AddSeconds(90);
+            while (DateTime.UtcNow < deadline && !File.Exists(installed)) await Task.Delay(200);
+            Assert.True(File.Exists(installed), "the copy died with the session's process tree");
+        }
+        finally
+        {
+            await CleanUp(root);
+        }
+    }
+
+    [Fact]
     public async Task Setup_copies_to_this_pc_before_starting_the_local_copy()
     {
         var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));

@@ -19,8 +19,11 @@ namespace MakinoMCP.Launcher
             try
             {
                 string launcherDir = AppDomain.CurrentDomain.BaseDirectory;
-                // Background copy started by a first run; must stay silent (no stdout/stderr).
+                // Background copy started when this PC lacks the current build; must stay silent (no stdout/stderr).
                 if (args.Length == 2 && args[0] == "--prefetch") return Prefetch(launcherDir, args[1]);
+                // Middle step of StartPrefetch: starts the copy and exits at once, so the copy has no living parent
+                // and survives the MCP client ending the session's process tree.
+                if (args.Length == 2 && args[0] == "--prefetch-detach") { StartDetached("--prefetch", args[1]); return 0; }
                 // Setup (no arguments, or "setup") prepares this PC first: the copy is finished before the setup window
                 // opens, while a small window shows progress. Serving never waits for a copy (see ResolveExe).
                 if (IsSetupMode(args)) PrepareThisPc(launcherDir);
@@ -222,19 +225,32 @@ namespace MakinoMCP.Launcher
 
         private const int CreateNoWindow = 0x08000000;
 
-        // Starts "MakinoMCP.exe --prefetch <version>" detached. bInheritHandles is FALSE and no std handles are
-        // passed, so the child cannot hold the MCP client's stdio pipes open. Best effort: the session works without it.
+        private const int CreateBreakawayFromJob = 0x01000000;
+
+        // Copies <version> to this PC in the background: "--prefetch-detach" starts "--prefetch" and exits, so the copy
+        // outlives an MCP client that ends the session's whole process tree when the session closes (measured: a copy
+        // started as a direct child died with a 5-second session, leaving a half-copied build). Best effort: the
+        // session works without it.
         private static void StartPrefetch(string version)
+        {
+            StartDetached("--prefetch-detach", version);
+        }
+
+        // Starts "MakinoMCP.exe <verb> <version>" detached: out of the client's job when the job allows it,
+        // bInheritHandles FALSE and no std handles, so it can't hold the MCP client's stdio pipes open.
+        private static void StartDetached(string verb, string version)
         {
             try
             {
                 string self = Process.GetCurrentProcess().MainModule.FileName;
-                var cmd = new StringBuilder(Quote(self) + " --prefetch " + Quote(version));
                 var si = new STARTUPINFO();
                 si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
                 PROCESS_INFORMATION pi;
-                if (!CreateProcessW(null, cmd, IntPtr.Zero, IntPtr.Zero, false, CreateNoWindow, IntPtr.Zero,
-                        Path.GetTempPath(), ref si, out pi))
+                // A job that forbids breakaway refuses the flag (access denied): then start inside the job.
+                if (!CreateProcessW(null, new StringBuilder(Quote(self) + " " + verb + " " + Quote(version)), IntPtr.Zero, IntPtr.Zero,
+                        false, CreateNoWindow | CreateBreakawayFromJob, IntPtr.Zero, Path.GetTempPath(), ref si, out pi)
+                    && !CreateProcessW(null, new StringBuilder(Quote(self) + " " + verb + " " + Quote(version)), IntPtr.Zero, IntPtr.Zero,
+                        false, CreateNoWindow, IntPtr.Zero, Path.GetTempPath(), ref si, out pi))
                 {
                     Console.Error.WriteLine("MakinoMCP: could not start the background copy (Win32 error " + Marshal.GetLastWin32Error() + ").");
                     return;
@@ -263,7 +279,16 @@ namespace MakinoMCP.Launcher
             try
             {
                 if (!IsValidVersion(version)) return 1;
-                CopyVersionToLocal(launcherDir, version, null);
+                // One copy per build at a time: sessions started in quick succession each ask for one.
+                using (var only = new System.Threading.Mutex(false, @"Local\MakinoMCP-prefetch-" + version))
+                {
+                    bool mine;
+                    try { mine = only.WaitOne(0); }
+                    catch (System.Threading.AbandonedMutexException) { mine = true; }
+                    if (!mine) return 0;
+                    try { CopyVersionToLocal(launcherDir, version, null); }
+                    finally { only.ReleaseMutex(); }
+                }
                 return 0;
             }
             catch
