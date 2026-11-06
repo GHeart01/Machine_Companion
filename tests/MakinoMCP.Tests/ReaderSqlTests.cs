@@ -27,7 +27,7 @@ public class ReaderSqlTests
             "TablePalletID", "TableStatus", "FrontPalletID", "FrontStatus", "BackPalletID", "BackStatus", "PowerStatus",
             "Status", "Recovery", "ToolStatus", "CNCRun", "OperatorCall", "RunJob", "MainONumber", "ExecONumber",
             "TableReservedPalletID", "FrontReservedPalletID", "BackReservedPalletID", "DeviceOpen", "StartDateTime",
-            "FinishDateTime", "JobID", "PowerOffResult"],
+            "FinishDateTime", "JobID", "PowerOffResult", "SystemMode"],
         ["MachineJobs"] = ["JobID", "NCProgramFileID"],
         ["NCProgramFiles"] = ["NCProgramFileID", "Name"],
         ["WorkSetStatus"] = ["DeviceID", "Connected", "Emergency", "WSSMode", "DeviceSkip", "TablePalletID", "TableStatus",
@@ -37,7 +37,7 @@ public class ReaderSqlTests
             "FromDeviceName", "ToDeviceName", "Buffer1PalletID", "Buffer1Status", "Buffer2PalletID", "Buffer2Status",
             "DeviceOpen", "StartDateTime", "PowerStatus", "PowerOffResult"],
         ["ViewVehicleStatus"] = ["DeviceNumber", "DeviceName", "Connected", "Status", "Emergency", "Recovery",
-            "PalletNumber", "PalletNumber2", "Command", "FromDevice", "ToDevice", "DeviceOpen", "StartDateTime"],
+            "PalletNumber", "PalletNumber2", "Command", "FromDevice", "ToDevice", "DeviceOpen", "StartDateTime", "SystemMode"],
         ["SystemParameters"] = ["SystemID", "ParameterName", "ParameterValue"],
     };
 
@@ -176,7 +176,10 @@ public class ReaderSqlTests
         Assert.Null(SqlMakinoReader.VehicleSql(SchemaWithout("VehicleStatus", "ViewVehicleStatus")));
 
         Assert.Empty(SqlMakinoReader.VehicleMissing(SchemaWithout()));
-        Assert.Equal(["vehicle mode", "buffer status"], SqlMakinoReader.VehicleMissing(SchemaWithout("VehicleStatus")));
+        // Through the view the mode is only system or not; a view without SystemMode can't tell the mode at all.
+        Assert.Equal(["buffer status"], SqlMakinoReader.VehicleMissing(SchemaWithout("VehicleStatus")));
+        Assert.Equal(["buffer status", "vehicle mode"],
+            SqlMakinoReader.VehicleMissing(SchemaWithout("VehicleStatus", "ViewVehicleStatus.SystemMode")));
         Assert.Equal(["vehicle status"], SqlMakinoReader.VehicleMissing(SchemaWithout("VehicleStatus", "ViewVehicleStatus")));
         Assert.Equal(["transport to"], SqlMakinoReader.VehicleMissing(SchemaWithout("VehicleStatus.ToDeviceName")));
         Assert.Contains("transport to", SqlMakinoReader.VehicleMissing(SchemaWithout("VehicleStatus", "ViewVehicleStatus.ToDevice")));

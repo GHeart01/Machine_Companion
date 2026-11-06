@@ -5,17 +5,7 @@ namespace MakinoMCP.Core.Cell;
 
 public static partial class Codes
 {
-    // PalletLocation.CurDevicePosition (DevicePosition) at a machine, work-set station or vehicle. Stockers number
-    // their shelves instead, so this list doesn't apply there.
-    private static readonly Dictionary<int, string> DevicePositions = new()
-    {
-        [0] = "undefined",
-        [1] = "table",
-        [2] = "front",
-        [3] = "back",
-        [4] = "buffer 1",
-        [5] = "buffer 2",
-    };
+    // Device position words (DevicePosition) are in Codes.Devices.cs.
 
     // Pallets.PalletType (PalletType): flags, 0 is a standard pallet and -1 undefined.
     private static readonly Dictionary<int, string> PalletTypeBits = new()
@@ -62,8 +52,6 @@ public static partial class Codes
         [18] = "clamp NG",
         [19] = "unclamp NG",
     };
-
-    public static string DevicePosition(int? value) => Lookup(value, DevicePositions);
 
     /// <summary>A pallet type in words: "standard" for 0, "undefined" for -1, else its flags.</summary>
     public static string PalletType(int? value) => value switch

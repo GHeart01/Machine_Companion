@@ -13,26 +13,46 @@ public static partial class CellTools
     [McpServerTool(Name = "get_cell_overview", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("What is every device in the cell doing right now? Start here. For each device (machines, vehicles, " +
                  "work-set stations, …): connected, emergency stop and mode (both left out while disconnected, when the " +
-                 "cell's values are stale), status (the cell's own down/idle/busy/manual/error: a machine closed or " +
-                 "stopped at an operator call reads idle, and error comes from an open PMC alarm, emergency stop or " +
+                 "cell's values are stale), status (the cell's own down/idle/busy/manual/error: a machine is busy only " +
+                 "with a running job, in system mode, the CNC in memory, remote or DNC and no operator call, so a machine " +
+                 "stopped at an operator call or closed reads idle; manual also covers a manual transport on its table or " +
+                 "front and a CNC switched to MDI or edit mid-job; a work-set station is busy while it shows an " +
+                 "instruction (waiting on or being worked by an operator) and manual when out of system mode, the vehicle " +
+                 "likewise; error comes from an open PMC alarm, emergency stop or " +
                  "recovery, never from a CNC alarm, so check the open alarm count too), " +
                  "recoveryRequest (true: the device waits for an operator to recover it), open (only shown when false: " +
                  "the device is closed and gets no automatic work although it reads idle; devices come up closed after " +
-                 "a software start, Stop System or Work Data Reset), current action, since and plannedFinish of the " +
+                 "a software start, Stop System or Work Data Reset), transportCancelled (only on cells that use transport " +
+                 "cancel: no pallets are sent to it; not the same as the console's load disable, which MakinoMCP can't " +
+                 "see), current action, since and plannedFinish of the " +
                  "machining, station instruction or transport going on now, the " +
-                 "pallets on it with each position's state (\"next …\" spots are pallets reserved to come there next), " +
-                 "how many alarms and warnings are open, and when it last finished something (lastActivity). Machines " +
-                 "also show toolStatus (ready, lacking tools, tool alarm, …), cncRun, operatorCall, runJob and program " +
+                 "pallets on it with each position's state (\"next …\" spots are pallets reserved to come there next; a " +
+                 "position with palletNumber null holds no pallet but still has a state, possibly a position status " +
+                 "error), how many alarms and warnings are open, and when it last finished something (lastActivity). Machines " +
+                 "also show systemMode (system or standalone), toolStatus (ready, lacking tools, tool alarm, …), cncRun, " +
+                 "operatorCall, runJob, program " +
                  "(main and executing O-number, the running job's program name, and mainIs when the main O-number is " +
-                 "the cell's own dataserver or work offset program); work-set stations show the instruction while " +
+                 "the cell's own dataserver or work offset program), waitingFor (an extra tool pallet it needs), " +
+                 "ncMemory (free KB and program slots as the cell last recorded them; it matters only when " +
+                 "ncProgramDownload is \"only when needed\"), and nextCmmIn/nextGageIn (parts until the next per-machine " +
+                 "inspection); work-set stations show the instruction while " +
                  "busy and any disabledOperations; the vehicle shows its transport command (in action), transportFrom/transportTo and the " +
-                 "pallets on its buffers. powerStatus and powerOffResult appear during a scheduled power-off. Cell level: " +
-                 "duty (on or off duty; dutySchedule when it follows the weekly schedule), powerOff when one is " +
-                 "scheduled, and recoveryPolicy: what the cell does after each kind of abnormal finish (raise a " +
+                 "pallets on its buffers (through the vendor's vehicle view, the normal path for the stock reporting " +
+                 "login, its mode is only system or not). powerStatus and powerOffResult appear during a scheduled power-off. Cell level: " +
+                 "softwareVersion, duty (on or off duty; dutySchedule when it follows the weekly schedule), powerOff when one is " +
+                 "scheduled, recoveryPolicy: what the cell does after each kind of abnormal finish (raise a " +
                  "recovery request, unless the machine is in auto-unloading mode; finish normally; finish abnormally; " +
-                 "or always wait), per machine when the cell sets it per device. historyDays is how many days the cell keeps PMC alarms and result history " +
+                 "or always wait), per machine when the cell sets it per device (so an abnormal finish with tool-monitor " +
+                 "alarms that scrapped the part and moved on is often the designed behaviour, day or night), " +
+                 "schedulingRules (the order the cell sends waiting pallets in: transportOrder, first term decides most, " +
+                 "destinationOrder, notUsed: default terms this cell left out, such as order due date), " +
+                 "ncProgramDownload and cellFiles (the ADE drop and error folders, monitoring output, tool data export " +
+                 "folders: paths only, add one as a shared folder to read it). Retention: historyDays is how many days the cell keeps PMC alarms and result history " +
                  "(the vendor's default of 90 with historyDaysAssumed when the cell doesn't say; CNC alarms are " +
-                 "limited to about the last 200 regardless). lastActivity " +
+                 "limited to about the last 200 regardless); presetHistoryMonths and toolMoveHistoryMonths for tool data " +
+                 "changes and tool moves (the purge's fallback of 12 and 3 flagged *Assumed when the cell doesn't say); " +
+                 "day summaries go back about 12 months and daily order counts about 3. The cell purges as rows are added, " +
+                 "per device for alarms and results, so these are minimums: an idle device keeps older rows. lastActivity " +
                  "looks back 30 days: null means nothing finished in that time, not " +
                  "that it never did. Status values other than since carry no timestamp, so compare lastActivity with serverTime to " +
                  "notice a device that is connected but has done nothing for hours. notAvailable names fields this " +
@@ -418,29 +438,52 @@ public static partial class CellTools
     [McpServerTool(Name = "get_attention", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("What is waiting on a person right now? One list, most severe first: devices with a recovery " +
                  "request (detail: open alarms and what the device was doing; \"lacking-tool recovery request\" when the " +
-                 "machine holds a pallet for missing tools), error, emergency stop, disconnected or a machine's operator " +
-                 "call; instructions set at a " +
-                 "work-set station (clamp, unclamp, …); manual transports not finished; " +
+                 "machine holds a pallet for missing tools), error, emergency stop, disconnected, a machine's operator " +
+                 "call, a machine waiting for the operator to confirm 5-axis coupling or for a security login, a feed " +
+                 "hold mid-cycle (the dashboard still reads busy), a station's help request or operation timeout; a " +
+                 "possible position status error (a table with no pallet that still reads busy); instructions set at a " +
+                 "work-set station (clamp, unclamp, …; detail: progress, an inspection confirmation it waits for, " +
+                 "re-machining, a whole-pallet other/input/output operation merged with its manual transport; one that has " +
+                 "stood long usually ends with the operator's Finish on the station, or on the console for a virtual " +
+                 "station); manual " +
+                 "transports not finished (kind, destination, and why: not picked up yet, waiting for the destination to " +
+                 "be opened or closed as the cell requires, or who completes it); a machine waiting for an extra tool " +
+                 "pallet that is outside the cell; " +
                  "fixtures damaged, pre-machining suspended (with the reason) or past their reclamp time; tools in " +
                  "alarm or with an offset error per machine; fixtures lacking tools (lackingToolScope: which of their " +
                  "jobs the cell checks; when the cell doesn't work this out, notAvailable says so, so no such items " +
-                 "is then not an all-clear); stations " +
+                 "is then not an all-clear; missingTools: for those not parked, per program, the tool types short on " +
+                 "the machines that may run it, by status, with the tool crib's count); pallets held because one fixture lacks tools (cells " +
+                 "that machine a pallet only when every fixture has its tools); waiting work blocked: fixtures whose " +
+                 "waiting job no feasible device can take now (closed, disconnected, emergency stop, not in system " +
+                 "mode, an open PMC alarm, any open alarm at a station, skipped, transport cancelled), one item per job " +
+                 "type and device set with fixtures, some pallets, and the devices with their reasons (get_pallet_diagnosis " +
+                 "for one pallet); stations " +
                  "or the vehicle over their maintenance cycle count; closed or skipped devices, low in the list since " +
                  "closing is often deliberate (one \"all devices closed\" item when every device is). How recovery works " +
                  "on the cell: an open alarm without a recovery request is fixed at the device first; a recovery request " +
                  "means the local alarm was reset and the console's recovery comes next (check where the pallet " +
                  "physically is: Retry needs it where it was before the command, Normal Finish where it would be after). " +
-                 "Don't suggest Cancel, and Work Data Reset only as a last resort. Fixtures that are only suspended or held at the " +
-                 "work-set station (operators park fixtures this way) are counted in parked: how many, how many of " +
-                 "them lack tools, per place (where their pallets are) and condition; includeParked=true lists them " +
-                 "last as items. A fixture's detail is its status reason: one text shared by suspend, hold, damaged and " +
+                 "Don't suggest Cancel, and Work Data Reset only as a last resort. The recovery history isn't in the " +
+                 "database (only in the cell's RecoveryMaintenaceOperation.log, when its log folder is shared); a fixture " +
+                 "back at waiting may just have been pallet-recovered and will re-run its whole job. Fixtures held back on " +
+                 "purpose are counted in parked: only suspended (loading allowed, no machining) or held at the work-set " +
+                 "station (not taken to a station), and those the cell's rules hold: their order's machining suspended, " +
+                 "an off-duty process while on duty, an operator-call job while off duty (an operator-call tool in the " +
+                 "program isn't checked); how many, how many lack tools, how many hold back a job waiting now (blocking; " +
+                 "the rest have the flag set with no work waiting), per place (where their pallets are) and condition, " +
+                 "with withParts for held fixtures that still hold parts; includeParked=true lists them " +
+                 "last as items. Damaged fixtures get no loading or machining and their parts are unloaded at a station. " +
+                 "A fixture's detail is its status reason: one text shared by suspend, hold, damaged and " +
                  "off duty, typed by an operator or written by the cell, possibly empty or left from an earlier " +
                  "condition (a machine recovery can suspend fixtures too). Each item: kind, what, device or " +
-                 "pallet/fixture, order and process, detail, since (only when the cell records it). counts: how many " +
+                 "pallet/fixture, order and process, detail, since (only when the cell records it), fixtures and pallets " +
+                 "for grouped items. counts: how many " +
                  "of each condition the cell has, parked ones included, even past the row cap. " +
                  "machineToolStatus: each machine's tool status, as context only, one value by precedence (\"lacking " +
                  "tools\" there usually means a later job waits for a tool, and it hides tool alarms: see get_tools " +
-                 "filter=alarm; the fixtures concerned are the items). notAvailable names sections " +
+                 "filter=alarm; the fixtures concerned are the items). notes: what this cell's settings mean for the " +
+                 "list (e.g. a probe that lowers part counts). notAvailable names sections " +
                  "this cell or login can't show.")]
     public static Task<string> GetAttention(
         ToolContext context,

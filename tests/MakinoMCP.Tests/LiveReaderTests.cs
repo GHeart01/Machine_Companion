@@ -448,7 +448,7 @@ public class LiveReaderTests(ITestOutputHelper output)
         var overview = await Reader().GetOverviewAsync(ct);
         var list = await Reader(100000).GetAttentionAsync(true, ct);
 
-        string[] kinds = ["device", "work set", "manual transport", "fixture", "tools", "maintenance"];
+        string[] kinds = ["device", "work set", "manual transport", "fixture", "tools", "maintenance", "waiting work", "pallet", "cell"];
         Assert.All(list.Items, i => Assert.Contains(i.Kind, kinds));
         Assert.All(list.Items, i => Assert.False(string.IsNullOrWhiteSpace(i.What)));
         Assert.All(list.Items.Where(i => i.Device is not null), i => Assert.Contains(overview.Devices, d => d.Name == i.Device));
@@ -460,7 +460,7 @@ public class LiveReaderTests(ITestOutputHelper output)
         if (!list.Capped)
         {
             Assert.Equal(list.Counts.GetValueOrDefault("machining suspended"),
-                list.Items.Count(i => i.Kind == "fixture" && i.What.Contains("machining suspended", StringComparison.Ordinal)));
+                list.Items.Count(i => i.Kind == "fixture" && i.What.Split(", ").Contains("machining suspended")));
         }
         // Parked fixtures (only suspended or on hold) come after everything else.
         var firstParked = list.Items.ToList().FindIndex(i => i.Kind == "fixture" && IsParked(i.What));
@@ -480,7 +480,12 @@ public class LiveReaderTests(ITestOutputHelper output)
         Assert.Equal(list.Counts, compact.Counts);
     }
 
+    // Parked: only suspended or on hold, or held by the cell's rules (order machining suspend, off duty), lacking tools aside.
     private static bool IsParked(string what) =>
-        what.Split(", ").All(w => w is "machining suspended" or "work-set hold" or "lacking tools")
-        && (what.Contains("machining suspended", StringComparison.Ordinal) || what.Contains("work-set hold", StringComparison.Ordinal));
+        what.Split(", ").All(w => w is "machining suspended" or "work-set hold" or "lacking tools" || IsHold(w))
+        && what.Split(", ").Any(w => w is "machining suspended" or "work-set hold" || IsHold(w));
+
+    private static bool IsHold(string words) =>
+        words.StartsWith(SqlMakinoReader.OrderSuspendHold, StringComparison.Ordinal)
+        || words is SqlMakinoReader.OffDutyProcessHold or SqlMakinoReader.OffDutyCallHold;
 }

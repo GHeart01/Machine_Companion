@@ -223,7 +223,7 @@ public class AttentionReaderTests
             list.Items.Select(i => i.Kind));
         Assert.Equal(7, list.Items[2].Pallet); // newer transport first
         Assert.Equal("waiting for transport", list.Items[3].What);
-        Assert.Equal("to MC2", list.Items[3].Detail);
+        Assert.Equal("to MC2, not picked up yet (can still be cancelled)", list.Items[3].Detail);
         Assert.Equal(Now.AddMinutes(-40), list.Items[3].Since);
         Assert.Equal("unclamp and clamp", list.Items[1].What);
         Assert.Equal("quantity 1", list.Items[1].Detail);

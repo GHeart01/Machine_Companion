@@ -28,12 +28,25 @@ public sealed class ToolContext
         "order progress, get_pallet_diagnosis for why a pallet's work isn't moving. Times are the cell database server's clock; every database result carries serverTime, the " +
         "server's current time, so measure \"open now\" and \"2 hours ago\" against it, not your own clock. History is " +
         "limited: the overview's historyDays is how many days the cell keeps PMC alarms and results (the vendor's " +
-        "default of 90 when the cell doesn't say, flagged historyDaysAssumed); CNC alarms are limited to about the " +
-        "last 200 regardless. Tool lengths are in the cell's own unit " +
+        "default of 90 when the cell doesn't say, flagged historyDaysAssumed); presetHistoryMonths and " +
+        "toolMoveHistoryMonths cover tool data changes and tool moves (about 12 and 3 months when the cell doesn't " +
+        "say); day summaries go back about 12 months and daily order counts about 3; CNC alarms are limited to about the " +
+        "last 200 regardless. The cell purges as rows are added, so these are minimums. Tool lengths are in the cell's own unit " +
         "(lengthUnit), not always mm, and diameters are radii when diameterIsRadius is true. A device's mode and " +
         "emergency stop are left out while it is disconnected. Values whose meaning is not known are shown as \"code N\"; don't guess what " +
         "they mean. Results are capped at a row limit; capped: true means more rows existed, so narrow the " +
-        "time range or pick a device. Shared folders hold the cell PC's log files and similar text files.";
+        "time range or pick a device. What MakinoMCP sees is decided by its SQL login, not by anyone's console " +
+        "group; the cell's own read-only reporting login can't read a few tables (the vehicle's status table, the tool " +
+        "alarm history), and the vendor's views stand in for them, so name a gap from notAvailable rather than guess. " +
+        "Kept only in the cell server's memory or on the console, so not visible here: a machine's maintenance mode, " +
+        "load disable and auto-unload mode, an NC download in progress, why a device was closed, the spindle and next " +
+        "tool, overrides, single block, the memory-protect key, ATC/APC ready, the NC block running, the magazine size, " +
+        "the vehicle's command phase and wait reasons, the full transport queue order, a recovery's error number and " +
+        "offered actions, and whether an alarm was e-mailed. Visible: CNC mode, cncRun (hold matches the Feed Hold lamp " +
+        "when no operator call is active), the executing O-number, open/closed, transport cancelled and system or " +
+        "standalone; transport cancel is not load disable. Recovery history (what was recovered, how, when, Work Data " +
+        "Resets) is only in the cell's RecoveryMaintenaceOperation.log, readable when the cell's log folder is a shared " +
+        "folder. Shared folders hold the cell PC's log files and similar text files.";
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
