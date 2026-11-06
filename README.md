@@ -44,8 +44,9 @@ Windows SmartScreen may warn that the program is from an unknown publisher: it i
 then **Run anyway** only if you downloaded it from the release above.
 
 `MakinoMCP.exe` is a small launcher. `current.txt` names the current build in the `versions` folder; the launcher copies
-that build once to `%LOCALAPPDATA%\MakinoMCP\app\<build>` and from then on runs the PC's own copy (on the very first
-start it runs straight from the share while the copy is made in the background). Because PCs run their own copies, a new
+that build once to `%LOCALAPPDATA%\MakinoMCP\app\<build>` and from then on runs the PC's own copy. While a new build
+is being copied in the background, Claude is served by the PC's previous copy; on a PC that has none yet, it runs
+straight from the share, which can be too slow for Claude's first connection (open `MakinoMCP.exe` once first). Because PCs run their own copies, a new
 build can be put on the share while people are connected (see [Updating](#updating)). If the share is unreachable it
 runs the newest copy already on the PC. Settings are saved in `MakinoMCP.settings.json` beside the launcher.
 
@@ -91,8 +92,9 @@ The Cowork route is not yet tested. If Cowork doesn't list the MakinoMCP tools a
      and `MakinoMCP.exe.config` if they changed, and `current.txt` last. Keep the share's `MakinoMCP.settings.json`.
      Windows won't overwrite a launcher that is running but does let you move it, so move the old `MakinoMCP.exe`
      aside first (for example to `versions\old-launchers\MakinoMCP.exe.<date>`).
-2. Open `MakinoMCP.exe` once on each PC. The first time, it copies the new build to the PC (about a minute on a slow
-   network) and removes the PC's older copies. After that Claude connects in a second.
+2. Nothing to do on the PCs. The next Claude session on each PC still uses its previous copy and copies the new build
+   in the background; the session after that runs the new build and removes the PC's older copies. To switch a PC
+   over at once, open `MakinoMCP.exe` there (it copies the new build before the setup window opens).
 
 Claude sessions already running keep using their build until they are restarted.
 

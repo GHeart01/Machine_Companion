@@ -145,12 +145,13 @@ namespace MakinoMCP.Launcher
                     return Path.Combine(target, "MakinoMCP.exe");
                 }
 
-                // First start on this PC: the copy is far slower than a client's connect timeout, so serve this
-                // session straight from the share and copy in a detached background process for the next start.
+                // This build isn't on the PC yet. Copying it, or even running it from the share, is slower than a
+                // client's connect timeout, so copy it in a detached background process for the next start and serve
+                // this session from the PC's newest copy; a PC that has none runs this build straight from the share.
                 string shareExe = Path.Combine(launcherDir, "versions", version, "MakinoMCP.exe");
                 if (!File.Exists(shareExe)) throw new FileNotFoundException("version " + version + " is not on the share");
                 StartPrefetch(version);
-                return shareExe;
+                return NewestLocal(local) ?? shareExe;
             }
             catch (Exception ex)
             {

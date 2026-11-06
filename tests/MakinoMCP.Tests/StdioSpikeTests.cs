@@ -153,6 +153,40 @@ public class StdioSpikeTests
     }
 
     [Fact]
+    public async Task A_new_build_is_served_from_the_previous_local_copy_while_it_copies()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var share = Path.Combine(root, "share");
+            var localAppData = Path.Combine(root, "localappdata");
+
+            var (launcherOut, mainOut) = BuildOutputs();
+            CopyDir(launcherOut, share);
+            File.WriteAllText(Path.Combine(share, "current.txt"), "0.0.0-new");
+            // The new build on the share can't run at all, so a working session proves the previous local copy served it.
+            var newBuild = Directory.CreateDirectory(Path.Combine(share, "versions", "0.0.0-new")).FullName;
+            File.WriteAllText(Path.Combine(newBuild, "MakinoMCP.exe"), "not a program");
+            CopyDir(mainOut, Path.Combine(localAppData, "MakinoMCP", "app", "0.0.0-old"));
+
+            await using (var client = await McpClient.CreateAsync(NewTransport(share, localAppData)))
+            {
+                var tools = await client.ListToolsAsync();
+                Assert.Equal(ToolNames.Order(), tools.Select(t => t.Name).Order());
+            }
+
+            var copied = Path.Combine(localAppData, "MakinoMCP", "app", "0.0.0-new", "MakinoMCP.exe");
+            var deadline = DateTime.UtcNow.AddSeconds(30);
+            while (DateTime.UtcNow < deadline && !File.Exists(copied)) await Task.Delay(200);
+            Assert.True(File.Exists(copied), "the new build was never copied in the background");
+        }
+        finally
+        {
+            await CleanUp(root);
+        }
+    }
+
+    [Fact]
     public async Task Prefetch_does_not_hold_the_clients_stdout_open()
     {
         var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
