@@ -58,6 +58,69 @@ public class AttentionReaderTests
     }
 
     [Fact]
+    public void Closed_and_skipped_devices_are_low_rank_items_and_all_closed_is_one_item()
+    {
+        var some = Build(Rows(devices:
+        [
+            new("MC1", 1) { Connected = true, Open = false, Status = 1 },
+            new("MC2", 1) { Connected = true, Open = true, Status = 2, Recovery = true },
+            new("WSS1", 3) { Connected = true, Open = true, Skip = true },
+        ]));
+        Assert.Equal(["recovery request", "closed", "skipped"], some.Items.Select(i => i.What));
+        Assert.Equal("MC1", some.Items[1].Device);
+        Assert.Equal(1, some.Counts["closed"]);
+        Assert.Equal(1, some.Counts["skipped"]);
+
+        var all = Build(Rows(devices:
+        [
+            new("MC1", 1) { Connected = true, Open = false }, new("WSS1", 3) { Connected = true, Open = false },
+            new("VHC1", 2) { Connected = true, Open = false },
+        ]));
+        var item = Assert.Single(all.Items);
+        Assert.Equal("cell", item.Kind);
+        Assert.Equal(SqlMakinoReader.AllClosed, item.What);
+        Assert.Equal(3, all.Counts["closed"]);
+    }
+
+    [Fact]
+    public void A_recovery_item_says_what_the_device_was_doing()
+    {
+        var list = Build(Rows(
+            devices:
+            [
+                new("MC1", 1) { Connected = true, Recovery = true, OpenAlarms = 1, Action = 1, TablePallet = 31 },
+                new("VHC1", 2) { Connected = true, Recovery = true, From = "MC1", To = "STK1", Command = 1 },
+                new("WSS1", 3) { Connected = true, Recovery = true },
+            ],
+            commands: [new("WSS1", 4, 1, Operation: 2, Status: null, Order: null, Quantity: null)]));
+
+        Assert.Equal("1 open alarm, was in machining, table pallet 31", list.Items[0].Detail);
+        Assert.Equal("transport MC1 → STK1, load/unload", list.Items[1].Detail);
+        Assert.Equal("instruction unclamp and clamp", list.Items[2].Detail);
+    }
+
+    [Fact]
+    public void A_machine_recovery_with_a_lacking_pallet_on_the_table_is_a_lacking_tool_recovery()
+    {
+        var rows = Rows(
+            devices: [new("MC1", 1) { Connected = true, Recovery = true, TablePallet = 7 }],
+            fixtures: [new(7, 1) { LackingTool = true }]);
+
+        var on = Build(rows with { LackingToolRecovery = true });
+        Assert.Equal("lacking-tool recovery request", on.Items[0].What);
+        Assert.EndsWith("then Retry at the console", on.Items[0].Detail);
+        Assert.Equal(1, on.Counts["recovery request"]);
+
+        // The cell doesn't raise recoveries for missing tools: a plain recovery.
+        Assert.Equal("recovery request", Build(rows).Items[0].What);
+
+        Assert.True(SqlMakinoReader.LackingToolRecoveryOn(new Dictionary<string, string> { ["LackingToolsMachineRecovery"] = "3" }));
+        Assert.True(SqlMakinoReader.LackingToolRecoveryOn(new Dictionary<string, string> { ["ToolResourceManagementType"] = "2" }));
+        Assert.False(SqlMakinoReader.LackingToolRecoveryOn(new Dictionary<string, string>()));
+        Assert.False(SqlMakinoReader.LackingToolRecoveryOn(null));
+    }
+
+    [Fact]
     public void A_disconnected_devices_emergency_flag_is_stale_and_not_reported()
     {
         var list = Build(Rows(devices: [new("VHC1", 2) { Connected = false, Emergency = true, Status = 0 }]));

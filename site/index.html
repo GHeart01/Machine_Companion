@@ -274,7 +274,7 @@ footer a { color: var(--muted); }
       <table class="tools">
         <thead><tr><th scope="col">Tool</th><th scope="col">What it gives Claude</th></tr></thead>
         <tbody>
-          <tr><td><code>get_cell_overview</code></td><td>Every device: connection, emergency stop, status, recovery request, mode, current action, pallets, open alarms, last activity. Machines add tool status, CNC run state, operator call, current job and program; the cart adds where it is carrying a pallet from and to. <code>historyDays</code> says how long the cell keeps PMC alarms and results.</td></tr>
+          <tr><td><code>get_cell_overview</code></td><td>Every device: connection, emergency stop, status, recovery request, mode, current action, pallets, open alarms, last activity. Machines add tool status, CNC run state, operator call, current job and program; stations add the instruction they show; work in progress shows since when and its planned finish, and closed devices are marked. The cell's duty, scheduled power-off and recovery policy come with it, and <code>historyDays</code> says how long the cell keeps PMC alarms and results.</td></tr>
           <tr><td><code>get_alarms</code></td><td>Open and recent PMC and CNC alarms, newest first.</td></tr>
           <tr><td><code>get_alarm_summary</code></td><td>Alarms grouped by device and number, most frequent first.</td></tr>
           <tr><td><code>get_utilization</code></td><td>Busy, idle, down and error hours per device and day.</td></tr>

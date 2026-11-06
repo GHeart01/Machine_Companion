@@ -27,6 +27,8 @@ public sealed class SchemaInfo
         "WorkSetCommand", "ManualTransport",
         // The vendor's views of the order quantities, for a login that can't read the tables behind them.
         "ViewOrders", "ViewDayOrderCompletedQty",
+        // 0.4: the cell's runtime settings (duty mode, power-off state).
+        "UserSysData",
     ];
 
     /// <summary>How long one synonym probe's command may run.</summary>

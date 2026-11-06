@@ -138,6 +138,11 @@ public class CodesTests
         { "ManualTransportStatus", 3, "waiting to finish" },
         { "InfoFileType", 2, "tool setting" },
         { "LackingToolScope", 1, "its machining jobs before the next work setting" },
+        { "WssInstruction", 6, "unclamp and clamp" },
+        { "DevicePowerStatus", 6, "powered off" },
+        { "DevicePowerOffResult", 2, "a pallet still has work" },
+        { "CellPowerOffStatus", 2, "running (time reached, finishing the remaining work)" },
+        { "AbnormalFinishAction", 3, "always wait for the operator" },
     };
 
     private static Func<int?, string> Table(string name) =>

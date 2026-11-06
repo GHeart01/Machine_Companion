@@ -26,13 +26,18 @@ public class ReaderSqlTests
         ["MachineStatus"] = ["DeviceID", "Connected", "Emergency", "CNCMode", "MachineAction", "MachineSubAction",
             "TablePalletID", "TableStatus", "FrontPalletID", "FrontStatus", "BackPalletID", "BackStatus", "PowerStatus",
             "Status", "Recovery", "ToolStatus", "CNCRun", "OperatorCall", "RunJob", "MainONumber", "ExecONumber",
-            "TableReservedPalletID", "FrontReservedPalletID", "BackReservedPalletID"],
+            "TableReservedPalletID", "FrontReservedPalletID", "BackReservedPalletID", "DeviceOpen", "StartDateTime",
+            "FinishDateTime", "JobID", "PowerOffResult"],
+        ["MachineJobs"] = ["JobID", "NCProgramFileID"],
+        ["NCProgramFiles"] = ["NCProgramFileID", "Name"],
         ["WorkSetStatus"] = ["DeviceID", "Connected", "Emergency", "WSSMode", "DeviceSkip", "TablePalletID", "TableStatus",
-            "FrontPalletID", "FrontStatus", "PowerStatus", "Status", "Recovery", "TableReservedPalletID", "FrontReservedPalletID"],
+            "FrontPalletID", "FrontStatus", "PowerStatus", "Status", "Recovery", "TableReservedPalletID", "FrontReservedPalletID",
+            "DeviceOpen", "Command", "StartDateTime", "FinishDateTime", "PowerOffResult"],
         ["VehicleStatus"] = ["DeviceID", "Connected", "Emergency", "VHCMode", "Status", "Recovery", "CommandType",
-            "FromDeviceName", "ToDeviceName", "Buffer1PalletID", "Buffer1Status", "Buffer2PalletID", "Buffer2Status"],
+            "FromDeviceName", "ToDeviceName", "Buffer1PalletID", "Buffer1Status", "Buffer2PalletID", "Buffer2Status",
+            "DeviceOpen", "StartDateTime", "PowerStatus", "PowerOffResult"],
         ["ViewVehicleStatus"] = ["DeviceNumber", "DeviceName", "Connected", "Status", "Emergency", "Recovery",
-            "PalletNumber", "PalletNumber2", "Command", "FromDevice", "ToDevice"],
+            "PalletNumber", "PalletNumber2", "Command", "FromDevice", "ToDevice", "DeviceOpen", "StartDateTime"],
         ["SystemParameters"] = ["SystemID", "ParameterName", "ParameterValue"],
     };
 
@@ -132,6 +137,13 @@ public class ReaderSqlTests
         Assert.Contains("CAST(NULL AS int) AS TableReservedPalletNumber", oldSql);
         Assert.DoesNotContain("s.TableReservedPalletID", oldSql);
 
+        // 0.4: open/closed, timing, power and the running program's name.
+        foreach (var column in new[] { "DeviceOpen", "StartDateTime", "FinishDateTime", "PowerStatus", "PowerOffResult" })
+            Assert.Contains($"s.{column} AS {column}", machines);
+        Assert.Contains("JOIN NCProgramFiles n ON n.NCProgramFileID = mj.NCProgramFileID WHERE mj.JobID = s.JobID) AS ProgramName", machines);
+        Assert.Contains("CAST(NULL AS varchar(4000)) AS ProgramName", stations);
+        Assert.Contains("s.Command AS Command", stations);
+
         var missing = SqlMakinoReader.Missing(old, "MachineStatus");
         Assert.Contains("recovery request", missing);
         Assert.Contains("status", missing);
@@ -158,6 +170,8 @@ public class ReaderSqlTests
         Assert.Contains("v.PalletNumber2 AS Buffer2PalletNumber", view);
         Assert.Contains("CAST(NULL AS int) AS VHCMode", view);
         Assert.Contains("CAST(NULL AS int) AS DeviceID", view);
+        Assert.Contains("v.DeviceOpen AS DeviceOpen", view);
+        Assert.Contains("v.StartDateTime AS StartDateTime", view);
 
         Assert.Null(SqlMakinoReader.VehicleSql(SchemaWithout("VehicleStatus", "ViewVehicleStatus")));
 
@@ -180,6 +194,11 @@ public class ReaderSqlTests
 
         Assert.Equal(90, SqlMakinoReader.HistoryDays("90"));
         Assert.Equal(90, SqlMakinoReader.DefaultHistoryDays); // the vendor's default, used (and flagged) with no row
+
+        // Open is shown only when closed.
+        Assert.Equal(false, SqlMakinoReader.OpenFlag(false));
+        Assert.Null(SqlMakinoReader.OpenFlag(true));
+        Assert.Null(SqlMakinoReader.OpenFlag(null));
 
         // Mode and emergency only mean something while connected; an unknown connection keeps them.
         Assert.Null(SqlMakinoReader.Live(false, "memory"));

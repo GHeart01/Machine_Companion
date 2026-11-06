@@ -171,6 +171,43 @@ public sealed partial class SqlMakinoReader : IMakinoReader
         return values;
     }
 
+    /// <summary>Per-device settings (DeviceParameters) by device id and name; null when the table or its columns can't
+    /// be read. A device without a row for a name runs on the vendor's default.</summary>
+    private static async Task<IReadOnlyDictionary<int, Dictionary<string, string>>?> DeviceParametersAsync(
+        Session s, CancellationToken ct, params string[] names)
+    {
+        const string t = "DeviceParameters";
+        if (!s.Schema.Has(t, "DeviceID") || !s.Schema.Has(t, "ParameterName") || !s.Schema.Has(t, "ParameterValue")) return null;
+        var list = string.Join(", ", names.Select(n => $"'{n}'"));
+        using var cmd = Command(s.Connection,
+            $"SELECT DeviceID, ParameterName, ParameterValue FROM DeviceParameters WHERE ParameterName IN ({list});");
+        using var r = await cmd.ExecuteReaderAsync(ct);
+        var values = new Dictionary<int, Dictionary<string, string>>();
+        while (await r.ReadAsync(ct))
+        {
+            var id = Int(r, "DeviceID") ?? 0;
+            if (!values.TryGetValue(id, out var own)) values[id] = own = new(StringComparer.OrdinalIgnoreCase);
+            own.TryAdd(Str(r, "ParameterName"), Str(r, "ParameterValue"));
+        }
+        return values;
+    }
+
+    /// <summary>The cell's runtime settings (UserSysData: duty mode, power-off state, …) by name, the first system's;
+    /// null when the table can't be read.</summary>
+    private static async Task<IReadOnlyDictionary<string, string>?> UserSysDataAsync(
+        Session s, CancellationToken ct, params string[] names)
+    {
+        const string t = "UserSysData";
+        if (!s.Schema.Has(t, "DataName") || !s.Schema.Has(t, "DataValue")) return null;
+        var list = string.Join(", ", names.Select(n => $"'{n}'"));
+        var order = s.Schema.Has(t, "SystemID") ? "SystemID, DataName" : "DataName";
+        using var cmd = Command(s.Connection, $"SELECT DataName, DataValue FROM UserSysData WHERE DataName IN ({list}) ORDER BY {order};");
+        using var r = await cmd.ExecuteReaderAsync(ct);
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        while (await r.ReadAsync(ct)) values.TryAdd(Str(r, "DataName"), Str(r, "DataValue"));
+        return values;
+    }
+
     /// <summary>A raw code nobody has mapped: "code N", or "" when NULL.</summary>
     internal static string CodeText(int? value) => value is null ? "" : $"code {value}";
 

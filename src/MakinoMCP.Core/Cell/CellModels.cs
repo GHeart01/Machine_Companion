@@ -14,6 +14,38 @@ public sealed record CellOverview(DateTime ServerTime, IReadOnlyList<DeviceState
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? HistoryDaysAssumed { get; init; }
+
+    /// <summary>On duty or off duty (the cell's duty management; "off duty (duty management not used)" when the cell
+    /// doesn't use it, since it then behaves as off duty); null when it can't be read.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Duty { get; init; }
+
+    /// <summary>True when duty follows the cell's weekly schedule rather than being switched by hand.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? DutySchedule { get; init; }
+
+    /// <summary>The cell's scheduled auto power-off, when one is set; null when there is none.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CellPowerOff? PowerOff { get; init; }
+
+    /// <summary>What the cell does when a machining cycle ends abnormally, per kind of abnormal finish (the same for
+    /// every machine; per machine instead when the cell sets it per device). Only the kinds the cell has a setting for.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyDictionary<string, string>? RecoveryPolicy { get; init; }
+
+    /// <summary>Cell-level sections this cell or login can't show (duty, power-off, recovery policy).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? NotAvailable { get; init; }
+}
+
+/// <summary>A scheduled auto power-off: its state, and the start and release times as the cell stores them.</summary>
+public sealed record CellPowerOff(string Status)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Start { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Release { get; init; }
 }
 
 /// <summary>One device. Fields the device type or this cell's software version doesn't have are null;
@@ -69,10 +101,53 @@ public sealed record DeviceState(
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? TransportTo { get; init; }
+
+    // 0.4: open/closed, timing, power and per-device settings; left out at their default.
+
+    /// <summary>False when the device is closed: it gets no automatic work (status still reads idle). Left out when
+    /// open.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Open { get; init; }
+
+    /// <summary>Work-set stations: the instruction it shows the operator while busy.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Instruction { get; init; }
+
+    /// <summary>When the current machining, work-set instruction or transport started.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTime? Since { get; init; }
+
+    /// <summary>When it is planned to finish (start plus the planned time); left out when the cell has no plan.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTime? PlannedFinish { get; init; }
+
+    /// <summary>The device's power state when not plainly on, and why a scheduled power-off is still pending.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PowerStatus { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PowerOffResult { get; init; }
+
+    /// <summary>Work-set stations: operations switched off for this station.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? DisabledOperations { get; init; }
+
+    /// <summary>Machines, when the cell sets the recovery policy per device: as CellOverview.RecoveryPolicy.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyDictionary<string, string>? RecoveryPolicy { get; init; }
 }
 
-/// <summary>O-numbers as "O1234"; Executing is null when the cell doesn't say.</summary>
-public sealed record NcProgram(string? Main, string? Executing);
+/// <summary>O-numbers as "O1234"; Executing is null when the cell doesn't say. Name: the NC program of the job
+/// running now. MainIs: what the main O-number is when it is one of the cell's own programs (the dataserver program
+/// that runs the job's program, or the work offset program).</summary>
+public sealed record NcProgram(string? Main, string? Executing)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Name { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? MainIs { get; init; }
+}
 
 /// <summary>A pallet on a device. Position is table, front or back with Status the position's state (processing,
 /// finished, …); "next table" (front, back) is a pallet reserved to come there next, Status "reserved"; on a

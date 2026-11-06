@@ -483,6 +483,114 @@ public static class Codes
         [2] = "all its remaining jobs",
     };
 
+    // WorkSetStatus.Command (WorkSetStationMonitorInstruction): the instruction the station shows the operator.
+    private static readonly Dictionary<int, string> WssInstructions = new()
+    {
+        [0] = "nothing",
+        [1] = "clamp",
+        [2] = "clamp cancelled",
+        [3] = "unclamp",
+        [4] = "unclamp (scrap)",
+        [5] = "unclamp cancelled",
+        [6] = "unclamp and clamp",
+        [7] = "unclamp (scrap) and clamp",
+        [8] = "unclamp and clamp cancelled",
+        [9] = "unclamp (scrap) and clamp cancelled",
+        [10] = "re-machining",
+        [11] = "other",
+        [12] = "other cancelled",
+        [13] = "inspection",
+        [14] = "inspection cancelled",
+        [15] = "exchange fixture",
+        [16] = "exchange fixture cancelled",
+        [17] = "manual transport",
+        [18] = "pallet input",
+        [19] = "pallet output",
+        [20] = "re-cleaning",
+        [21] = "re-deburring",
+        [22] = "re-unclamp",
+        [23] = "material input",
+        [24] = "material output",
+        [25] = "material work set",
+        [26] = "reclamp",
+        [27] = "pallet exchange",
+        [28] = "re-measuring",
+        [29] = "fixture change",
+        [30] = "check fixtures",
+    };
+
+    // Machine/WorkSet/VehicleStatus.PowerStatus (DevicePowerStatus).
+    private static readonly Dictionary<int, string> DevicePowerStatuses = new()
+    {
+        [0] = "on",
+        [1] = "power-off reserved",
+        [2] = "ready to power off",
+        [3] = "waiting for power-off acknowledgement",
+        [4] = "power-off cancelled",
+        [5] = "power-off rejected",
+        [6] = "powered off",
+    };
+
+    // Machine/WorkSet/VehicleStatus.PowerOffResult (DevicePowerOffResult): why a scheduled power-off is still pending.
+    private static readonly Dictionary<int, string> DevicePowerOffResults = new()
+    {
+        [0] = "none",
+        [1] = "reserved",
+        [2] = "a pallet still has work",
+        [3] = "waiting until empty",
+        [4] = "ready",
+        [5] = "waiting for the machine to be ready",
+        [6] = "waiting for the machine to power off",
+        [7] = "waiting for the work-set station to be ready",
+        [8] = "waiting for the work-set station to power off",
+        [9] = "waiting for the vehicle to be ready",
+        [10] = "dummy power-off",
+        [11] = "powered off",
+        [12] = "rejected",
+        [13] = "cancelled (device closed)",
+        [14] = "cancelled (mode)",
+        [15] = "cancelled (pallet)",
+        [16] = "cancelled (node)",
+        [17] = "waiting for the cleaning station to be ready",
+        [18] = "waiting for the cleaning station to power off",
+        [19] = "waiting for the turning center to be ready",
+        [20] = "waiting for the turning center to power off",
+        [21] = "waiting for the deburring machine to be ready",
+        [22] = "waiting for the deburring machine to power off",
+        [23] = "waiting for the pallet replace station to be ready",
+        [24] = "waiting for the pallet replace station to power off",
+        [25] = "waiting for the pass station to be ready",
+        [26] = "waiting for the pass station to power off",
+        [27] = "waiting for a warm-up transport",
+    };
+
+    // UserSysData PowerOffStatus: the cell's scheduled auto power-off.
+    private static readonly Dictionary<int, string> CellPowerOffStatuses = new()
+    {
+        [0] = "none",
+        [1] = "scheduled, waiting",
+        [2] = "running (time reached, finishing the remaining work)",
+        [3] = "finished",
+    };
+
+    // SystemParameters *Recovery and DeviceParameters Device*Recovery (AbnormalFinishAction): what the cell does when
+    // a machining cycle ends with that kind of abnormal finish.
+    private static readonly Dictionary<int, string> AbnormalFinishActions = new()
+    {
+        [0] = "raise a recovery request",
+        [1] = "finish normally",
+        [2] = "finish abnormally (scrap)",
+        [3] = "always wait for the operator",
+    };
+
+    // DeviceParameters DisableOperation on a work-set station (WorkSetStationDisableOperation, flags).
+    private static readonly Dictionary<int, string> WssDisabledOperationBits = new()
+    {
+        [1] = "pallet input/output",
+        [2] = "automatic work setting",
+        [4] = "reclamp",
+    };
+
     // InformationFiles.InfoType (InformationFileType).
     private static readonly Dictionary<int, string> InfoFileTypes = new()
     {
@@ -558,6 +666,19 @@ public static class Codes
     public static string InfoFileType(int? value) => Lookup(value, InfoFileTypes);
 
     public static string LackingToolScope(int? value) => Lookup(value, LackingToolScopes);
+
+    public static string WssInstruction(int? value) => Lookup(value, WssInstructions);
+
+    public static string DevicePowerStatus(int? value) => Lookup(value, DevicePowerStatuses);
+
+    public static string DevicePowerOffResult(int? value) => Lookup(value, DevicePowerOffResults);
+
+    public static string CellPowerOffStatus(int? value) => Lookup(value, CellPowerOffStatuses);
+
+    public static string AbnormalFinishAction(int? value) => Lookup(value, AbnormalFinishActions);
+
+    /// <summary>One entry per disabled operation, leftover bits as one "code N"; empty for none or NULL.</summary>
+    public static IReadOnlyList<string> WssDisabledOperations(int? flags) => FlagList(flags, WssDisabledOperationBits);
 
     public static string WorkSetJobOperation(int? value) => Lookup(value, WorkSetJobOperations);
 

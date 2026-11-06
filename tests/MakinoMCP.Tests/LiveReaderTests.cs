@@ -29,7 +29,19 @@ public class LiveReaderTests(ITestOutputHelper output)
         output.WriteLine($"lackingToolScope {attention.LackingToolScope}; not computed " +
                          $"{attention.NotAvailable.Contains(SqlMakinoReader.LackingToolsNotComputed)}");
 
+        output.WriteLine($"duty {overview.Duty}, schedule {overview.DutySchedule}, powerOff {overview.PowerOff?.Status}");
+        output.WriteLine("recoveryPolicy " + string.Join("; ", (overview.RecoveryPolicy ?? new Dictionary<string, string>())
+            .Select(p => $"{p.Key}: {p.Value}")));
+        foreach (var d in overview.Devices.Where(d => d.Connected is not null))
+        {
+            output.WriteLine($"{d.Type}: open {d.Open}, instruction {d.Instruction}, since {d.Since}, planned {d.PlannedFinish}, " +
+                             $"program {d.Program?.Name} ({d.Program?.MainIs}), disabled {string.Join("/", d.DisabledOperations ?? [])}");
+        }
+
         Assert.True(overview.HistoryDays is null or > 0); // null: this login can't read the settings
+        Assert.All(overview.Devices, d => Assert.True(d.Open is null or false));
+        Assert.All(overview.Devices, d => Assert.True(d.PlannedFinish is null || d.PlannedFinish > d.Since));
+        Assert.All(overview.Devices.Where(d => d.Instruction is not null), d => Assert.Equal("busy", d.Status));
         Assert.All(orders.Orders, o => Assert.True(o.MachiningSuspended is null or true));
         // The cell works out lacking tools (and says for which jobs), or notAvailable says it doesn't, or that its
         // settings can't be read; never two of these.

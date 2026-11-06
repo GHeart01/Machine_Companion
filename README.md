@@ -118,7 +118,7 @@ builds on the share. To roll back, write an older build's folder name (see `vers
 
 | Tool | What Claude gets |
 | --- | --- |
-| `get_cell_overview` | Every device: connected, emergency stop, status (down, idle, busy, manual, error), recovery request, mode, current action, pallets, open alarms, last activity. Machines add tool status, CNC run state, operator call, current job and program; the cart adds its transport from and to. `historyDays`: how long the cell keeps PMC alarms and results. |
+| `get_cell_overview` | Every device: connected, emergency stop, status (down, idle, busy, manual, error), recovery request, mode, current action, pallets, open alarms, last activity. Machines add tool status, CNC run state, operator call, current job and program (with its name); stations add the instruction they show; work in progress shows since when and its planned finish. Closed devices are marked. Cell level: duty, scheduled power-off, recovery policy and `historyDays` (how long the cell keeps PMC alarms and results). |
 | `get_alarms` | Open and recent PMC and CNC alarms, newest first, with how long each was open. |
 | `get_alarm_summary` | Alarms grouped by device and number, most frequent first. |
 | `get_utilization` | Hours busy, idle, down, manual and in error per device and day; OEE where the cell keeps it. |
@@ -131,7 +131,7 @@ builds on the share. To roll back, write an older build's folder name (see `vers
 | `get_tool_movements` | Tools put into or taken out of the machines, with who and why. |
 | `get_part_routing` | How a part is made: processes, jobs, programs and fixtures, and whether the tools each program needs are on the machines. The tool check is approximate: it uses the tool set the cell registered for each program (subprograms included) and doesn't check remaining life. |
 | `get_production` | Parts completed, scrapped and in process per order, plus per-day totals, counted the way the cell's own order screen counts. |
-| `get_attention` | One list of what waits on a person: recovery requests, errors, operator calls, damaged fixtures, tools in alarm; parked fixtures are counted. |
+| `get_attention` | One list of what waits on a person: recovery requests (with what the device was doing), errors, operator calls, damaged fixtures, tools in alarm, closed or skipped devices; parked fixtures are counted. |
 | `list_shared_folders` | The folders you shared and whether each is reachable. |
 | `list_files` | Files and subfolders in a shared folder, newest first. |
 | `read_file` | A text file, or its last lines or a line range. |

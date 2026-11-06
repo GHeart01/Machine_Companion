@@ -17,8 +17,9 @@ public sealed partial class SqlMakinoReader
     private const int RankFixtureBlocked = 3;
     private const int RankTools = 4;
     private const int RankLackingTools = 5;
-    private const int RankMaintenance = 6;
-    private const int RankParked = 7;
+    private const int RankClosed = 6;      // closing is often deliberate
+    private const int RankMaintenance = 7;
+    private const int RankParked = 8;
 
     // Code values compared against (meanings and words are in Codes).
     private const int DashDown = 0;               // DeviceDashStatus: down
@@ -41,6 +42,14 @@ public sealed partial class SqlMakinoReader
         public int OpenAlarms { get; init; }
         public int? Cycles { get; init; }
         public int? CycleLimit { get; init; }
+        public bool? Open { get; init; }
+        public bool? Skip { get; init; }
+        public int? TablePallet { get; init; }
+        public int? Action { get; init; }
+        public int? SubAction { get; init; }
+        public int? Command { get; init; }
+        public string From { get; init; } = "";
+        public string To { get; init; } = "";
     }
 
     internal sealed record AttentionFixture(int? Pallet, int? Fixture)
@@ -79,6 +88,44 @@ public sealed partial class SqlMakinoReader
         public int? CommandTotal { get; init; }
 
         public int? TransportTotal { get; init; }
+
+        /// <summary>True when the cell raises a machine recovery for missing tools (LackingToolsMachineRecovery set,
+        /// or tool resource management that only informs).</summary>
+        public bool LackingToolRecovery { get; init; }
+    }
+
+    /// <summary>The words for the all-closed roll-up; the database keeps no record of why, so the cause is a guess.</summary>
+    internal const string AllClosed = "all devices closed";
+
+    internal const string AllClosedDetail =
+        "as after a software start, Stop System or Work Data Reset: check that the pallets are where the console shows, " +
+        "then open the devices";
+
+    /// <summary>A recovery item's detail: the open alarms and what the device was doing, so the operator knows where
+    /// the pallet should be before choosing Retry or Normal Finish at the console.</summary>
+    internal static string? RecoveryContext(AttentionDevice d, IReadOnlyList<AttentionCommand> commands)
+    {
+        var parts = new List<string>();
+        if (d.OpenAlarms > 0) parts.Add($"{d.OpenAlarms} open alarm{(d.OpenAlarms == 1 ? "" : "s")}");
+        if (d.Recovery != true) return parts.Count > 0 ? string.Join(", ", parts) : null;
+        if (d.Type == MachineType)
+        {
+            var action = d.Action is > 0 ? Codes.MachineAction(d.Action) : "";
+            if (d.SubAction is > 0) action = Join(action, Codes.MachineSubAction(d.SubAction));
+            if (action.Length > 0) parts.Add($"was in {action}");
+            if (d.TablePallet is > 0) parts.Add($"table pallet {d.TablePallet}");
+        }
+        else if (d.Type == VehicleType)
+        {
+            if (d.From.Length > 0 || d.To.Length > 0) parts.Add($"transport {Or(d.From, "?")} → {Or(d.To, "?")}");
+            if (d.Command is > 0) parts.Add(Codes.VehicleCommand(d.Command));
+        }
+        else if (d.Type == StationType)
+        {
+            var pending = commands.Where(c => c.Device == d.Name).Select(c => Codes.WorkSetCommandOperation(c.Operation)).Distinct().ToList();
+            if (pending.Count > 0) parts.Add($"instruction {string.Join(", ", pending)}");
+        }
+        return parts.Count > 0 ? string.Join(", ", parts) : null;
     }
 
     /// <summary>Parked: suspended or on hold, and nothing else wrong with it (lacking tools aside).</summary>
@@ -103,10 +150,18 @@ public sealed partial class SqlMakinoReader
         }
 
         var toolStatus = new Dictionary<string, string>();
+        // Pallets whose fixtures lack tools: a machine recovery with such a pallet on the table is a lacking-tool recovery.
+        var lackingPallets = rows.Fixtures.Where(f => f.LackingTool && f.Pallet is not null).Select(f => f.Pallet!.Value).ToHashSet();
+        // Devices that can be opened and closed; when every one is closed, one roll-up item replaces theirs.
+        var openable = rows.Devices.Where(d => d.Open is not null).ToList();
+        var allClosed = openable.Count > 1 && openable.All(d => d.Open == false);
         foreach (var d in rows.Devices)
         {
             var what = new List<string>();
-            if (d.Recovery == true) what.Add("recovery request");
+            var lackingRecovery = d.Recovery == true && d.Type == MachineType && rows.LackingToolRecovery
+                                  && d.TablePallet is { } table && lackingPallets.Contains(table);
+            if (lackingRecovery) what.Add("lacking-tool recovery request");
+            else if (d.Recovery == true) what.Add("recovery request");
             // The emergency flag is stale or a placeholder while the device is disconnected.
             if (d.Emergency == true && d.Connected != false) what.Add("emergency stop");
             if (d.Connected == false) what.Add("disconnected");
@@ -118,13 +173,31 @@ public sealed partial class SqlMakinoReader
                 what.Add($"operator call ({Codes.OperatorCall(d.OperatorCall)})");
                 Count("operator call");
             }
+            if (lackingRecovery) Count("recovery request");
             if (what.Count > 0)
             {
-                items.Add((RankDevice, new AttentionItem("device", string.Join(", ", what))
+                var detail = lackingRecovery
+                    ? Join(RecoveryContext(d, rows.Commands) ?? "",
+                        "the machine holds the pallet until the missing tools are loaded, then Retry at the console")
+                    : RecoveryContext(d, rows.Commands);
+                items.Add((RankDevice, new AttentionItem("device", string.Join(", ", what)) { Device = d.Name, Detail = detail }));
+            }
+            // Closed or skipped devices get no automatic work; the dashboard status still reads idle.
+            if (d.Open == false)
+            {
+                Count("closed");
+                if (!allClosed && d.Connected != false)
                 {
-                    Device = d.Name,
-                    Detail = d.OpenAlarms > 0 ? $"{d.OpenAlarms} open alarm{(d.OpenAlarms == 1 ? "" : "s")}" : null,
-                }));
+                    items.Add((RankClosed, new AttentionItem("device", "closed")
+                    {
+                        Device = d.Name, Detail = "gets no automatic work until it is opened at the console",
+                    }));
+                }
+            }
+            if (d.Skip == true)
+            {
+                Count("skipped");
+                items.Add((RankClosed, new AttentionItem("device", "skipped") { Device = d.Name, Detail = "the cell sends it no work" }));
             }
             if (d.Type == MachineType && d.ToolStatus is not null) toolStatus.TryAdd(d.Name, Codes.MachineToolStatus(d.ToolStatus));
             if (d.CycleLimit is > 0 && d.Cycles >= d.CycleLimit)
@@ -210,6 +283,7 @@ public sealed partial class SqlMakinoReader
         {
             foreach (var (key, n) in rows.FixtureCounts) Count(key, n);
         }
+        if (allClosed) items.Add((RankClosed, new AttentionItem("cell", AllClosed) { Detail = AllClosedDetail }));
 
         var sorted = items
             .OrderBy(i => i.Rank)
@@ -314,6 +388,13 @@ public sealed partial class SqlMakinoReader
         var scope = ToInt(settings.GetValueOrDefault("CheckLackToolsAllRemainingJobs")) ?? 0;
         return (true, Codes.LackingToolScope(scope));
     }
+
+    /// <summary>Whether a machine raises a recovery for missing tools: LackingToolsMachineRecovery 1-4 (alarm or
+    /// warning, always or only on duty; 0 or no row, the default, none), or tool resource management set to inform
+    /// only (2).</summary>
+    internal static bool LackingToolRecoveryOn(IReadOnlyDictionary<string, string>? settings) =>
+        settings is not null && (ToInt(settings.GetValueOrDefault("LackingToolsMachineRecovery")) is >= 1 and <= 4
+                                 || ToInt(settings.GetValueOrDefault("ToolResourceManagementType")) == 2);
 
     /// <summary>Typed text on one line, runs of spaces collapsed.</summary>
     internal static string OneLine(string text) => string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
@@ -518,8 +599,9 @@ public sealed partial class SqlMakinoReader
 
         // With the cell's lacking-tool setting off, LackingTool is always 0: the fixture queries act as if the column
         // weren't there, and notAvailable says why.
-        var (lackComputed, lackScope) = LackingToolSetting(
-            await SystemParametersAsync(s, ct, "FixtureToolLackInfo", "CheckLackToolsAllRemainingJobs"));
+        var toolSettings = await SystemParametersAsync(s, ct,
+            "FixtureToolLackInfo", "CheckLackToolsAllRemainingJobs", "LackingToolsMachineRecovery", "ToolResourceManagementType");
+        var (lackComputed, lackScope) = LackingToolSetting(toolSettings);
         var fixtureSchema = schema;
         if (schema.Has("PalletFixtures", "LackingTool"))
         {
@@ -547,6 +629,14 @@ public sealed partial class SqlMakinoReader
                     Status = Int(r, "Status"), Cycles = Int(r, "TotalCycleCount"),
                     OperatorCall = Has(r, "OperatorCall") ? Int(r, "OperatorCall") : null,
                     ToolStatus = Has(r, "ToolStatus") ? Int(r, "ToolStatus") : null,
+                    Open = Has(r, "DeviceOpen") ? Bool(r, "DeviceOpen") : null,
+                    Skip = Has(r, "DeviceSkip") ? Bool(r, "DeviceSkip") : null,
+                    TablePallet = Has(r, "TablePalletNumber") ? Int(r, "TablePalletNumber") : null,
+                    Action = Has(r, "MachineAction") ? Int(r, "MachineAction") : null,
+                    SubAction = Has(r, "MachineSubAction") ? Int(r, "MachineSubAction") : null,
+                    Command = Has(r, "CommandType") ? Int(r, "CommandType") : null,
+                    From = Has(r, "FromDeviceName") ? Str(r, "FromDeviceName") : "",
+                    To = Has(r, "ToDeviceName") ? Str(r, "ToDeviceName") : "",
                 };
             }
         }
@@ -693,6 +783,7 @@ public sealed partial class SqlMakinoReader
         var rows = new AttentionRows(s.Devices.Select(d => devices[d.Id]).ToList(), fixtures, commands, transports, tools)
         {
             FixtureCounts = fixtureCounts, Parked = parked, CommandTotal = commandTotal, TransportTotal = transportTotal,
+            LackingToolRecovery = LackingToolRecoveryOn(toolSettings),
         };
         return BuildAttention(s.Now, _cap, rows, notAvailable, includeParked) with
         {

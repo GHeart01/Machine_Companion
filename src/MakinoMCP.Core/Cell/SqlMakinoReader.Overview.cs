@@ -9,8 +9,7 @@ public sealed partial class SqlMakinoReader
     private const int VehicleType = 2;
     private const int StationType = 3;
 
-    /// <summary>Status columns not every MAS-A5 version has, with the words DeviceState.NotAvailable uses for them.
-    /// PowerStatus (V3.0) is probed so an older cell is reported, though DeviceState has no field for it yet.</summary>
+    /// <summary>Status columns not every MAS-A5 version has, with the words DeviceState.NotAvailable uses for them.</summary>
     private static readonly (string Table, string Column, string Words)[] OptionalStatus =
     [
         ("MachineStatus", "CNCMode", "CNC mode"),
@@ -31,6 +30,9 @@ public sealed partial class SqlMakinoReader
         ("MachineStatus", "TableReservedPalletID", "next table pallet"),
         ("MachineStatus", "FrontReservedPalletID", "next front pallet"),
         ("MachineStatus", "BackReservedPalletID", "next back pallet"),
+        ("MachineStatus", "DeviceOpen", "open or closed"),
+        ("MachineStatus", "StartDateTime", "machining start"),
+        ("MachineStatus", "JobID", "running program name"),
         ("WorkSetStatus", "WSSMode", "station mode"),
         ("WorkSetStatus", "DeviceSkip", "skip"),
         ("WorkSetStatus", "TablePalletID", "table pallet"),
@@ -40,6 +42,9 @@ public sealed partial class SqlMakinoReader
         ("WorkSetStatus", "Recovery", "recovery request"),
         ("WorkSetStatus", "TableReservedPalletID", "next table pallet"),
         ("WorkSetStatus", "FrontReservedPalletID", "next front pallet"),
+        ("WorkSetStatus", "DeviceOpen", "open or closed"),
+        ("WorkSetStatus", "Command", "instruction"),
+        ("WorkSetStatus", "StartDateTime", "instruction start"),
         ("VehicleStatus", "VHCMode", "vehicle mode"),
         ("VehicleStatus", "Status", "status"),
         ("VehicleStatus", "Recovery", "recovery request"),
@@ -48,12 +53,16 @@ public sealed partial class SqlMakinoReader
         ("VehicleStatus", "ToDeviceName", "transport to"),
         ("VehicleStatus", "Buffer1PalletID", "buffer pallets"),
         ("VehicleStatus", "Buffer1Status", "buffer status"),
+        ("VehicleStatus", "DeviceOpen", "open or closed"),
+        ("VehicleStatus", "StartDateTime", "transport start"),
         ("ViewVehicleStatus", "Status", "status"),
         ("ViewVehicleStatus", "Recovery", "recovery request"),
         ("ViewVehicleStatus", "Command", "command"),
         ("ViewVehicleStatus", "FromDevice", "transport from"),
         ("ViewVehicleStatus", "ToDevice", "transport to"),
         ("ViewVehicleStatus", "PalletNumber", "buffer pallets"),
+        ("ViewVehicleStatus", "DeviceOpen", "open or closed"),
+        ("ViewVehicleStatus", "StartDateTime", "transport start"),
     ];
 
     private static readonly string[] MachineSpots = ["Table", "Front", "Back"];
@@ -61,11 +70,43 @@ public sealed partial class SqlMakinoReader
 
     private sealed record StatusRow(
         bool? Connected, bool? Emergency, int? Mode, bool? Skip, int? Action, int? SubAction, List<PalletSpot> Pallets,
-        int? Status, bool? Recovery, int? ToolStatus, int? CncRun, int? OperatorCall, int? RunJob, NcProgram? Program);
+        int? Status, bool? Recovery, int? ToolStatus, int? CncRun, int? OperatorCall, int? RunJob, NcProgram? Program)
+    {
+        public bool? Open { get; init; }
+        public DateTime? Start { get; init; }
+        public DateTime? Finish { get; init; }
+        public int? Command { get; init; }
+        public int? PowerStatus { get; init; }
+        public int? PowerOffResult { get; init; }
+        public int? MainONumber { get; init; }
+    }
 
     private sealed record VehicleRow(
         bool? Connected, bool? Emergency, int? Mode, int? Status, bool? Recovery, int? Command, string From, string To,
-        List<PalletSpot> Pallets);
+        List<PalletSpot> Pallets)
+    {
+        public bool? Open { get; init; }
+        public DateTime? Start { get; init; }
+        public int? PowerStatus { get; init; }
+        public int? PowerOffResult { get; init; }
+    }
+
+    // DeviceDashStatus busy: a work-set station shows an instruction while busy.
+    private const int DashBusy = 2;
+    private const int MachiningAction = 1; // MachineAction and RunJob: machining
+
+    // The kinds of abnormal finish the cell has a recovery setting for (SystemParameters; DeviceParameters prefix
+    // them with "Device"). Tool monitor alarms: BTS, BT2, AC, SL, TL, STS and tool prep check.
+    private static readonly (string Words, string Parameter)[] RecoveryKinds =
+    [
+        ("system abort", "SystemAbortRecovery"), ("tool monitor alarm", "ToolMonitorRecovery"),
+        ("fixture alarm", "FixtureAlarmRecovery"), ("pallet seat", "PalletSeatRecovery"),
+        ("work vacuum", "WorkVacuumRecovery"),
+    ];
+
+    // The cell's own O-numbers and their defaults when the cell has no setting.
+    private const int DefaultDataserverONumber = 7996;
+    private const int DefaultWorkOffsetONumber = 7998;
 
     public async Task<CellOverview> GetOverviewAsync(CancellationToken ct)
     {
@@ -73,6 +114,19 @@ public sealed partial class SqlMakinoReader
         var schema = s.Schema;
         schema.Require("MachineStatus", "WorkSetStatus", "Pallets", "PMCAlarms", "CNCAlarms",
             "MachineResults", "WorkSetResults", "VehicleResults");
+
+        // The cell's settings, read first: one open reader per connection.
+        var system = await SystemParametersAsync(s, ct,
+            ["DutyManagement", "RecoverySettingType", "WorkOffsetONumber", .. RecoveryKinds.Select(k => k.Parameter)]);
+        var perDevice = await DeviceParametersAsync(s, ct,
+            ["DataserverONumber", "WorkOffsetONumber", "DisableOperation", .. RecoveryKinds.Select(k => "Device" + k.Parameter)]);
+        var runtime = await UserSysDataAsync(s, ct,
+            "DutyMode", "DutyManageMode", "PowerOffStatus", "PowerOffStartDateTime", "PowerOffReleaseDateTime");
+        var deviceRecovery = ToInt(system?.GetValueOrDefault("RecoverySettingType")) == 1;
+        var cellNotAvailable = new List<string>();
+        if (system is null) cellNotAvailable.Add("cell settings (duty, recovery policy)");
+        var duty = DutyFrom(system, runtime);
+        if (system is not null && duty is null) cellNotAvailable.Add("duty mode and power-off state");
 
         // The vehicle's status and the history length are sections some cells (or logins) don't have.
         var vehicleSql = VehicleSql(schema);
@@ -124,6 +178,7 @@ public sealed partial class SqlMakinoReader
             DateTime? lastActivity = last.TryGetValue(d.Id, out var when) ? when : null;
             var state = new DeviceState(d.Name, Codes.DeviceType(d.Type), null, null, null, null, null, [], alarms, warnings,
                 lastActivity, []);
+            var own = perDevice?.GetValueOrDefault(d.Id);
 
             if (d.Type == MachineType)
             {
@@ -138,9 +193,21 @@ public sealed partial class SqlMakinoReader
                         Status = Words(m.Status, Codes.DeviceDashStatus), RecoveryRequest = m.Recovery,
                         ToolStatus = Words(m.ToolStatus, Codes.MachineToolStatus), CncRun = Words(m.CncRun, Codes.CncRun),
                         OperatorCall = Words(m.OperatorCall, Codes.OperatorCall), RunJob = Words(m.RunJob, Codes.RunJob),
-                        Program = m.Program,
+                        Program = m.Program is null ? null : m.Program with { MainIs = ProgramRole(m.MainONumber, own, system) },
                     }
                     : state with { NotAvailable = missing };
+                if (machines.TryGetValue(d.Id, out var mt))
+                {
+                    var machining = (mt.Action ?? mt.RunJob) == MachiningAction;
+                    var (since, planned) = Timing(mt.Connected != false && machining, mt.Start, mt.Finish);
+                    state = state with
+                    {
+                        Open = OpenFlag(mt.Open), Since = since, PlannedFinish = planned,
+                        PowerStatus = NonDefault(mt.PowerStatus, Codes.DevicePowerStatus),
+                        PowerOffResult = NonDefault(mt.PowerOffResult, Codes.DevicePowerOffResult),
+                        RecoveryPolicy = deviceRecovery ? RecoveryPolicyFrom(own, "Device") : null,
+                    };
+                }
             }
             else if (d.Type == StationType)
             {
@@ -153,6 +220,20 @@ public sealed partial class SqlMakinoReader
                         Status = Words(w.Status, Codes.DeviceDashStatus), RecoveryRequest = w.Recovery,
                     }
                     : state with { NotAvailable = missing };
+                if (stations.TryGetValue(d.Id, out var wt))
+                {
+                    // The instruction stays stored after the work is done: it counts only while the station is busy.
+                    var instructing = wt.Connected != false && wt.Command is > 0 && (wt.Status ?? DashBusy) == DashBusy;
+                    var (since, planned) = Timing(instructing, wt.Start, wt.Finish);
+                    state = state with
+                    {
+                        Open = OpenFlag(wt.Open), Instruction = instructing ? Codes.WssInstruction(wt.Command) : null,
+                        Since = since, PlannedFinish = planned,
+                        PowerStatus = NonDefault(wt.PowerStatus, Codes.DevicePowerStatus),
+                        PowerOffResult = NonDefault(wt.PowerOffResult, Codes.DevicePowerOffResult),
+                        DisabledOperations = DisabledOperationsFrom(own?.GetValueOrDefault("DisableOperation")),
+                    };
+                }
             }
             else if (d.Type == VehicleType)
             {
@@ -165,12 +246,114 @@ public sealed partial class SqlMakinoReader
                         Action = Words(v.Command, Codes.VehicleCommand), Pallets = v.Pallets, NotAvailable = missing,
                         Status = Words(v.Status, Codes.DeviceDashStatus), RecoveryRequest = v.Recovery,
                         TransportFrom = v.From.Length > 0 ? v.From : null, TransportTo = v.To.Length > 0 ? v.To : null,
+                        Open = OpenFlag(v.Open),
+                        Since = Timing(v.Connected != false && v.Command is > 0, v.Start, null).Since,
+                        PowerStatus = NonDefault(v.PowerStatus, Codes.DevicePowerStatus),
+                        PowerOffResult = NonDefault(v.PowerOffResult, Codes.DevicePowerOffResult),
                     }
                     : state with { NotAvailable = missing };
             }
             devices.Add(state);
         }
-        return new CellOverview(s.Now, devices) { HistoryDays = historyDays, HistoryDaysAssumed = Assumed(historyAssumed) };
+        return new CellOverview(s.Now, devices)
+        {
+            HistoryDays = historyDays, HistoryDaysAssumed = Assumed(historyAssumed),
+            Duty = duty, DutySchedule = duty is null ? null : DutyScheduleFrom(runtime), PowerOff = PowerOffFrom(runtime),
+            RecoveryPolicy = deviceRecovery ? null : RecoveryPolicyFrom(system, ""),
+            NotAvailable = cellNotAvailable.Count > 0 ? cellNotAvailable : null,
+        };
+    }
+
+    /// <summary>Open is shown only when false (closed); open or unknown is left out.</summary>
+    internal static bool? OpenFlag(bool? open) => open == false ? false : null;
+
+    /// <summary>A code's words unless it is 0 (the normal state) or NULL.</summary>
+    private static string? NonDefault(int? code, Func<int?, string> words) => code is null or 0 ? null : words(code);
+
+    /// <summary>When the current work started and is planned to finish: only while it is going on, and the finish
+    /// only when it is later than the start (the cell stores the start as the finish when it has no planned time).</summary>
+    internal static (DateTime? Since, DateTime? PlannedFinish) Timing(bool active, DateTime? start, DateTime? finish) =>
+        active && start is not null ? (start, finish > start ? finish : null) : (null, null);
+
+    /// <summary>On or off duty. DutyManagement 0 (not used) means the cell behaves as off duty whatever is stored; a
+    /// missing row is the vendor's default, manual (1). Then UserSysData DutyMode "1" is off duty, anything else (or
+    /// no row) on duty. Null when the settings or the runtime data can't be read.</summary>
+    internal static string? DutyFrom(IReadOnlyDictionary<string, string>? system, IReadOnlyDictionary<string, string>? runtime)
+    {
+        if (system is null) return null;
+        if ((ToInt(system.GetValueOrDefault("DutyManagement")) ?? 1) == 0) return "off duty (duty management not used)";
+        if (runtime is null) return null;
+        return runtime.GetValueOrDefault("DutyMode")?.Trim() == "1" ? "off duty" : "on duty";
+    }
+
+    /// <summary>True when duty follows the weekly schedule (UserSysData DutyManageMode "1").</summary>
+    internal static bool? DutyScheduleFrom(IReadOnlyDictionary<string, string>? runtime) =>
+        runtime is null ? null : runtime.GetValueOrDefault("DutyManageMode")?.Trim() == "1";
+
+    /// <summary>The scheduled power-off (UserSysData PowerOffStatus 1-3 with its times); null when none is set or the
+    /// data can't be read. The times are passed on as the cell stores them.</summary>
+    internal static CellPowerOff? PowerOffFrom(IReadOnlyDictionary<string, string>? runtime)
+    {
+        if (runtime is null || ToInt(runtime.GetValueOrDefault("PowerOffStatus")) is not (> 0 and var status)) return null;
+        return new CellPowerOff(Codes.CellPowerOffStatus(status))
+        {
+            Start = NonEmpty(runtime.GetValueOrDefault("PowerOffStartDateTime")?.Trim() ?? ""),
+            Release = NonEmpty(runtime.GetValueOrDefault("PowerOffReleaseDateTime")?.Trim() ?? ""),
+        };
+    }
+
+    /// <summary>The recovery policy from the settings named <paramref name="prefix"/> + each kind (SystemParameters: no
+    /// prefix; DeviceParameters: "Device"); only the kinds the cell has a row for, since upgraded and fresh cells
+    /// differ in their defaults. Null when there are none.</summary>
+    internal static IReadOnlyDictionary<string, string>? RecoveryPolicyFrom(IReadOnlyDictionary<string, string>? values, string prefix)
+    {
+        if (values is null) return null;
+        var policy = new Dictionary<string, string>();
+        foreach (var (words, parameter) in RecoveryKinds)
+        {
+            if (ToInt(values.GetValueOrDefault(prefix + parameter)) is { } action) policy[words] = Codes.AbnormalFinishAction(action);
+        }
+        return policy.Count > 0 ? policy : null;
+    }
+
+    /// <summary>What the main O-number is when it is one of the cell's own programs: the dataserver program (the
+    /// machine's DataserverONumber, default 7996) or the work offset program (the machine's, else the cell's
+    /// WorkOffsetONumber, default 7998); null otherwise.</summary>
+    internal static string? ProgramRole(int? main, IReadOnlyDictionary<string, string>? device, IReadOnlyDictionary<string, string>? system)
+    {
+        if (main is not > 0) return null;
+        var dataserver = ToInt(device?.GetValueOrDefault("DataserverONumber")) ?? DefaultDataserverONumber;
+        var workOffset = ToInt(device?.GetValueOrDefault("WorkOffsetONumber"))
+            ?? ToInt(system?.GetValueOrDefault("WorkOffsetONumber")) ?? DefaultWorkOffsetONumber;
+        if (main == dataserver) return "dataserver program (runs the job's program, see name)";
+        if (main == workOffset) return "work offset program";
+        return null;
+    }
+
+    // WorkSetStationDisableOperation names, for a cell that stores the enum's names instead of its number.
+    private static readonly Dictionary<string, int> DisableOperationNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["None"] = 0, ["PalletInputOutput"] = 1, ["AutoDriveWorkSetJob"] = 2, ["Reclamp"] = 4,
+    };
+
+    /// <summary>A station's DisableOperation setting (a number, or enum names joined by commas) as words; null when
+    /// nothing is disabled or the value can't be read.</summary>
+    internal static IReadOnlyList<string>? DisabledOperationsFrom(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var flags = ToInt(value);
+        if (flags is null)
+        {
+            var bits = 0;
+            foreach (var name in value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (!DisableOperationNames.TryGetValue(name, out var bit)) return [$"code {value.Trim()}"];
+                bits |= bit;
+            }
+            flags = bits;
+        }
+        var words = Codes.WssDisabledOperations(flags);
+        return words.Count > 0 ? words : null;
     }
 
     private static string? Words(int? code, Func<int?, string> words) => code is null ? null : words(code);
@@ -222,6 +405,16 @@ public sealed partial class SqlMakinoReader
             Opt(schema, table, "s", "MainONumber"),
             Opt(schema, table, "s", "ExecONumber"),
             Opt(schema, table, "s", "TotalCycleCount"),
+            Opt(schema, table, "s", "DeviceOpen", type: "bit"),
+            Opt(schema, table, "s", "StartDateTime", type: "datetime"),
+            Opt(schema, table, "s", "FinishDateTime", type: "datetime"),
+            Opt(schema, table, "s", "Command"),
+            Opt(schema, table, "s", "PowerStatus"),
+            Opt(schema, table, "s", "PowerOffResult"),
+            machine && schema.Has(table, "JobID") && schema.Has("MachineJobs", "JobID") && schema.Has("MachineJobs", "NCProgramFileID")
+                    && schema.Has("NCProgramFiles", "NCProgramFileID") && schema.Has("NCProgramFiles", "Name")
+                ? $"(SELECT TOP 1 n.Name FROM MachineJobs mj JOIN NCProgramFiles n ON n.NCProgramFileID = mj.NCProgramFileID WHERE mj.JobID = s.JobID) AS ProgramName"
+                : $"CAST(NULL AS {Text}) AS ProgramName",
         };
         foreach (var spot in spots)
         {
@@ -256,11 +449,18 @@ public sealed partial class SqlMakinoReader
                 if (Int(r, spot + "ReservedPalletID") is not > 0) continue;
                 pallets.Add(new PalletSpot("next " + spot.ToLowerInvariant(), Int(r, spot + "ReservedPalletNumber"), "reserved"));
             }
+            var program = Program(Int(r, "MainONumber"), Int(r, "ExecONumber"));
+            var name = NonEmpty(Str(r, "ProgramName"));
             rows[Int(r, "DeviceID") ?? 0] = new StatusRow(
                 Bool(r, "Connected"), Bool(r, "Emergency"), Int(r, "ModeCode"), Bool(r, "DeviceSkip"),
                 Int(r, "MachineAction"), Int(r, "MachineSubAction"), pallets,
                 Int(r, "Status"), Bool(r, "Recovery"), Int(r, "ToolStatus"), Int(r, "CNCRun"), Int(r, "OperatorCall"),
-                Int(r, "RunJob"), Program(Int(r, "MainONumber"), Int(r, "ExecONumber")));
+                Int(r, "RunJob"), program is null && name is null ? null : (program ?? new NcProgram(null, null)) with { Name = name })
+            {
+                Open = Bool(r, "DeviceOpen"), Start = Date(r, "StartDateTime"), Finish = Date(r, "FinishDateTime"),
+                Command = Int(r, "Command"), PowerStatus = Int(r, "PowerStatus"), PowerOffResult = Int(r, "PowerOffResult"),
+                MainONumber = Int(r, "MainONumber"),
+            };
         }
         return rows;
     }
@@ -296,7 +496,11 @@ public sealed partial class SqlMakinoReader
                 Opt(schema, t, "v", "ToDeviceName", type: Text),
                 Buffer(1), Opt(schema, t, "v", "Buffer1Status"),
                 Buffer(2), Opt(schema, t, "v", "Buffer2Status"),
-                Opt(schema, t, "v", "TotalCycleCount"));
+                Opt(schema, t, "v", "TotalCycleCount"),
+                Opt(schema, t, "v", "DeviceOpen", type: "bit"),
+                Opt(schema, t, "v", "StartDateTime", type: "datetime"),
+                Opt(schema, t, "v", "PowerStatus"),
+                Opt(schema, t, "v", "PowerOffResult"));
             return $"SELECT {cols} FROM VehicleStatus v;";
         }
         if (schema.HasTable("ViewVehicleStatus"))
@@ -316,7 +520,10 @@ public sealed partial class SqlMakinoReader
                 Opt(schema, t, "v", "ToDevice", "ToDeviceName", Text),
                 Opt(schema, t, "v", "PalletNumber", "Buffer1PalletNumber"), "CAST(NULL AS int) AS Buffer1Status",
                 Opt(schema, t, "v", "PalletNumber2", "Buffer2PalletNumber"), "CAST(NULL AS int) AS Buffer2Status",
-                Opt(schema, t, "v", "TotalCycleCount"));
+                Opt(schema, t, "v", "TotalCycleCount"),
+                Opt(schema, t, "v", "DeviceOpen", type: "bit"),
+                Opt(schema, t, "v", "StartDateTime", type: "datetime"),
+                "CAST(NULL AS int) AS PowerStatus", "CAST(NULL AS int) AS PowerOffResult");
             return $"SELECT {cols} FROM ViewVehicleStatus v;";
         }
         return null;
@@ -338,7 +545,11 @@ public sealed partial class SqlMakinoReader
             }
             rows[id] = new VehicleRow(
                 Bool(r, "Connected"), Bool(r, "Emergency"), Int(r, "VHCMode"), Int(r, "Status"), Bool(r, "Recovery"),
-                Int(r, "CommandType"), Str(r, "FromDeviceName"), Str(r, "ToDeviceName"), pallets);
+                Int(r, "CommandType"), Str(r, "FromDeviceName"), Str(r, "ToDeviceName"), pallets)
+            {
+                Open = Bool(r, "DeviceOpen"), Start = Date(r, "StartDateTime"),
+                PowerStatus = Int(r, "PowerStatus"), PowerOffResult = Int(r, "PowerOffResult"),
+            };
         }
         return rows;
     }

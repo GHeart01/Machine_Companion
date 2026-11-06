@@ -16,16 +16,25 @@ public static class CellTools
                  "cell's values are stale), status (the cell's own down/idle/busy/manual/error: a machine closed or " +
                  "stopped at an operator call reads idle, and error comes from an open PMC alarm, emergency stop or " +
                  "recovery, never from a CNC alarm, so check the open alarm count too), " +
-                 "recoveryRequest (true: the device waits for an operator to recover it), current action, the " +
+                 "recoveryRequest (true: the device waits for an operator to recover it), open (only shown when false: " +
+                 "the device is closed and gets no automatic work although it reads idle; devices come up closed after " +
+                 "a software start, Stop System or Work Data Reset), current action, since and plannedFinish of the " +
+                 "machining, station instruction or transport going on now, the " +
                  "pallets on it with each position's state (\"next …\" spots are pallets reserved to come there next), " +
                  "how many alarms and warnings are open, and when it last finished something (lastActivity). Machines " +
                  "also show toolStatus (ready, lacking tools, tool alarm, …), cncRun, operatorCall, runJob and program " +
-                 "(main and executing O-number); the vehicle shows its transport command (in action), transportFrom/transportTo and the " +
-                 "pallets on its buffers. historyDays is how many days the cell keeps PMC alarms and result history " +
+                 "(main and executing O-number, the running job's program name, and mainIs when the main O-number is " +
+                 "the cell's own dataserver or work offset program); work-set stations show the instruction while " +
+                 "busy and any disabledOperations; the vehicle shows its transport command (in action), transportFrom/transportTo and the " +
+                 "pallets on its buffers. powerStatus and powerOffResult appear during a scheduled power-off. Cell level: " +
+                 "duty (on or off duty; dutySchedule when it follows the weekly schedule), powerOff when one is " +
+                 "scheduled, and recoveryPolicy: what the cell does after each kind of abnormal finish (raise a " +
+                 "recovery request, unless the machine is in auto-unloading mode; finish normally; finish abnormally; " +
+                 "or always wait), per machine when the cell sets it per device. historyDays is how many days the cell keeps PMC alarms and result history " +
                  "(the vendor's default of 90 with historyDaysAssumed when the cell doesn't say; CNC alarms are " +
                  "limited to about the last 200 regardless). lastActivity " +
                  "looks back 30 days: null means nothing finished in that time, not " +
-                 "that it never did. Status values carry no timestamp, so compare lastActivity with serverTime to " +
+                 "that it never did. Status values other than since carry no timestamp, so compare lastActivity with serverTime to " +
                  "notice a device that is connected but has done nothing for hours. notAvailable names fields this " +
                  "cell's software version (or this login) doesn't provide.")]
     public static Task<string> GetCellOverview(ToolContext context, CancellationToken ct) =>
@@ -247,13 +256,20 @@ public static class CellTools
 
     [McpServerTool(Name = "get_attention", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("What is waiting on a person right now? One list, most severe first: devices with a recovery " +
-                 "request, error, emergency stop, disconnected or a machine's operator call; instructions set at a " +
+                 "request (detail: open alarms and what the device was doing; \"lacking-tool recovery request\" when the " +
+                 "machine holds a pallet for missing tools), error, emergency stop, disconnected or a machine's operator " +
+                 "call; instructions set at a " +
                  "work-set station (clamp, unclamp, …); manual transports not finished; " +
                  "fixtures damaged, pre-machining suspended (with the reason) or past their reclamp time; tools in " +
                  "alarm or with an offset error per machine; fixtures lacking tools (lackingToolScope: which of their " +
                  "jobs the cell checks; when the cell doesn't work this out, notAvailable says so, so no such items " +
                  "is then not an all-clear); stations " +
-                 "or the vehicle over their maintenance cycle count. Fixtures that are only suspended or held at the " +
+                 "or the vehicle over their maintenance cycle count; closed or skipped devices, low in the list since " +
+                 "closing is often deliberate (one \"all devices closed\" item when every device is). How recovery works " +
+                 "on the cell: an open alarm without a recovery request is fixed at the device first; a recovery request " +
+                 "means the local alarm was reset and the console's recovery comes next (check where the pallet " +
+                 "physically is: Retry needs it where it was before the command, Normal Finish where it would be after). " +
+                 "Don't suggest Cancel, and Work Data Reset only as a last resort. Fixtures that are only suspended or held at the " +
                  "work-set station (operators park fixtures this way) are counted in parked: how many, how many of " +
                  "them lack tools, per place (where their pallets are) and condition; includeParked=true lists them " +
                  "last as items. A fixture's detail is its status reason: one text shared by suspend, hold, damaged and " +
