@@ -10,11 +10,13 @@ public interface IMakinoReader
     /// however old.</summary>
     Task<AlarmList> GetAlarmsAsync(int hours, string? device, bool openOnly, bool includeWarnings, CancellationToken ct);
 
-    /// <summary>Alarms of the last <paramref name="days"/> grouped by device, source and number, most frequent first.</summary>
-    Task<AlarmSummary> GetAlarmSummaryAsync(int days, string? device, CancellationToken ct);
+    /// <summary>Alarms of the last <paramref name="days"/> grouped by device, source and number, most frequent first;
+    /// with a <paramref name="shift"/>, only those raised in it.</summary>
+    Task<AlarmSummary> GetAlarmSummaryAsync(int days, string? device, ShiftFilter? shift, CancellationToken ct);
 
-    /// <summary>Daily state hours for the last <paramref name="days"/> (today counts as one), newest first.</summary>
-    Task<UtilizationList> GetUtilizationAsync(int days, string? device, CancellationToken ct);
+    /// <summary>Daily state hours for the last <paramref name="days"/> (today counts as one), newest first, with the
+    /// result-based utilization per day (over the <paramref name="shift"/> when given).</summary>
+    Task<UtilizationList> GetUtilizationAsync(int days, string? device, ShiftFilter? shift, CancellationToken ct);
 
     /// <summary>Machining, work-set and transport results started in the last <paramref name="hours"/>, newest first.</summary>
     Task<ActivityList> GetRecentActivityAsync(int hours, string? device, CancellationToken ct);

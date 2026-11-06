@@ -141,8 +141,8 @@ public class LiveReaderTests(ITestOutputHelper output)
         var device = overview.Devices[0].Name;
 
         Assert.NotNull(await r.GetAlarmsAsync(24 * 7, device, true, false, ct));
-        Assert.NotNull(await r.GetAlarmSummaryAsync(7, null, ct));
-        var util = await r.GetUtilizationAsync(7, null, ct);
+        Assert.NotNull(await r.GetAlarmSummaryAsync(7, null, null, ct));
+        var util = await r.GetUtilizationAsync(7, null, null, ct);
         Assert.All(util.Days, d => Assert.InRange(d.BusyPercent, 0, 100));
         Assert.NotNull(await r.GetRecentActivityAsync(24, device, ct));
         Assert.NotNull(await r.GetOrdersAsync(true, ct));

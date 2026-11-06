@@ -154,7 +154,12 @@ public sealed record NcProgram(string? Main, string? Executing)
 /// vehicle, "buffer 1" and "buffer 2" are its two pallet buffers, Status "code N" (or "" when the cell doesn't say).</summary>
 public sealed record PalletSpot(string Position, int? PalletNumber, string Status);
 
-public sealed record AlarmList(DateTime ServerTime, bool Capped, IReadOnlyList<Alarm> Alarms);
+public sealed record AlarmList(DateTime ServerTime, bool Capped, IReadOnlyList<Alarm> Alarms)
+{
+    /// <summary>The PMC alarm help files of the devices in the list (DeviceParameters), where the cell names any.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<AlarmHelpFiles>? HelpFiles { get; init; }
+}
 
 /// <summary>Source is PMC or CNC; Level is alarm or warning; Minutes runs to Reset, or to ServerTime when still open.</summary>
 public sealed record Alarm(
@@ -167,7 +172,12 @@ public sealed record Alarm(
     DateTime? Reset,
     double? Minutes);
 
-public sealed record AlarmSummary(DateTime ServerTime, bool Capped, IReadOnlyList<AlarmSummaryRow> Rows);
+public sealed record AlarmSummary(DateTime ServerTime, bool Capped, IReadOnlyList<AlarmSummaryRow> Rows)
+{
+    /// <summary>The shift the alarms were raised in (ShiftFilter.Text), when one was asked for.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Shift { get; init; }
+}
 
 public sealed record AlarmSummaryRow(
     string Device,
@@ -179,7 +189,20 @@ public sealed record AlarmSummaryRow(
     DateTime FirstSeen,
     DateTime LastSeen);
 
-public sealed record UtilizationList(DateTime ServerTime, bool Capped, IReadOnlyList<UtilizationDay> Days);
+public sealed record UtilizationList(DateTime ServerTime, bool Capped, IReadOnlyList<UtilizationDay> Days)
+{
+    /// <summary>The shift the result figures cover (ShiftFilter.Text), when one was asked for.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Shift { get; init; }
+
+    /// <summary>What a machine's result time is: net machining time (MachiningTimeExceptStopping on) or prep start to
+    /// finish; null when there are no result figures.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? MachineResultTime { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? NotAvailable { get; init; }
+}
 
 /// <summary>Hours per state for one device and day; Oee (percent) only where the cell keeps DeviceResultDaySummary.</summary>
 public sealed record UtilizationDay(
@@ -191,9 +214,44 @@ public sealed record UtilizationDay(
     double ManualH,
     double ErrorH,
     double BusyPercent,
-    int? Oee);
+    int? Oee)
+{
+    /// <summary>OEE's parts (percent) from the same DeviceResultDaySummary row.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Availability { get; init; }
 
-public sealed record ActivityList(DateTime ServerTime, bool Capped, IReadOnlyList<ActivityItem> Items);
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Performance { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Quality { get; init; }
+
+    /// <summary>Machines only: spindle running time that day (SpindleRotationTime) and its share of the day (of the
+    /// day so far for today).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? SpindleHours { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? SpindlePercent { get; init; }
+
+    /// <summary>The console's result-based utilization (machines, stations, vehicles): the share of the day (or shift)
+    /// covered by result records, how many results and their average minutes in it; null before the results kept.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? ResultPercent { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Results { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? AvgMinutes { get; init; }
+}
+
+public sealed record ActivityList(DateTime ServerTime, bool Capped, IReadOnlyList<ActivityItem> Items)
+{
+    /// <summary>Set when the cell lowers clamp quantities from a probe count (ProbePartCountMacroVariable &gt; 0).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Note { get; init; }
+}
 
 /// <summary>Kind is machining, work-set or transport.</summary>
 public sealed record ActivityItem(
@@ -203,7 +261,23 @@ public sealed record ActivityItem(
     DateTime? Finish,
     int? PalletNumber,
     string Detail,
-    string? Result);
+    string? Result)
+{
+    /// <summary>Machining only, each left out when 0 or unknown: preparation before the cycle (PrepStart to
+    /// PrepFinish), spindle running time, net machining time (stops excluded; only when the cell measures it that way)
+    /// and the job's planned time.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? PrepMinutes { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? SpindleMinutes { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? NetMinutes { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? PlannedMinutes { get; init; }
+}
 
 public sealed record OrderList(DateTime ServerTime, bool Capped, IReadOnlyList<OrderInfo> Orders)
 {

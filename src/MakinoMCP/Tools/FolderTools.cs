@@ -30,7 +30,11 @@ public static class FolderTools
     [Description("What is in a shared folder, newest first? Files and subfolders with size and last-modified time. " +
                  "Defaults: the folder's top level, every name, up to the row limit (500 unless the settings say " +
                  "otherwise). Use pattern (e.g. *.log) or subpath to narrow a large folder. AlarmNotification*.xml " +
-                 "files (they hold the cell's e-mail password) are never listed.")]
+                 "files (they hold the cell's e-mail password) are never listed. In the cell's Auto Data Entry folders " +
+                 "the note says what the files mean: ADE_Error holds the original files whose import failed (moved there " +
+                 "and renamed with the failure time; no reason inside, and they may be partly applied: the reason is in " +
+                 "the cell's AutoDataEntry.log or Exception.log), ADE_Success empty .success markers per imported file, " +
+                 "and ADE_Success\\FTN and \\ITN tool data the cell exports, not imports.")]
     public static Task<string> ListFiles(
         ToolContext context,
         [Description(FolderParam)] string folder,
@@ -46,7 +50,7 @@ public static class FolderTools
                  "Reads stop at the size limit (256 KB unless set otherwise) and say they were cut; then use tailLines " +
                  "for the end, or fromLine with lineCount for a range. The result gives the line numbers shown and the " +
                  "file's total lines. Password values in .config and .xml files show as ***; AlarmNotification*.xml " +
-                 "files are refused.")]
+                 "files are refused. A file inside the ADE folders comes with a note on what it is (see list_files).")]
     public static Task<string> ReadFile(
         ToolContext context,
         [Description(FolderParam)] string folder,
