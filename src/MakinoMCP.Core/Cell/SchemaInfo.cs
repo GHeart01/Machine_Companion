@@ -30,6 +30,7 @@ public sealed class SchemaInfo
         // 0.4: the cell's runtime settings (duty mode, power-off state).
         "UserSysData",
         "CommonValues", "PartSerialNumberTracking", "WorkSetCommandQuantity", // new tools: macro values, serials, work-set quantities
+        "ONumbers", "MainPrograms", "OffsetFiles", // routing: program O-numbers, tool study, offset files
     ];
 
     /// <summary>How long one synonym probe's command may run.</summary>

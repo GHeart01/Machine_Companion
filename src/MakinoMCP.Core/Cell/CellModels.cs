@@ -634,6 +634,9 @@ public sealed record PartRouting(DateTime ServerTime, string Query, bool Capped)
     public string? ToolCheck { get; init; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RoutingBlockers? Blockers { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? NotAvailable { get; init; }
 }
 
@@ -651,10 +654,19 @@ public sealed record PartRoute(string Name, string Status, IReadOnlyList<Process
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Comment { get; init; }
+
+    /// <summary>Parts.UpdateDate: moves on part, process and operation edits, not on machining job edits.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTime? Updated { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? Notes { get; init; }
 }
 
-/// <summary>One process (route step), in order. MaxFixtures: how many fixtures may work on it at once (left out when
-/// unlimited). Fixtures: where it can be clamped, as "pallet 12 fixture 1", in the cell's priority order.</summary>
+/// <summary>One process (route step), in order. MaxFixtures: the most fixtures the cell gives this process at once,
+/// cell-wide (left out when unlimited); InUse: how many fixtures hold it now. Fixtures: the pallet places that can hold
+/// it, as "pallet 12 fixture 1: free", in the cell's priority order, with their current use, holds and effective
+/// offset file.</summary>
 public sealed record ProcessRoute(int Number, string Status, IReadOnlyList<OperationRoute> Operations, IReadOnlyList<JobRoute> Jobs)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -664,14 +676,24 @@ public sealed record ProcessRoute(int Number, string Status, IReadOnlyList<Opera
     public int? MaxFixtures { get; init; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? InUse { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Note { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? Fixtures { get; init; }
 }
 
-/// <summary>ClampQuantity: parts clamped per fixture for this operation.</summary>
+/// <summary>ClampQuantity: material pieces loaded per fixture for this operation. UnclampPerClamp: parts that come out
+/// per piece clamped (only when above 1 and the cell uses the setting).</summary>
 public sealed record OperationRoute(int Sequence, int ClampQuantity)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Name { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? UnclampPerClamp { get; init; }
 }
 
 /// <summary>One job of a process, in order: work setting (WorkSet load or unload, InfoFile the work instructions),
@@ -681,6 +703,26 @@ public sealed record JobRoute(int Number, string Type)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Program { get; init; }
+
+    /// <summary>The O-number the cell starts: the program file's main O-number (the cell's M198 caller for a dataserver
+    /// file), or the job's own O-number for a program resident in the CNC.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ONumber { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? ProgramType { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTime? ProgramUpdated { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? TimeStudy { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? BlockSkips { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ProgramStudy? ToolStudy { get; init; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? WorkSet { get; init; }
@@ -696,6 +738,14 @@ public sealed record JobRoute(int Number, string Type)
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? FeasibleDevices { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Note { get; init; }
+
+    /// <summary>Per feasible machine, the program's tool set status by the console's rules ("ready", "lacking, life
+    /// warning", "unknown").</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyDictionary<string, string>? ToolSet { get; init; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<ProgramTool>? Tools { get; init; }
@@ -721,6 +771,27 @@ public sealed record ProgramTool(int Ftn, int Needed)
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? MissingOn { get; init; }
+
+    /// <summary>With PTN download before machining: Needed summed over every program tool number of this tool type,
+    /// which the cell compares with the ready tools (left out when it equals Needed).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? NeededForType { get; init; }
+
+    /// <summary>Per feasible machine, how many of the usable tools are flagged prohibited or absent (a hint: the cell
+    /// still counts them).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyDictionary<string, int>? UsableButFlagged { get; init; }
+
+    /// <summary>For a tool missing somewhere: up to three usable tools of this type that aren't on those machines, with
+    /// where they are; ElsewhereMore counts the rest.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? Elsewhere { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ElsewhereMore { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Note { get; init; }
 }
 
 /// <summary>Days: the window of the daily counts (today counts as one). Daily: good and scrap per production day
