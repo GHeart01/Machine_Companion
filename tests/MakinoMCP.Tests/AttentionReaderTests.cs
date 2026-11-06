@@ -110,6 +110,7 @@ public class AttentionReaderTests
         Assert.Equal("lacking-tool recovery request", on.Items[0].What);
         Assert.EndsWith("then Retry at the console", on.Items[0].Detail);
         Assert.Equal(1, on.Counts["recovery request"]);
+        Assert.False(on.Counts.ContainsKey("lacking-tool recovery request"));
 
         // The cell doesn't raise recoveries for missing tools: a plain recovery.
         Assert.Equal("recovery request", Build(rows).Items[0].What);

@@ -54,5 +54,9 @@ public interface IMakinoReader
     /// fixtures that are only suspended or on hold are counted per place (Parked), not listed.</summary>
     Task<AttentionList> GetAttentionAsync(bool includeParked, CancellationToken ct);
 
+    /// <summary>Why the pallet numbered <paramref name="pallet"/> isn't moving, by the console's Pallet Diagnosis rules.
+    /// An unknown pallet number throws ArgumentException.</summary>
+    Task<PalletDiagnosis> GetPalletDiagnosisAsync(int pallet, CancellationToken ct);
+
     Task<LoginRightsInfo> GetLoginRightsAsync(CancellationToken ct);
 }

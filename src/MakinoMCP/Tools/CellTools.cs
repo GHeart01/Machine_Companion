@@ -254,6 +254,25 @@ public static class CellTools
         CancellationToken ct = default) =>
         context.Database("get_production", (r, t) => r.GetProductionAsync(days, order, part, includeIdle, t), ct);
 
+    [McpServerTool(Name = "get_pallet_diagnosis", ReadOnly = true, Idempotent = true, OpenWorld = false)]
+    [Description("Why isn't this pallet's work moving? The console's Pallet Diagnosis for one pallet: for each fixture, " +
+                 "what it holds (order, process), its current job (type, number, status) and the verdict, with each " +
+                 "feasible machine's or station's own verdict. Per device the cell's checks run in the console's order " +
+                 "and the first that fails is the verdict: not ready (disconnected, emergency stop, not in system mode, " +
+                 "an open PMC alarm; any open alarm for a station), machining suspended (the fixture or, where the cell " +
+                 "uses it, its order), pre-machining suspended, off-duty process while on duty, closed, transport " +
+                 "cancelled, damaged, operator-call job held while off duty; at a station also work-set hold and " +
+                 "skipped. Across devices, \"can run\" on any device wins. A running job reads \"processing now\"; " +
+                 "cleaning, turning, deburring and measuring jobs aren't checked. notChecked names what the console also " +
+                 "checks from its memory (system ready, the tool set on tool-resource cells, vehicle reach, CSG and " +
+                 "measuring data), so \"can run\" doesn't rule those out. One pallet per call; get_pallets or " +
+                 "get_attention give the numbers.")]
+    public static Task<string> GetPalletDiagnosis(
+        ToolContext context,
+        [Description("The pallet number, as get_pallets shows it.")] int pallet,
+        CancellationToken ct = default) =>
+        context.Database("get_pallet_diagnosis", (r, t) => r.GetPalletDiagnosisAsync(pallet, t), ct);
+
     [McpServerTool(Name = "get_attention", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("What is waiting on a person right now? One list, most severe first: devices with a recovery " +
                  "request (detail: open alarms and what the device was doing; \"lacking-tool recovery request\" when the " +

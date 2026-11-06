@@ -190,6 +190,17 @@ internal sealed class FakeMakinoReader : IMakinoReader
             Parked = new ParkedFixtures(1, [new ParkedGroup("pallet stocker", "machining suspended", 1)]),
         }, ct);
 
+    public Task<PalletDiagnosis> GetPalletDiagnosisAsync(int pallet, CancellationToken ct) =>
+        Answer(() => pallet != 7 ? throw new ArgumentException($"No pallet numbered {pallet}.") : new PalletDiagnosis(Now, 7,
+            "waiting for machining", "not completed (no result yet)", "pallet stocker 3",
+            [
+                new FixtureDiagnosis(1, "machine closed")
+                {
+                    Order = "ORDER-001", Process = 1, Job = "machining, job 2", JobStatus = "waiting for processing",
+                    Devices = [new DeviceVerdict("MC1", "machine closed")],
+                },
+            ], ["which vehicle can reach each device (dedicated vehicles)"]), ct);
+
     public Task<LoginRightsInfo> GetLoginRightsAsync(CancellationToken ct) =>
         Answer(() => new LoginRightsInfo(CanWrite, Devices.Count, CanWrite ? "can write" : "read only"), ct);
 }

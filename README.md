@@ -132,6 +132,7 @@ builds on the share. To roll back, write an older build's folder name (see `vers
 | `get_part_routing` | How a part is made: processes, jobs, programs and fixtures, and whether the tools each program needs are on the machines. The tool check is approximate: it uses the tool set the cell registered for each program (subprograms included) and doesn't check remaining life. |
 | `get_production` | Parts completed, scrapped and in process per order, plus per-day totals, counted the way the cell's own order screen counts. |
 | `get_attention` | One list of what waits on a person: recovery requests (with what the device was doing), errors, operator calls, damaged fixtures, tools in alarm, closed or skipped devices; parked fixtures are counted. |
+| `get_pallet_diagnosis` | Why a pallet's work isn't moving, by the console's own Pallet Diagnosis rules: per fixture its job and verdict, with each feasible machine's or station's verdict, and what the cell keeps only in memory and so can't be checked. |
 | `list_shared_folders` | The folders you shared and whether each is reachable. |
 | `list_files` | Files and subfolders in a shared folder, newest first. |
 | `read_file` | A text file, or its last lines or a line range. |

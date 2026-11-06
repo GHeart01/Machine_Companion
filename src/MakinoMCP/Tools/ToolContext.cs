@@ -25,7 +25,7 @@ public sealed class ToolContext
         "file. Start with get_cell_overview for the state of every device, or get_attention for what needs a person. " +
         "Then dig in: get_tools and get_tool_changes / get_tool_alarms / get_tool_movements for tools, " +
         "get_part_routing for how a part is made and whether its tools are there, get_production for parts made and " +
-        "order progress. Times are the cell database server's clock; every database result carries serverTime, the " +
+        "order progress, get_pallet_diagnosis for why a pallet's work isn't moving. Times are the cell database server's clock; every database result carries serverTime, the " +
         "server's current time, so measure \"open now\" and \"2 hours ago\" against it, not your own clock. History is " +
         "limited: the overview's historyDays is how many days the cell keeps PMC alarms and results (the vendor's " +
         "default of 90 when the cell doesn't say, flagged historyDaysAssumed); CNC alarms are limited to about the " +

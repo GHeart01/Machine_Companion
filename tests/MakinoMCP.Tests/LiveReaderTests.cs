@@ -325,6 +325,35 @@ public class LiveReaderTests(ITestOutputHelper output)
         Assert.Single(capped.Orders);
     }
 
+    /// <summary>Diagnoses a waiting pallet and a machining one on the real cell; prints the verdicts (local runs only),
+    /// asserts only their shape.</summary>
+    [SkippableFact]
+    public async Task Live_pallet_diagnosis_gives_a_verdict_per_fixture()
+    {
+        var reader = Reader();
+        var pallets = (await reader.GetPalletsAsync(CancellationToken.None)).Pallets;
+        var picks = new[] { "waiting for machining", "machining", "idle" }
+            .Select(status => pallets.FirstOrDefault(p => p.Status == status)).OfType<PalletInfo>().ToList();
+        Skip.If(picks.Count == 0, "no pallet waiting, machining or idle");
+
+        foreach (var p in picks)
+        {
+            var d = await reader.GetPalletDiagnosisAsync(p.Number, CancellationToken.None);
+            output.WriteLine($"pallet ({d.Status}, {d.WorkStatus}, {d.Location}):");
+            foreach (var f in d.Fixtures)
+                output.WriteLine($"  fixture {f.Fixture}: {f.Job} [{f.JobStatus}] -> {f.Verdict}; " +
+                                 string.Join("; ", (f.Devices ?? []).Select(v => $"{v.Device}: {v.Verdict}")));
+            output.WriteLine("  not checked: " + string.Join(" | ", d.NotChecked));
+            if (d.NotAvailable is { } na) output.WriteLine("  not available: " + string.Join(" | ", na));
+
+            Assert.Equal(p.Number, d.Pallet);
+            Assert.All(d.Fixtures, f => Assert.False(string.IsNullOrWhiteSpace(f.Verdict)));
+            Assert.All(d.Fixtures, f => Assert.DoesNotContain("code ", f.Verdict, StringComparison.Ordinal));
+            Assert.NotEmpty(d.NotChecked);
+        }
+        await Assert.ThrowsAsync<ArgumentException>(() => reader.GetPalletDiagnosisAsync(-12345, CancellationToken.None));
+    }
+
     /// <summary>The vendor-view fallback (for a login that can't read Quantities or OrderCompletedQtyResults) run for
     /// real: matched on order name, part and revision, from the order's registration on, it must give the same window
     /// sums as the table path.</summary>

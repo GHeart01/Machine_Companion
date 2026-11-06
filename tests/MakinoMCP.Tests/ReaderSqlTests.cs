@@ -290,7 +290,7 @@ public class ReaderSqlTests
             [("Devices", "DeviceID")],
             ["ToolLocation", "IndividualToolData"], // the hanging one first: the others still get probed
             ColumnsOf,
-            TimeSpan.FromMilliseconds(300),
+            TimeSpan.FromSeconds(1), // well past an instant probe on a cold CI runner; the hanging one still costs only this
             (table, _) => failed.Enqueue(table),
             CancellationToken.None);
 

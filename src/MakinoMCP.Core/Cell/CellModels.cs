@@ -718,3 +718,39 @@ public sealed record AttentionItem(string Kind, string What)
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DateTime? Since { get; init; }
 }
+
+// 0.5: get_pallet_diagnosis.
+
+/// <summary>Why a pallet's work isn't moving, as the console's Pallet Diagnosis would say: per fixture its current job
+/// and the verdict, with each feasible device's own verdict. NotChecked: what the console also checks but the cell keeps
+/// only in memory (or this tool doesn't follow), so a "can run" verdict doesn't rule those out. NotAvailable: checks this
+/// cell or login can't make, named rather than passed.</summary>
+public sealed record PalletDiagnosis(
+    DateTime ServerTime, int Pallet, string Status, string WorkStatus, string Location,
+    IReadOnlyList<FixtureDiagnosis> Fixtures, IReadOnlyList<string> NotChecked)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? NotAvailable { get; init; }
+}
+
+/// <summary>One fixture: what it holds now (order, process), its current job (type, number, status) and the verdict.
+/// Devices: each feasible device's verdict; left out when the job is running or there is no job.</summary>
+public sealed record FixtureDiagnosis(int? Fixture, string Verdict)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Order { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Process { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Job { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? JobStatus { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<DeviceVerdict>? Devices { get; init; }
+}
+
+public sealed record DeviceVerdict(string Device, string Verdict);

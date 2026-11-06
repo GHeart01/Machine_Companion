@@ -167,13 +167,13 @@ public sealed partial class SqlMakinoReader
             if (d.Connected == false) what.Add("disconnected");
             else if (d.Status == DashDown) what.Add(Codes.DeviceDashStatus(d.Status));
             if (d.Status == DashError) what.Add(Codes.DeviceDashStatus(d.Status));
-            foreach (var w in what) Count(w);
+            // A lacking-tool recovery counts as a recovery request; its own words stay on the item.
+            foreach (var w in what) Count(w == "lacking-tool recovery request" ? "recovery request" : w);
             if (d.Type == MachineType && d.OperatorCall is > 0)
             {
                 what.Add($"operator call ({Codes.OperatorCall(d.OperatorCall)})");
                 Count("operator call");
             }
-            if (lackingRecovery) Count("recovery request");
             if (what.Count > 0)
             {
                 var detail = lackingRecovery

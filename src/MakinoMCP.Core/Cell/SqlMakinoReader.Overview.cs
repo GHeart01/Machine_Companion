@@ -411,6 +411,8 @@ public sealed partial class SqlMakinoReader
             Opt(schema, table, "s", "Command"),
             Opt(schema, table, "s", "PowerStatus"),
             Opt(schema, table, "s", "PowerOffResult"),
+            Opt(schema, table, "s", "SystemMode", type: "bit"),
+            Opt(schema, table, "s", "DeviceTransProhibit", type: "bit"),
             machine && schema.Has(table, "JobID") && schema.Has("MachineJobs", "JobID") && schema.Has("MachineJobs", "NCProgramFileID")
                     && schema.Has("NCProgramFiles", "NCProgramFileID") && schema.Has("NCProgramFiles", "Name")
                 ? $"(SELECT TOP 1 n.Name FROM MachineJobs mj JOIN NCProgramFiles n ON n.NCProgramFileID = mj.NCProgramFileID WHERE mj.JobID = s.JobID) AS ProgramName"

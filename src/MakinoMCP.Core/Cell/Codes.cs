@@ -591,6 +591,32 @@ public static class Codes
         [4] = "reclamp",
     };
 
+    // The console's Pallet Diagnosis verdict for a fixture (FixtureDiagnosisStatus), for the values get_pallet_diagnosis
+    // works out. Across feasible devices the console takes "can run" if any device gives it, else the highest value.
+    private static readonly Dictionary<int, string> FixtureDiagnosisResults = new()
+    {
+        [-1] = "no verdict (the station is skipped)",
+        [1] = "can run: nothing found that blocks it",
+        [2] = "fixture damaged",
+        [3] = "work-set station closed",
+        [4] = "work-set hold on the fixture",
+        [5] = "work-set station not ready (disconnected, emergency stop, not in system mode or an open alarm)",
+        [6] = "no feasible work-set station",
+        [7] = "machine closed",
+        [8] = "machining suspended (the fixture, or its order)",
+        [9] = "machine not ready (disconnected, emergency stop, not in system mode or an open PMC alarm)",
+        [10] = "machine lacks the tools for the program",
+        [11] = "no feasible machine",
+        [12] = "no current job (nothing to do on the fixture)",
+        [13] = "off-duty process: waits until the cell is off duty",
+        [22] = "transport to the work-set station cancelled",
+        [23] = "transport to the machine cancelled",
+        [32] = "operator-call job held until the cell is on duty",
+        [42] = "work-set station skipped",
+        [43] = "pre-machining suspended",
+        [44] = "pre-machining suspended by an error",
+    };
+
     // InformationFiles.InfoType (InformationFileType).
     private static readonly Dictionary<int, string> InfoFileTypes = new()
     {
@@ -668,6 +694,8 @@ public static class Codes
     public static string LackingToolScope(int? value) => Lookup(value, LackingToolScopes);
 
     public static string WssInstruction(int? value) => Lookup(value, WssInstructions);
+
+    public static string FixtureDiagnosis(int? value) => Lookup(value, FixtureDiagnosisResults);
 
     public static string DevicePowerStatus(int? value) => Lookup(value, DevicePowerStatuses);
 

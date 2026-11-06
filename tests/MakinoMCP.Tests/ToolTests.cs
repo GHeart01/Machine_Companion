@@ -17,7 +17,7 @@ public sealed class ToolTests : IDisposable
     [
         "get_cell_overview", "get_alarms", "get_alarm_summary", "get_utilization", "get_recent_activity", "get_orders",
         "get_pallets", "get_tools", "get_tool_changes", "get_tool_alarms", "get_tool_movements", "get_part_routing",
-        "get_production", "get_attention", "list_shared_folders",
+        "get_production", "get_attention", "get_pallet_diagnosis", "list_shared_folders",
         "list_files", "read_file", "search_files",
     ];
 
@@ -67,6 +67,7 @@ public sealed class ToolTests : IDisposable
         ("get_part_routing", c => CellTools.GetPartRouting(c, "CONTOSO-BRACKET", ct: CancellationToken.None)),
         ("get_production", c => CellTools.GetProduction(c, ct: CancellationToken.None)),
         ("get_attention", c => CellTools.GetAttention(c, ct: CancellationToken.None)),
+        ("get_pallet_diagnosis", c => CellTools.GetPalletDiagnosis(c, 7, CancellationToken.None)),
         ("list_shared_folders", c => FolderTools.ListSharedFolders(c, CancellationToken.None)),
         ("list_files", c => FolderTools.ListFiles(c, "logs", ct: CancellationToken.None)),
         ("read_file", c => FolderTools.ReadFile(c, "logs", "cell.log", ct: CancellationToken.None)),
@@ -314,6 +315,23 @@ public sealed class ToolTests : IDisposable
 
         Assert.DoesNotContain("Could not read the Makino cell database", error); // passed through as-is
         Assert.Contains("part name", error);
+    }
+
+    [Fact]
+    public async Task Pallet_diagnosis_json_has_fixtures_device_verdicts_and_what_it_cannot_check()
+    {
+        var context = Ready(new FakeMakinoReader());
+
+        var root = Parse(await CellTools.GetPalletDiagnosis(context, 7, CancellationToken.None));
+        Assert.Equal(7, root.GetProperty("pallet").GetInt32());
+        var fixture = root.GetProperty("fixtures")[0];
+        Assert.Equal("machine closed", fixture.GetProperty("verdict").GetString());
+        Assert.Equal("MC1", fixture.GetProperty("devices")[0].GetProperty("device").GetString());
+        Assert.NotEmpty(root.GetProperty("notChecked").EnumerateArray());
+        Assert.False(root.TryGetProperty("notAvailable", out _));
+
+        var unknown = await CellTools.GetPalletDiagnosis(context, 404, CancellationToken.None);
+        Assert.Contains("No pallet numbered 404", unknown);
     }
 
     [Fact]
