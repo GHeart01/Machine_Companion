@@ -5,7 +5,9 @@ namespace MakinoMCP.Core.Folders;
 
 /// <summary>
 /// The only file access Claude gets: read-only, inside the configured shared folders and their subfolders, never the
-/// protected paths (the settings file with the password, the program folders), never binary files, never unbounded.
+/// protected paths (the settings file with the password, the program folders), never the vendor files holding the cell's
+/// e-mail password (AlarmNotification*.xml), never binary files, never unbounded. Password values in .config and .xml
+/// files are shown as *** (<see cref="VendorSecrets"/>).
 /// </summary>
 public sealed class SharedFolders
 {
@@ -15,6 +17,7 @@ public sealed class SharedFolders
     private const int SearchMaxFiles = 50_000;
     private const int HitTextChars = 300;
     private const string SettingsFileName = "MakinoMCP.settings.json";
+    private const string AlarmNotificationPrefix = "AlarmNotification";
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(5);
 
     private readonly IReadOnlyList<SharedFolder> _folders;
@@ -167,6 +170,7 @@ public sealed class SharedFolders
             throw new FolderAccessException($"There is no file '{path.Trim()}' inside shared folder '{folder.Trim()}'.");
         }
         RequireText(full, path.Trim());
+        var mask = MasksSecrets(new FileInfo(full));
 
         var rel = Relative(root, full);
         var defaultedToLogTail = false;
@@ -204,6 +208,8 @@ public sealed class SharedFolders
 
         ScanFile(full, _maxChars, (n, text, cut) =>
         {
+            // Masked before it is counted, so the size limit applies to what is shown.
+            if (mask) text = VendorSecrets.MaskLine(text);
             total = n;
             cutLongLine |= cut;
             if (tail is not null)
@@ -349,8 +355,11 @@ public sealed class SharedFolders
             {
                 if (LooksBinary(f.FullName)) continue;
                 searched++;
+                var mask = MasksSecrets(f);
                 ScanFile(f.FullName, 2000, (n, line, _) =>
                 {
+                    // Masked before matching, so searching for a password finds nothing.
+                    if (mask) line = VendorSecrets.MaskLine(line);
                     if (line.Contains(text, StringComparison.OrdinalIgnoreCase))
                     {
                         local.Add(new Hit(rel, n, line.Length > HitTextChars ? line[..HitTextChars] + "..." : line));
@@ -441,6 +450,11 @@ public sealed class SharedFolders
             }
         }
 
+        if (IsVendorSecretName(full) || IsVendorSecretName(real))
+        {
+            throw new FolderAccessException(
+                "AlarmNotification*.xml files hold the cell's e-mail password and are never shared. Ask for something else in the shared folder.");
+        }
         if (IsSettingsName(full) || IsSettingsName(real) || IsProtected(full) || IsProtected(real))
         {
             throw new FolderAccessException(
@@ -501,7 +515,7 @@ public sealed class SharedFolders
         var target = ResolvedTarget(info);
         if (target is null) return false;
         return (IsAtOrInside(target, root) || IsAtOrInside(target, RealPath(root)))
-            && !IsProtected(target) && !IsSettingsName(target);
+            && !IsProtected(target) && !IsSettingsName(target) && !IsVendorSecretName(target);
     }
 
     private static bool IsAtOrInside(string candidate, string container)
@@ -520,10 +534,25 @@ public sealed class SharedFolders
         return name.StartsWith(SettingsFileName, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>AlarmNotification*.xml (the cell's alarm e-mail settings) holds the SMTP password encrypted with a key that
+    /// ships with the vendor software, so it is as good as plain text: never shared, however it is spelled.</summary>
+    private static bool IsVendorSecretName(string fullPath)
+    {
+        var name = Path.GetFileName(fullPath.TrimEnd('\\', '/')).TrimEnd(' ', '.');
+        return name.StartsWith(AlarmNotificationPrefix, StringComparison.OrdinalIgnoreCase)
+            && name.EndsWith(".xml", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Whether lines read from this file get their password values masked: a .config or .xml file, by its
+    /// own name or, for a link, by the name of the file it points at.</summary>
+    private static bool MasksSecrets(FileInfo file) =>
+        VendorSecrets.Applies(file.FullName)
+        || (IsLink(file) && ResolvedTarget(file) is { } target && VendorSecrets.Applies(target));
+
     /// <summary>True when the entry, by its path here or by its real path (root reached through a link), must stay hidden.</summary>
     private bool IsHidden(string root, string rootReal, string fullPath)
     {
-        if (IsSettingsName(fullPath) || IsProtected(fullPath)) return true;
+        if (IsSettingsName(fullPath) || IsVendorSecretName(fullPath) || IsProtected(fullPath)) return true;
         if (!string.Equals(root, rootReal, StringComparison.OrdinalIgnoreCase))
         {
             var rel = Relative(root, fullPath);
