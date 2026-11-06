@@ -71,9 +71,12 @@ public sealed partial class SqlMakinoReader
 
         if (schema.HasTable("ViewOrders") && schema.Has("ViewOrders", "OrderName"))
         {
+            var partMatch = ViewPartMatch(schema, "ViewOrders", "v", "pa");
+            if (partMatch is null) missing.Add(ViewNameOnly);
             string View(string column, string name, string words)
             {
-                if (schema.Has("ViewOrders", column)) return $"(SELECT TOP 1 v.{column} FROM ViewOrders v WHERE v.OrderName = o.OrderName) AS {name}";
+                if (schema.Has("ViewOrders", column))
+                    return $"(SELECT TOP 1 v.{column} FROM ViewOrders v WHERE v.OrderName = o.OrderName{partMatch}) AS {name}";
                 missing.Add(words);
                 return $"CAST(NULL AS int) AS {name}";
             }
@@ -99,6 +102,26 @@ public sealed partial class SqlMakinoReader
     ];
 
     private const string QuantitiesNotAvailable = "completed, scrap and remaining quantities";
+
+    /// <summary>notAvailable's words when a vendor view can only be matched to orders by name.</summary>
+    internal const string ViewNameOnly =
+        "matching the cell's order views to orders by part (matched by order name only: orders of different parts that share a name are mixed)";
+
+    /// <summary>The extra condition matching a vendor view's row (alias <paramref name="v"/>) to its order's part (alias
+    /// <paramref name="part"/>): two parts may carry the same order name. Null when either side lacks the part name
+    /// or revision, so only the name can match.</summary>
+    private static string? ViewPartMatch(SchemaInfo schema, string view, string v, string part) =>
+        schema.Has(view, "PartName") && schema.Has(view, "PartRevision") && schema.Has("Parts", "PartName") && schema.Has("Parts", "Revision")
+            ? $" AND {v}.PartName = {part}.PartName AND ISNULL({v}.PartRevision, '') = ISNULL({part}.Revision, '')"
+            : null;
+
+    /// <summary>Daily rows outlive their order, so a newer order of the same name and part would pick up a deleted one's
+    /// days: only days from the order's registration on (a day early, for a production day that starts before
+    /// midnight).</summary>
+    private static string RegisteredSince(SchemaInfo schema, string d, string order) =>
+        schema.Has("Orders", "RegistrationDate")
+            ? $" AND {d}.ProductionDate >= DATEADD(day, -1, CAST({order}.RegistrationDate AS date))"
+            : "";
 
     // Where the daily counts come from: the table (by order id), else the vendor's view (by order name), else nowhere.
     private enum DailySource { None, Table, View }
@@ -132,10 +155,14 @@ public sealed partial class SqlMakinoReader
         var activeWhere = conditions.Count > 0 ? string.Join(" AND ", conditions) : "1 = 1";
 
         var source = Daily(schema);
+        const string dayView = "ViewDayOrderCompletedQty";
+        var viewMatch = ViewPartMatch(schema, dayView, "d", "pa") + RegisteredSince(schema, "d", "o");
+        var dailyMatch = ViewPartMatch(schema, dayView, "d", "pd") + RegisteredSince(schema, "d", "od");
+        var dailyJoin = $"FROM {dayView} d JOIN Orders od ON od.OrderName = d.OrderName LEFT JOIN Parts pd ON pd.PartID = od.PartID";
         string? Window(string column) => source switch
         {
             DailySource.Table => $"(SELECT SUM(d.{column}) FROM OrderCompletedQtyResults d WHERE d.OrderID = o.OrderID AND d.ProductionDate >= @from)",
-            DailySource.View => $"(SELECT SUM(d.{column}) FROM ViewDayOrderCompletedQty d WHERE d.OrderName = o.OrderName AND d.ProductionDate >= @from)",
+            DailySource.View => $"(SELECT SUM(d.{column}) FROM {dayView} d WHERE d.OrderName = o.OrderName{viewMatch} AND d.ProductionDate >= @from)",
             _ => null,
         };
         var windowCompleted = Window("NormalQtyDay");
@@ -178,8 +205,8 @@ public sealed partial class SqlMakinoReader
                 """,
             (DailySource.View, false) => $"""
                 SELECT TOP (@take) CAST(NULL AS int) AS OrderID, d.ProductionDate, SUM(d.NormalQtyDay) AS NormalQtyDay, SUM(d.ScrapQtyDay) AS ScrapQtyDay
-                FROM ViewDayOrderCompletedQty d JOIN Orders od ON od.OrderName = d.OrderName
-                WHERE d.ProductionDate >= @from AND od.OrderID IN ({picked})
+                {dailyJoin}
+                WHERE d.ProductionDate >= @from{dailyMatch} AND od.OrderID IN ({picked})
                 GROUP BY d.ProductionDate
                 HAVING SUM(d.NormalQtyDay) <> 0 OR SUM(d.ScrapQtyDay) <> 0
                 ORDER BY d.ProductionDate DESC;
@@ -192,8 +219,8 @@ public sealed partial class SqlMakinoReader
                 """,
             (DailySource.View, true) => $"""
                 SELECT TOP (@take) od.OrderID, d.ProductionDate, d.NormalQtyDay, d.ScrapQtyDay
-                FROM ViewDayOrderCompletedQty d JOIN Orders od ON od.OrderName = d.OrderName
-                WHERE d.ProductionDate >= @from AND (d.NormalQtyDay <> 0 OR d.ScrapQtyDay <> 0) AND od.OrderID IN ({picked})
+                {dailyJoin}
+                WHERE d.ProductionDate >= @from{dailyMatch} AND (d.NormalQtyDay <> 0 OR d.ScrapQtyDay <> 0) AND od.OrderID IN ({picked})
                 ORDER BY d.ProductionDate DESC, od.OrderID;
                 """,
             _ => "SELECT CAST(NULL AS int) AS OrderID, CAST(NULL AS date) AS ProductionDate, CAST(NULL AS int) AS NormalQtyDay, " +
@@ -244,6 +271,9 @@ public sealed partial class SqlMakinoReader
 
         var notAvailable = new List<string>(quantities.Missing);
         if (Daily(schema) == DailySource.None) notAvailable.Add("daily quantities");
+        else if (Daily(schema) == DailySource.View && ViewPartMatch(schema, "ViewDayOrderCompletedQty", "d", "pa") is null
+                 && !notAvailable.Contains(ViewNameOnly)) notAvailable.Add(ViewNameOnly);
+        var settings = await SystemParametersAsync(s, ct, OrderParameterNames);
 
         using var cmd = Command(s.Connection, ProductionSql(schema, byOrder, byPart, includeIdle));
         AddTake(cmd);
@@ -298,6 +328,7 @@ public sealed partial class SqlMakinoReader
         var (shown, capped) = Cap(rows);
         return new ProductionList(s.Now, capped, window, shown)
         {
+            CompleteIncludesScrap = CompleteIncludesScrap(settings),
             Daily = byOrder || byPart || totals.Count == 0 ? null : totals,
             DailyCapped = dailyRows > _cap ? true : null,
             NotAvailable = notAvailable.Count > 0 ? notAvailable : null,

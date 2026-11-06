@@ -5,11 +5,15 @@ namespace MakinoMCP.Core.Cell;
 // What the reader returns. Codes are already turned into words; unknown codes read "code N".
 // Every list carries the cell's ServerTime and Capped (more rows existed than the row limit let through).
 
-/// <summary>HistoryDays: how many days the cell keeps alarm and result history (SystemParameters.PreserveResults),
-/// null when the cell doesn't say.</summary>
+/// <summary>HistoryDays: how many days the cell keeps alarm and result history (SystemParameters.PreserveResults);
+/// the vendor's default of 90 with HistoryDaysAssumed when the cell has no such setting; null when this login can't
+/// read the settings.</summary>
 public sealed record CellOverview(DateTime ServerTime, IReadOnlyList<DeviceState> Devices)
 {
     public int? HistoryDays { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? HistoryDaysAssumed { get; init; }
 }
 
 /// <summary>One device. Fields the device type or this cell's software version doesn't have are null;
@@ -128,6 +132,12 @@ public sealed record ActivityItem(
 
 public sealed record OrderList(DateTime ServerTime, bool Capped, IReadOnlyList<OrderInfo> Orders)
 {
+    /// <summary>True when the cell counts an order complete once good plus scrap parts reach its quantity (its
+    /// OrderIncludesScrap setting, on by default), false when only good parts count; null when the settings can't be
+    /// read.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? CompleteIncludesScrap { get; init; }
+
     /// <summary>What this cell (or login) can't show: the quantities when neither the cell's quantity table nor its
     /// order view is readable.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -135,15 +145,18 @@ public sealed record OrderList(DateTime ServerTime, bool Capped, IReadOnlyList<O
 }
 
 /// <summary>Quantity is the order's required quantity; Completed the time it completed. CompletedQty: good parts out
-/// of the last process; ScrapQty: scrapped in any process; RemainingQty: not started yet (first process). get_orders
-/// lists the whole queue, so the JSON leaves out fields at their default: Suspended when false, Due and Completed when
-/// null, a quantity of 0 (the properties themselves keep 0, so code reading them can tell 0 from not available).</summary>
+/// of the last process; ScrapQty: scrapped in any process; RemainingQty: not started yet (first process).
+/// MachiningSuspended: the order's machining suspend (its waiting fixtures aren't machined), true only while the
+/// cell's OrderMachiningSuspend setting makes it count; an order suspended as a whole has status "suspended" instead.
+/// get_orders lists the whole queue, so the JSON leaves out fields at their default: MachiningSuspended unless true,
+/// Due and Completed when null, a quantity of 0 (the properties themselves keep 0, so code reading them can tell 0
+/// from not available).</summary>
 public sealed record OrderInfo(
     string Name,
     string Part,
     string Status,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] int Quantity,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool Suspended,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? MachiningSuspended,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTime? Due,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTime? Completed)
 {
@@ -195,6 +208,15 @@ public sealed record ToolList(
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? LengthUnitAssumed { get; init; }
+
+    /// <summary>True when the cell stores radii in its "diameter" values (DiameterTypePC = 0): diameter, D geometry,
+    /// D wear and diameter wear are then radii, shown as stored.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? DiameterIsRadius { get; init; }
+
+    /// <summary>True when the cell doesn't say whether it stores diameters or radii, and diameter was assumed.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? DiameterTypeAssumed { get; init; }
 
     /// <summary>What this cell lacks for the chosen filter, which then couldn't be applied (Tools is empty).</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -293,6 +315,15 @@ public sealed record ToolChangeList(DateTime ServerTime, bool Capped, string Len
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? LengthUnitAssumed { get; init; }
 
+    /// <summary>True when the cell stores radii in its "diameter" values (DiameterTypePC = 0): diameter, D geometry,
+    /// D wear and diameter wear are then radii, shown as stored.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? DiameterIsRadius { get; init; }
+
+    /// <summary>True when the cell doesn't say whether it stores diameters or radii, and diameter was assumed.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? DiameterTypeAssumed { get; init; }
+
     /// <summary>What this cell's tool data log can't tell apart (columns it lacks), and how to see the rows anyway.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? NotAvailable { get; init; }
@@ -321,6 +352,15 @@ public sealed record ToolAlarmList(
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? LengthUnitAssumed { get; init; }
+
+    /// <summary>True when the cell stores radii in its "diameter" values (DiameterTypePC = 0): diameter, D geometry,
+    /// D wear and diameter wear are then radii, shown as stored.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? DiameterIsRadius { get; init; }
+
+    /// <summary>True when the cell doesn't say whether it stores diameters or radii, and diameter was assumed.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? DiameterTypeAssumed { get; init; }
 }
 
 public sealed record ToolAlarmEvent(DateTime Time, string Device, int Itn, int? Ftn, IReadOnlyList<string> Alarms)
@@ -484,6 +524,10 @@ public sealed record ProgramTool(int Ftn, int Needed)
 /// Capped: more orders than the row limit; DailyCapped: more day rows than the row limit (the oldest left out).</summary>
 public sealed record ProductionList(DateTime ServerTime, bool Capped, int Days, IReadOnlyList<OrderProduction> Orders)
 {
+    /// <summary>As <see cref="OrderList.CompleteIncludesScrap"/>.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? CompleteIncludesScrap { get; init; }
+
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<DailyQty>? Daily { get; init; }
 
@@ -552,6 +596,11 @@ public sealed record AttentionList(
     /// counted per place; null when there are none.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ParkedFixtures? Parked { get; init; }
+
+    /// <summary>Which of a fixture's jobs the cell checks when it marks the fixture lacking tools (the cell's
+    /// setting); null when the cell doesn't mark fixtures lacking tools or its settings can't be read.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? LackingToolScope { get; init; }
 }
 
 /// <summary>Fixtures parked by operators (machining suspended or held at the work-set station): how many, how many of

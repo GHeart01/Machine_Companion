@@ -109,15 +109,16 @@ public class ToolReaderTests
     [Fact]
     public void Tool_settings_come_from_system_parameters_else_are_assumed()
     {
-        // ToolLifeCountType: 0 counts up, 1 down. ToolOffsetUnit (DeviceUnit): 0-4 mm, 10-14 inch.
-        Assert.Equal(new SqlMakinoReader.ToolSettings(false, false, "mm", false), SqlMakinoReader.ToolSettingsFrom("0", "3"));
-        Assert.Equal(new SqlMakinoReader.ToolSettings(true, false, "inch", false), SqlMakinoReader.ToolSettingsFrom(" 1 ", "12"));
-        Assert.Equal(new SqlMakinoReader.ToolSettings(false, true, "mm", true), SqlMakinoReader.ToolSettingsFrom(null, null));
-        Assert.Equal(new SqlMakinoReader.ToolSettings(false, true, "mm", true), SqlMakinoReader.ToolSettingsFrom("2", "21"));
+        // ToolLifeCountType: 0 counts up, 1 down. ToolOffsetUnit (DeviceUnit): 0-4 mm, 10-14 inch. DiameterTypePC
+        // (ToolDiameterType): 0 radius, 1 diameter.
+        Assert.Equal(new SqlMakinoReader.ToolSettings(false, false, "mm", false, false, false), SqlMakinoReader.ToolSettingsFrom("0", "3", "1"));
+        Assert.Equal(new SqlMakinoReader.ToolSettings(true, false, "inch", false, true, false), SqlMakinoReader.ToolSettingsFrom(" 1 ", "12", "0"));
+        Assert.Equal(new SqlMakinoReader.ToolSettings(false, true, "mm", true, false, true), SqlMakinoReader.ToolSettingsFrom(null, null, null));
+        Assert.Equal(new SqlMakinoReader.ToolSettings(false, true, "mm", true, false, true), SqlMakinoReader.ToolSettingsFrom("2", "21", "3"));
 
         var sql = SqlMakinoReader.ToolSettingsSql(SchemaWithout());
         Assert.NotNull(sql);
-        Assert.Contains("ParameterName IN ('ToolLifeCountType', 'ToolOffsetUnit')", sql);
+        Assert.Contains("ParameterName IN ('ToolLifeCountType', 'ToolOffsetUnit', 'DiameterTypePC')", sql);
         Assert.Contains("ORDER BY SystemID", sql);
         Assert.Null(SqlMakinoReader.ToolSettingsSql(SchemaWithout("SystemParameters")));
     }
@@ -333,7 +334,7 @@ public class ToolReaderTests
         };
         var words = SqlMakinoReader.ChangeWords(SchemaWithout(), c => row.GetValueOrDefault(c), lifeType: 3, remain: false, "mm");
 
-        Assert.Equal(["status ready → alarm", "length 101.234 → 101.250 mm", "tool life alarm on", "broken tool (short) off"], words);
+        Assert.Equal(["status ready → alarm", "length 101.234 → 101.250 mm", "tool life alarm on", "BTS alarm (broken tool) off"], words);
     }
 
     [Fact]
@@ -396,7 +397,7 @@ public class ToolReaderTests
     public void Tool_alarm_history_bits_become_words()
     {
         var row = new Dictionary<string, int?> { ["TLAlarm"] = 1, ["BT2Alarm"] = 1, ["ACAlarm"] = 0 };
-        Assert.Equal(["tool life alarm", "broken tool (long)"],
+        Assert.Equal(["tool life alarm", "BT2 alarm (tool too long)"],
             SqlMakinoReader.HistoryAlarmWords(SchemaWithout(), c => row.GetValueOrDefault(c)));
     }
 

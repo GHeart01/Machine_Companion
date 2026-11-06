@@ -2,6 +2,10 @@ namespace MakinoMCP.Core.Cell;
 
 public sealed partial class SqlMakinoReader
 {
+    // PalletLocation.CurDeviceType 0: the pallet was taken out of the system (an offline pallet).
+    private const int OutOfSystem = 0;
+    internal const string OutOfSystemWords = "out of system (offline pallet)";
+
     // Orders.Status codes left out of an "active only" list: undefined, complete and cancelled.
     private const string FinishedOrderStatuses = "0, 5, 6";
 
@@ -9,6 +13,8 @@ public sealed partial class SqlMakinoReader
     {
         await using var s = await OpenAsync(ct);
         s.Schema.Require("Orders", "Parts");
+        var settings = await SystemParametersAsync(s, ct, OrderParameterNames);
+        var machiningSuspendCounts = MachiningSuspendCounts(settings);
         using var cmd = Command(s.Connection, OrdersSql(s.Schema, activeOnly));
         AddTake(cmd);
 
@@ -22,7 +28,7 @@ public sealed partial class SqlMakinoReader
                 revision.Length > 0 ? $"{Str(r, "PartName")} rev {revision}" : Str(r, "PartName"),
                 Codes.OrderStatus(Int(r, "Status")),
                 Int(r, "Quantity") ?? 0,
-                Int(r, "MachiningSuspended") is > 0,
+                machiningSuspendCounts && Int(r, "MachiningSuspended") is > 0 ? true : null,
                 Date(r, "DueDate"),
                 Date(r, "CompleteDate"))
             {
@@ -30,16 +36,32 @@ public sealed partial class SqlMakinoReader
             });
         }
         var (orders, capped) = Cap(rows);
+        var notAvailable = OrderQuantityColumns(s.Schema, inProcess: false) switch
+        {
+            null => [QuantitiesNotAvailable],
+            { Missing.Count: > 0 } quantities => quantities.Missing.ToList(),
+            _ => new List<string>(),
+        };
+        if (!s.Schema.Has("Orders", "MachiningSuspended")) notAvailable.Add("order machining suspend");
         return new OrderList(s.Now, capped, orders)
         {
-            NotAvailable = OrderQuantityColumns(s.Schema, inProcess: false) switch
-            {
-                null => [QuantitiesNotAvailable],
-                { Missing.Count: > 0 } quantities => quantities.Missing,
-                _ => null,
-            },
+            CompleteIncludesScrap = CompleteIncludesScrap(settings),
+            NotAvailable = notAvailable.Count > 0 ? notAvailable : null,
         };
     }
+
+    private static readonly string[] OrderParameterNames = ["OrderMachiningSuspend", "OrderIncludesScrap"];
+
+    /// <summary>Whether an order's MachiningSuspended flag does anything: only with the cell's OrderMachiningSuspend
+    /// setting at 1 (0 or no row, the default, and the console hides the column and ignores the flag). Settings this
+    /// login can't read: shown, since it can't be ruled out.</summary>
+    internal static bool MachiningSuspendCounts(IReadOnlyDictionary<string, string>? settings) =>
+        settings is null || ToInt(settings.GetValueOrDefault("OrderMachiningSuspend")) == 1;
+
+    /// <summary>The cell's OrderIncludesScrap setting: complete counts scrap too (1, and the default when there is no
+    /// row) or good parts only (0); null when the settings can't be read.</summary>
+    internal static bool? CompleteIncludesScrap(IReadOnlyDictionary<string, string>? settings) =>
+        settings is null ? null : ToInt(settings.GetValueOrDefault("OrderIncludesScrap")) != 0;
 
     /// <summary>Orders with their part and quantities (the same as get_production's), latest due first. Without a
     /// Status column activeOnly can't filter.</summary>
@@ -152,10 +174,12 @@ public sealed partial class SqlMakinoReader
     private static bool IsDashboardPallet(int? palletType) => palletType is null || DashboardPalletTypes.Contains(palletType.Value);
 
     /// <summary>Where a pallet is, in words: the device's name when the cell has a device row for that place, else its
-    /// type and number (stockers usually have no row); then the position.</summary>
+    /// type and number (stockers usually have no row); then the position. Type 0 is a pallet taken out of the system
+    /// (pallet output); no location at all is "unknown".</summary>
     private static string Location(Session s, int? type, int? number, int? position)
     {
-        if (type is null or 0) return "unknown";
+        if (type is null) return "unknown";
+        if (type == OutOfSystem) return OutOfSystemWords;
         var device = s.Devices.FirstOrDefault(d => d.Type == type && d.Number == number)?.Name
             ?? $"{Codes.DeviceType(type)} {number}";
         return position is > 0 ? $"{device}, position {position}" : device;

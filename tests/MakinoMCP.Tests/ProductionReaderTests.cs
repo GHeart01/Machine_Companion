@@ -9,7 +9,7 @@ public class ProductionReaderTests
     private static readonly Dictionary<string, string[]> Schema = new()
     {
         ["Devices"] = ["DeviceID", "DeviceName", "DeviceType", "DeviceNumber"],
-        ["Orders"] = ["OrderID", "PartID", "OrderName", "Quantity", "Status", "DueDate", "CompleteDate", "MachiningSuspended"],
+        ["Orders"] = ["OrderID", "PartID", "OrderName", "Quantity", "Status", "DueDate", "CompleteDate", "MachiningSuspended", "RegistrationDate"],
         ["Parts"] = ["PartID", "PartName", "Revision"],
         ["Processes"] = ["ProcessID", "PartID", "ProcessNumber"],
         ["Quantities"] = ["OrderID", "ProcessID", "RemainingQuantity", "NormalQuantity", "ScrapQuantity", "MaterialGroupNo"],
@@ -17,8 +17,8 @@ public class ProductionReaderTests
         ["FixtureRun"] = ["PalletFixtureID", "CurOrderID", "CurProcessID"],
         ["PalletFixtures"] = ["PalletFixtureID", "Suspend", "WorkSetHold"],
         ["OrderCompletedQtyResults"] = ["ProductionDate", "OrderID", "NormalQtyDay", "ScrapQtyDay"],
-        ["ViewOrders"] = ["OrderName", "NormalQty", "ScrapQty", "RemainQty", "InProcQty"],
-        ["ViewDayOrderCompletedQty"] = ["ProductionDate", "OrderName", "NormalQtyDay", "ScrapQtyDay"],
+        ["ViewOrders"] = ["OrderName", "PartName", "PartRevision", "NormalQty", "ScrapQty", "RemainQty", "InProcQty"],
+        ["ViewDayOrderCompletedQty"] = ["ProductionDate", "OrderName", "PartName", "PartRevision", "NormalQtyDay", "ScrapQtyDay"],
     };
 
     private static SchemaInfo SchemaWithout(params string[] tableDotColumn) =>
@@ -62,7 +62,8 @@ public class ProductionReaderTests
     public void Without_quantities_the_vendor_order_view_gives_them_and_without_both_there_are_none()
     {
         var view = string.Join("\n", SqlMakinoReader.OrderQuantityColumns(SchemaWithout("Quantities"), inProcess: true)!.Columns);
-        Assert.Contains("(SELECT TOP 1 v.NormalQty FROM ViewOrders v WHERE v.OrderName = o.OrderName) AS CompletedQty", view);
+        Assert.Contains("(SELECT TOP 1 v.NormalQty FROM ViewOrders v WHERE v.OrderName = o.OrderName " +
+                        "AND v.PartName = pa.PartName AND ISNULL(v.PartRevision, '') = ISNULL(pa.Revision, '')) AS CompletedQty", view);
         Assert.Contains("v.InProcQty", view);
         Assert.Contains("CAST(NULL AS int) AS ClampedQty", view);
 
@@ -136,6 +137,26 @@ public class ProductionReaderTests
     }
 
     [Fact]
+    public void The_order_views_match_orders_by_name_part_and_revision_else_say_they_match_by_name_only()
+    {
+        // Two parts may carry the same order name; a view matched by name alone would mix them.
+        var nameOnly = SqlMakinoReader.OrderQuantityColumns(SchemaWithout("Quantities", "ViewOrders.PartRevision"), inProcess: false)!;
+        Assert.Contains("(SELECT TOP 1 v.NormalQty FROM ViewOrders v WHERE v.OrderName = o.OrderName) AS CompletedQty", nameOnly.Columns);
+        Assert.Contains(SqlMakinoReader.ViewNameOnly, nameOnly.Missing);
+
+        // Daily rows outlive their order: only days from the order's registration on.
+        var daily = SqlMakinoReader.ProductionSql(SchemaWithout("OrderCompletedQtyResults"), byOrder: true, byPart: false, includeIdle: false);
+        Assert.Contains("LEFT JOIN Parts pd ON pd.PartID = od.PartID", daily);
+        Assert.Contains("AND d.PartName = pd.PartName AND ISNULL(d.PartRevision, '') = ISNULL(pd.Revision, '')", daily);
+        Assert.Contains("AND d.ProductionDate >= DATEADD(day, -1, CAST(od.RegistrationDate AS date))", daily);
+        Assert.Contains("WHERE d.OrderName = o.OrderName AND d.PartName = pa.PartName", daily); // the window sums
+
+        var old = SqlMakinoReader.ProductionSql(SchemaWithout("OrderCompletedQtyResults", "ViewDayOrderCompletedQty.PartName", "Orders.RegistrationDate"), true, false, false);
+        Assert.DoesNotContain("d.PartName", old);
+        Assert.DoesNotContain("RegistrationDate", old);
+    }
+
+    [Fact]
     public void By_default_the_daily_counts_are_totals_per_day_and_per_order_only_for_a_named_order_or_part()
     {
         var totals = SqlMakinoReader.ProductionSql(SchemaWithout(), byOrder: false, byPart: false, includeIdle: false);
@@ -150,6 +171,18 @@ public class ProductionReaderTests
         var view = SqlMakinoReader.ProductionSql(SchemaWithout("OrderCompletedQtyResults"), false, false, false);
         Assert.Contains("FROM ViewDayOrderCompletedQty d JOIN Orders od ON od.OrderName = d.OrderName", view);
         Assert.Contains("GROUP BY d.ProductionDate", view);
+    }
+
+    [Fact]
+    public void Machining_suspend_counts_only_with_the_cells_setting_and_complete_may_include_scrap()
+    {
+        Assert.False(SqlMakinoReader.MachiningSuspendCounts(new Dictionary<string, string>())); // default: off
+        Assert.True(SqlMakinoReader.MachiningSuspendCounts(new Dictionary<string, string> { ["OrderMachiningSuspend"] = "1" }));
+        Assert.True(SqlMakinoReader.MachiningSuspendCounts(null)); // can't rule it out
+
+        Assert.True(SqlMakinoReader.CompleteIncludesScrap(new Dictionary<string, string>())); // default: on
+        Assert.False(SqlMakinoReader.CompleteIncludesScrap(new Dictionary<string, string> { ["OrderIncludesScrap"] = "0" }));
+        Assert.Null(SqlMakinoReader.CompleteIncludesScrap(null));
     }
 
     [Fact]

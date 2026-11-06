@@ -285,7 +285,7 @@ footer a { color: var(--muted); }
           <tr><td><code>get_tool_changes</code></td><td>What changed in the tool data, newest first. Routine life updates and tools that only reached their life warning are counted, and listed on request. Looks back 3 days unless asked.</td></tr>
           <tr><td><code>get_tool_alarms</code></td><td>Which tools alarmed lately, with their life and size then.</td></tr>
           <tr><td><code>get_tool_movements</code></td><td>Tools put into or taken out of the machines, with who and why.</td></tr>
-          <tr><td><code>get_part_routing</code></td><td>How a part is made, and whether its tools are on the machines. The tool check is approximate: main program only, subprograms not followed, remaining life not checked.</td></tr>
+          <tr><td><code>get_part_routing</code></td><td>How a part is made, and whether its tools are on the machines. The tool check is approximate: it uses the tool set the cell registered for each program (subprograms included) and doesn't check remaining life.</td></tr>
           <tr><td><code>get_production</code></td><td>Parts completed, scrapped and in process per order and per day.</td></tr>
           <tr><td><code>get_attention</code></td><td>One list of what is waiting on a person right now.</td></tr>
           <tr><td><code>list_shared_folders</code></td><td>The folders you shared, and whether they are reachable.</td></tr>
@@ -302,7 +302,7 @@ footer a { color: var(--muted); }
           <h2 class="t" id="limits">Limits</h2>
           <div class="prose">
             <ul class="plain">
-              <li>History is short: <code>historyDays</code> in the overview says how many days the cell keeps PMC alarms and results (about three months on a typical cell), daily production counts are kept about three months, and CNC alarms are limited to about the last 200 regardless.</li>
+              <li>History is short: <code>historyDays</code> in the overview says how many days the cell keeps PMC alarms and results (90 days unless the cell is set otherwise), daily production counts are kept about three months, and CNC alarms are limited to about the last 200 regardless.</li>
               <li>Tool lengths are in the cell's own unit (inch on some cells); each result says which.</li>
               <li>Results are capped at 500 rows, and file reads at 256 KB, unless you change the limits in the settings file.</li>
             </ul>

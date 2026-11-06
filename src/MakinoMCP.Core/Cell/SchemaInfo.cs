@@ -55,6 +55,16 @@ public sealed class SchemaInfo
 
     public bool Has(string table, string column) => _columns.Contains(table + "." + column);
 
+    /// <summary>A copy that lacks one column, for queries that must act as if the cell didn't have it (a column whose
+    /// values the cell's settings leave meaningless).</summary>
+    public SchemaInfo Without(string table, string column)
+    {
+        var drop = table + "." + column;
+        var kept = _columns.Where(c => !string.Equals(c, drop, StringComparison.OrdinalIgnoreCase))
+            .Select(c => (c[..c.IndexOf('.')], c[(c.IndexOf('.') + 1)..]));
+        return new SchemaInfo(kept, UnreadableSynonyms);
+    }
+
     /// <summary>True when the table exists and this login may SELECT from it.</summary>
     public bool HasTable(string table) => _tables.Contains(table);
 

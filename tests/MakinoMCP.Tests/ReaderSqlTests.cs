@@ -179,6 +179,13 @@ public class ReaderSqlTests
         Assert.Null(SqlMakinoReader.HistoryDaysSql(SchemaWithout("SystemParameters.ParameterValue")));
 
         Assert.Equal(90, SqlMakinoReader.HistoryDays("90"));
+        Assert.Equal(90, SqlMakinoReader.DefaultHistoryDays); // the vendor's default, used (and flagged) with no row
+
+        // Mode and emergency only mean something while connected; an unknown connection keeps them.
+        Assert.Null(SqlMakinoReader.Live(false, "memory"));
+        Assert.Null(SqlMakinoReader.Live<bool?>(false, true));
+        Assert.Equal("memory", SqlMakinoReader.Live(null, "memory"));
+        Assert.Equal(true, SqlMakinoReader.Live<bool?>(true, true));
         Assert.Null(SqlMakinoReader.HistoryDays("0"));
         Assert.Null(SqlMakinoReader.HistoryDays("abc"));
         Assert.Null(SqlMakinoReader.HistoryDays(null));
@@ -203,7 +210,7 @@ public class ReaderSqlTests
         Assert.Equal("machining suspended", SqlMakinoReader.PalletStatusWords(16, 8));
         Assert.Equal("waiting for machining", SqlMakinoReader.PalletStatusWords(null, 4)); // older cell, no type column
         Assert.Equal("code 4", SqlMakinoReader.PalletStatusWords(4, 4));
-        Assert.Equal("abnormal", SqlMakinoReader.PalletWorkStatusWords(1, 3));
+        Assert.Equal("scrap or abnormal work set", SqlMakinoReader.PalletWorkStatusWords(1, 3));
         Assert.Equal("none", SqlMakinoReader.PalletWorkStatusWords(0, 0));
         Assert.Equal("code 3", SqlMakinoReader.PalletWorkStatusWords(5, 3));
         Assert.Equal("", SqlMakinoReader.PalletWorkStatusWords(0, null));

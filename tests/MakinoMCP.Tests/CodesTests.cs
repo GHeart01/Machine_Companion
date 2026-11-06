@@ -6,29 +6,25 @@ namespace MakinoMCP.Tests;
 public class CodesTests
 {
     [Fact]
-    public void PalletStatus_30_is_waiting_for_machining()
-    {
-        Assert.Equal("waiting for machining", Codes.PalletStatus(30));
-    }
-
-    [Fact]
     public void Unknown_value_is_code_N()
     {
-        Assert.Equal("code 999", Codes.PalletStatus(999));
+        Assert.Equal("code 999", Codes.PalletDisplayStatus(999));
     }
 
     [Fact]
     public void Null_is_empty()
     {
-        Assert.Equal("", Codes.PalletStatus(null));
+        Assert.Equal("", Codes.PalletDisplayStatus(null));
         Assert.Equal("", Codes.MachiningFinish(null));
         Assert.Equal("", Codes.VehicleCommand(null));
     }
 
     [Fact]
-    public void MachiningFinish_combines_flags()
+    public void MachiningFinish_combines_flags_in_the_consoles_alarm_names()
     {
-        Assert.Equal("broken tool (short), tool life", Codes.MachiningFinish(0x100000 | 0x10000));
+        Assert.Equal("BTS alarm (broken tool), TL alarm (tool life)", Codes.MachiningFinish(0x100000 | 0x10000));
+        // BT2 is a tool measured too long (pulled out), not a broken one.
+        Assert.Equal("BT2 alarm (tool too long)", Codes.MachiningFinish(0x20000));
     }
 
     [Fact]
@@ -57,9 +53,40 @@ public class CodesTests
     }
 
     [Fact]
-    public void CncMode_10_is_remote()
+    public void CncMode_10_is_remote_tape()
     {
-        Assert.Equal("remote", Codes.CncMode(10));
+        Assert.Equal("remote (tape)", Codes.CncMode(10));
+    }
+
+    [Fact]
+    public void Vehicle_and_station_modes_use_the_consoles_words()
+    {
+        Assert.Equal("jog high", Codes.VehicleMode(2));
+        Assert.Equal("jog low", Codes.VehicleMode(4));
+        Assert.Equal("local", Codes.VehicleMode(32));
+        Assert.Equal("manual", Codes.VehicleMode(48));
+        // The console shows every station mode but system and maintenance as local.
+        Assert.Equal("local", Codes.WssMode(32));
+        Assert.Equal("local (jog high)", Codes.WssMode(2));
+        Assert.Equal("local (teaching)", Codes.WssMode(64));
+    }
+
+    [Fact]
+    public void Pallet_display_statuses_tell_the_pairs_apart()
+    {
+        Assert.Equal("waiting for work setting (no result on it)", Codes.PalletDisplayStatus(5));
+        Assert.Equal("waiting for work setting (with a result to unload)", Codes.PalletDisplayStatus(6));
+        Assert.Equal("work-set hold", Codes.PalletDisplayStatus(9));
+        Assert.Equal("work-set hold (with a result on it)", Codes.PalletDisplayStatus(10));
+        Assert.Equal("pallet input/output, manual transport or exchange", Codes.PalletDisplayStatus(12));
+    }
+
+    [Fact]
+    public void Lacking_tool_scope_words()
+    {
+        Assert.Equal("its next machining job", Codes.LackingToolScope(0));
+        Assert.Equal("all its remaining jobs", Codes.LackingToolScope(2));
+        Assert.Equal("code 3", Codes.LackingToolScope(3));
     }
 
     [Fact]
@@ -99,8 +126,8 @@ public class CodesTests
         { "OperatorCall", 1, "M code" },
         { "RunJob", 2, "pallet change" },
         { "PalletDisplayStatus", 4, "waiting for machining" },
-        { "PalletWorkStatus", 3, "abnormal" },
-        { "VehicleMode", 48, "manual interrupt" },
+        { "PalletWorkStatus", 3, "scrap or abnormal work set" },
+        { "VehicleMode", 48, "manual" },
         { "JobType", 2, "machining" },
         { "ProcessStatus", -1, "varied" },
         { "FixtureJobStatus", 4, "abnormal finish" },
@@ -110,6 +137,7 @@ public class CodesTests
         { "WorkSetCommandOperation", 21, "check fixtures" },
         { "ManualTransportStatus", 3, "waiting to finish" },
         { "InfoFileType", 2, "tool setting" },
+        { "LackingToolScope", 1, "its machining jobs before the next work setting" },
     };
 
     private static Func<int?, string> Table(string name) =>
@@ -137,16 +165,16 @@ public class CodesTests
         Assert.Equal("code 13", Codes.ToolKind(13)); // a gap in the enum
         Assert.Equal("drill speed-up cycle", Codes.ToolKind(29));
         Assert.Equal("empty", Codes.DevicePositionStatus(0));
-        Assert.Equal("unload before", Codes.DevicePositionStatus(6));
+        Assert.Equal("before-unload program running", Codes.DevicePositionStatus(6));
         Assert.Equal("down", Codes.DeviceDashStatus(0));
         Assert.Equal("offset error", Codes.MachineToolStatus(5));
         Assert.Equal("run", Codes.CncRun(3));
         Assert.Equal("released", Codes.OperatorCall(0));
         Assert.Equal("manual transport", Codes.RunJob(4));
         Assert.Equal("idle", Codes.PalletDisplayStatus(0));
-        Assert.Equal("pallet active", Codes.PalletDisplayStatus(14));
+        Assert.Equal("special transport (extra tool pallet, APC pallet change, reclamp or fixture change)", Codes.PalletDisplayStatus(14));
         Assert.Equal("none", Codes.PalletWorkStatus(0));
-        Assert.Equal("cancel", Codes.PalletWorkStatus(4));
+        Assert.Equal("cancelled (order or process)", Codes.PalletWorkStatus(4));
         Assert.Equal("system", Codes.VehicleMode(0));
         Assert.Equal("code 3", Codes.VehicleMode(3)); // a lookup, not flags
     }
@@ -156,7 +184,7 @@ public class CodesTests
     {
         Assert.Empty(Codes.ToolAlarms(0));
         Assert.Empty(Codes.ToolAlarms(null));
-        Assert.Equal(["tool life alarm", "broken tool (short)"], Codes.ToolAlarms(2 | 8));
+        Assert.Equal(["tool life alarm", "BTS alarm (broken tool)"], Codes.ToolAlarms(2 | 8));
         Assert.Equal(["STS not OK", "code 2048"], Codes.ToolAlarms(0x400 | 0x800));
     }
 

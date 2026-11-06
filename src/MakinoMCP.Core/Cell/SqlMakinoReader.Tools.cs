@@ -86,12 +86,18 @@ public sealed partial class SqlMakinoReader
     }
 
     /// <summary>How this cell keeps tool data: Remain, life counts down (ActualToolLife is what remains) instead of up;
-    /// LengthUnit, the tool offset unit lengths are stored in (1/100000 of it).</summary>
-    internal sealed record ToolSettings(bool Remain, bool LifeAssumed, string LengthUnit, bool UnitAssumed);
+    /// LengthUnit, the tool offset unit lengths are stored in (1/100000 of it); DiameterIsRadius, the "diameter"
+    /// values (diameter, D geometry/wear, diameter wear) hold radii.</summary>
+    internal sealed record ToolSettings(
+        bool Remain, bool LifeAssumed, string LengthUnit, bool UnitAssumed, bool DiameterIsRadius, bool DiameterAssumed);
 
-    /// <summary>The settings from SystemParameters.ToolLifeCountType (enum ToolLifeCount: 0 accumulate, 1 remain) and
-    /// ToolOffsetUnit (enum DeviceUnit: 0-4 mm, 10-14 inch). Missing or anything else: counts up, mm, both assumed.</summary>
-    internal static ToolSettings ToolSettingsFrom(string? lifeCountType, string? toolOffsetUnit)
+    private static readonly string[] ToolParameterNames = ["ToolLifeCountType", "ToolOffsetUnit", "DiameterTypePC"];
+
+    /// <summary>The settings from SystemParameters.ToolLifeCountType (enum ToolLifeCount: 0 accumulate, 1 remain),
+    /// ToolOffsetUnit (enum DeviceUnit: 0-4 mm, 10-14 inch) and DiameterTypePC (enum ToolDiameterType: 0 radius,
+    /// 1 diameter; the only two valid on the PC side). Missing or anything else: counts up, mm, diameter, each
+    /// assumed (diameter is also the vendor's default).</summary>
+    internal static ToolSettings ToolSettingsFrom(string? lifeCountType, string? toolOffsetUnit, string? diameterType)
     {
         var (remain, lifeAssumed) = ToInt(lifeCountType) switch { 0 => (false, false), 1 => (true, false), _ => (false, true) };
         var (unit, unitAssumed) = ToInt(toolOffsetUnit) switch
@@ -100,25 +106,17 @@ public sealed partial class SqlMakinoReader
             >= 10 and <= 14 => ("inch", false),
             _ => ("mm", true),
         };
-        return new ToolSettings(remain, lifeAssumed, unit, unitAssumed);
+        var (radius, diameterAssumed) = ToInt(diameterType) switch { 0 => (true, false), 1 => (false, false), _ => (false, true) };
+        return new ToolSettings(remain, lifeAssumed, unit, unitAssumed, radius, diameterAssumed);
     }
 
-    internal static string? ToolSettingsSql(SchemaInfo schema)
-    {
-        if (!schema.Has("SystemParameters", "ParameterName") || !schema.Has("SystemParameters", "ParameterValue")) return null;
-        var order = schema.Has("SystemParameters", "SystemID") ? "SystemID" : "ParameterName";
-        return "SELECT ParameterName, ParameterValue FROM SystemParameters " +
-               $"WHERE ParameterName IN ('ToolLifeCountType', 'ToolOffsetUnit') ORDER BY {order};";
-    }
+    internal static string? ToolSettingsSql(SchemaInfo schema) => SystemParametersSql(schema, ToolParameterNames);
 
     private static async Task<ToolSettings> ToolSettingsAsync(Session s, CancellationToken ct)
     {
-        if (ToolSettingsSql(s.Schema) is not { } sql) return ToolSettingsFrom(null, null);
-        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        using var cmd = Command(s.Connection, sql);
-        using var r = await cmd.ExecuteReaderAsync(ct);
-        while (await r.ReadAsync(ct)) values.TryAdd(Str(r, "ParameterName"), Str(r, "ParameterValue")); // first system wins
-        return ToolSettingsFrom(values.GetValueOrDefault("ToolLifeCountType"), values.GetValueOrDefault("ToolOffsetUnit"));
+        var values = await SystemParametersAsync(s, ct, ToolParameterNames);
+        return ToolSettingsFrom(values?.GetValueOrDefault("ToolLifeCountType"), values?.GetValueOrDefault("ToolOffsetUnit"),
+            values?.GetValueOrDefault("DiameterTypePC"));
     }
 
     private static bool? Assumed(bool assumed) => assumed ? true : null;
@@ -270,6 +268,7 @@ public sealed partial class SqlMakinoReader
         return new ToolList(s.Now, capped, chosen, settings.LengthUnit, Summary(s, counts), shown)
         {
             LifeDirectionAssumed = Assumed(settings.LifeAssumed), LengthUnitAssumed = Assumed(settings.UnitAssumed),
+            DiameterIsRadius = Assumed(settings.DiameterIsRadius), DiameterTypeAssumed = Assumed(settings.DiameterAssumed),
             NotAvailable = ToolFilterSql(s.Schema, chosen) is null ? [FilterNotAvailable(chosen)] : null,
         };
     }
@@ -493,6 +492,7 @@ public sealed partial class SqlMakinoReader
         {
             LifeUpdatesLeftOut = !includeLifeUpdates, LifeWarningTransitions = lifeWarnings,
             LifeDirectionAssumed = Assumed(settings.LifeAssumed), LengthUnitAssumed = Assumed(settings.UnitAssumed),
+            DiameterIsRadius = Assumed(settings.DiameterIsRadius), DiameterTypeAssumed = Assumed(settings.DiameterAssumed),
             NotAvailable = notAvailable.Count > 0 ? notAvailable : null,
         };
     }
@@ -686,6 +686,7 @@ public sealed partial class SqlMakinoReader
         {
             LifeDirectionAssumed = Assumed(settings.LifeAssumed && (!history || fellBack)),
             LengthUnitAssumed = Assumed(settings.UnitAssumed),
+            DiameterIsRadius = Assumed(settings.DiameterIsRadius), DiameterTypeAssumed = Assumed(settings.DiameterAssumed),
         };
     }
 

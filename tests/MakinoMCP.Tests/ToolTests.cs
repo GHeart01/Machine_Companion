@@ -224,7 +224,7 @@ public sealed class ToolTests : IDisposable
         var pallet = Parse(await CellTools.GetPallets(Ready(new FakeMakinoReader()), CancellationToken.None))
             .GetProperty("pallets")[0];
         Assert.Equal("waiting for machining", pallet.GetProperty("status").GetString());
-        Assert.Equal("not completed", pallet.GetProperty("workStatus").GetString());
+        Assert.Equal("not completed (no result yet)", pallet.GetProperty("workStatus").GetString());
     }
 
     [Fact]
@@ -333,14 +333,14 @@ public sealed class ToolTests : IDisposable
 
         var orders = Parse(await CellTools.GetOrders(context, ct: CancellationToken.None));
         Assert.Equal(40, orders.GetProperty("orders")[0].GetProperty("completedQty").GetInt32());
-        // The queue lists every active order, so fields at their default are left out: suspended only when true,
-        // completed only once set, quantities of 0 left out.
+        // The queue lists every active order, so fields at their default are left out: machiningSuspended only when
+        // true, completed only once set, quantities of 0 left out.
         var first = orders.GetProperty("orders")[0];
-        Assert.False(first.TryGetProperty("suspended", out _));
+        Assert.False(first.TryGetProperty("machiningSuspended", out _));
         Assert.False(first.TryGetProperty("completed", out _));
         Assert.True(first.TryGetProperty("due", out _));
         var idleOrder = orders.GetProperty("orders")[1];
-        Assert.True(idleOrder.GetProperty("suspended").GetBoolean());
+        Assert.True(idleOrder.GetProperty("machiningSuspended").GetBoolean());
         Assert.False(idleOrder.TryGetProperty("completedQty", out _));
         Assert.False(idleOrder.TryGetProperty("scrapQty", out _));
         Assert.Equal(5, idleOrder.GetProperty("remainingQty").GetInt32());

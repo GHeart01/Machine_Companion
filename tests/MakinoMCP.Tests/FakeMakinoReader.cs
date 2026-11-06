@@ -70,7 +70,7 @@ internal sealed class FakeMakinoReader : IMakinoReader
     public Task<OrderList> GetOrdersAsync(bool activeOnly, CancellationToken ct) =>
         Answer(() => new OrderList(Now, false,
         [
-            new OrderInfo("ORDER-001", "CONTOSO-BRACKET", "in progress", 10, false, Now.AddDays(1), null)
+            new OrderInfo("ORDER-001", "CONTOSO-BRACKET", "in progress", 10, null, Now.AddDays(1), null)
             {
                 CompletedQty = 40, ScrapQty = 2, RemainingQty = 57,
             },
@@ -83,7 +83,7 @@ internal sealed class FakeMakinoReader : IMakinoReader
     public Task<PalletList> GetPalletsAsync(CancellationToken ct) =>
         Answer(() => new PalletList(Now, false,
         [
-            new PalletInfo(7, "P7", "waiting for machining", "not completed", "MC1 table", ["FIXTURE-A"]),
+            new PalletInfo(7, "P7", "waiting for machining", "not completed (no result yet)", "MC1 table", ["FIXTURE-A"]),
         ]), ct);
 
     public Task<ToolList> GetToolsAsync(string? device, string? filter, int? tool, CancellationToken ct) =>
@@ -98,7 +98,7 @@ internal sealed class FakeMakinoReader : IMakinoReader
                 Kind = "end mill",
             },
             new ToolInfo(1002, 102, "CONTOSO PROBE", "MC1 pot 1", "alarm",
-                [new CutterInfo(1, "alarm") { Alarms = ["broken tool (short)"], Life = SqlMakinoReader.Life(0, 0, 0, 0, false) }])
+                [new CutterInfo(1, "alarm") { Alarms = ["BTS alarm (broken tool)"], Life = SqlMakinoReader.Life(0, 0, 0, 0, false) }])
             {
                 Flags = ["alarm tool"],
             },

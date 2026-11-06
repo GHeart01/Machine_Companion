@@ -58,6 +58,36 @@ public class AttentionReaderTests
     }
 
     [Fact]
+    public void A_disconnected_devices_emergency_flag_is_stale_and_not_reported()
+    {
+        var list = Build(Rows(devices: [new("VHC1", 2) { Connected = false, Emergency = true, Status = 0 }]));
+
+        Assert.Equal("disconnected", Assert.Single(list.Items).What);
+        Assert.False(list.Counts.ContainsKey("emergency stop"));
+    }
+
+    [Fact]
+    public void Lacking_tools_count_only_when_the_cell_works_them_out()
+    {
+        // Off (0, or no row: the vendor's default) clears the flag, so "none" would be a false all-clear.
+        Assert.Equal((false, null), SqlMakinoReader.LackingToolSetting(new Dictionary<string, string>()));
+        Assert.Equal((false, null), SqlMakinoReader.LackingToolSetting(new Dictionary<string, string> { ["FixtureToolLackInfo"] = "0" }));
+        Assert.Equal((true, "its next machining job"),
+            SqlMakinoReader.LackingToolSetting(new Dictionary<string, string> { ["FixtureToolLackInfo"] = "1" }));
+        Assert.Equal((true, "its machining jobs before the next work setting"), SqlMakinoReader.LackingToolSetting(
+            new Dictionary<string, string> { ["FixtureToolLackInfo"] = "2", ["CheckLackToolsAllRemainingJobs"] = "1" }));
+        // Settings this login can't read: nothing is known.
+        Assert.Equal((null, null), SqlMakinoReader.LackingToolSetting(null));
+
+        // Off, the fixture queries act as if the column weren't there.
+        var off = SchemaWithout().Without("PalletFixtures", "LackingTool");
+        Assert.DoesNotContain("LackingTool = 1", SqlMakinoReader.AttentionFixturesSql(off, includeParked: true));
+        Assert.DoesNotContain("LackingTool = 1", SqlMakinoReader.AttentionFixtureCountsSql(off));
+        Assert.Contains("LackingTool = 1", SqlMakinoReader.AttentionFixturesSql(SchemaWithout(), includeParked: true));
+        Assert.True(off.Has("PalletFixtures", "Suspend"));
+    }
+
+    [Fact]
     public void A_machine_lacking_tools_is_context_not_an_item_and_an_operator_call_is_an_item()
     {
         var list = Build(Rows(devices:
@@ -193,21 +223,23 @@ public class AttentionReaderTests
         var groups = SqlMakinoReader.MergeParked(
         [
             (4, 23, true, false, 5, 1), (4, 5, true, false, 3, 2), (1, 1, true, false, 2, 0), (4, 7, false, true, 1, 0),
-            (null, null, true, true, 1, 0),
+            (null, null, true, true, 1, 0), (0, 0, true, false, 1, 0),
         ], devices);
 
+        // Place type 0 is a pallet taken out of the system; no place at all is unknown.
         Assert.Equal(
             [("pallet stocker", "machining suspended", 8, (int?)3), ("MC1", "machining suspended", 2, null),
-                ("pallet stocker", "work-set hold", 1, null), ("unknown", "machining suspended, work-set hold", 1, null)],
+                ("pallet stocker", "work-set hold", 1, null), ("unknown", "machining suspended, work-set hold", 1, null),
+                (SqlMakinoReader.OutOfSystemWords, "machining suspended", 1, null)],
             groups.Select(g => (g.Place, g.Condition, g.Fixtures, g.LackingTools)));
     }
 
     [Fact]
-    public void A_station_instructions_progress_is_a_raw_code_until_its_meaning_is_known()
+    public void A_station_instructions_progress_reads_as_the_work_set_operation_list()
     {
         var list = Build(Rows(commands: [new("WSS1", 4, 1, Operation: 2, Status: 2, Order: null, Quantity: 0)]));
 
-        Assert.Equal("status code 2", Assert.Single(list.Items).Detail);
+        Assert.Equal("status clamp", Assert.Single(list.Items).Detail);
         // Set at the station, not known to be waiting on the operator: the count says no more than that.
         Assert.Equal(1, list.Counts["work-set instructions"]);
 

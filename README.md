@@ -123,13 +123,13 @@ builds on the share. To roll back, write an older build's folder name (see `vers
 | `get_alarm_summary` | Alarms grouped by device and number, most frequent first. |
 | `get_utilization` | Hours busy, idle, down, manual and in error per device and day; OEE where the cell keeps it. |
 | `get_recent_activity` | Machining, work-set and vehicle transport results, to spot gaps. |
-| `get_orders` | Queued and finished orders with part, status, quantity, completed, scrap and remaining quantities, and due time. |
+| `get_orders` | Queued and finished orders with part, status, quantity, completed, scrap and remaining quantities, machining suspend, and due time. |
 | `get_pallets` | Each pallet's status, location and fixtures. |
 | `get_tools` | Which tools need attention and where a tool is: status per device, life used and remaining, measured length and diameter. |
 | `get_tool_changes` | What changed in the tool data (measurements, imports, edits, alarms), newest first; routine life-count updates and tools that only reached their life warning are counted, and listed only on request. Default: the last 3 days. |
 | `get_tool_alarms` | Which tools alarmed lately (worn out, broken, ...), with the tool's life and size then. |
 | `get_tool_movements` | Tools put into or taken out of the machines, with who and why. |
-| `get_part_routing` | How a part is made: processes, jobs, programs and fixtures, and whether the tools each program needs are on the machines. The tool check is approximate: main program only, subprograms not followed, remaining life not checked. |
+| `get_part_routing` | How a part is made: processes, jobs, programs and fixtures, and whether the tools each program needs are on the machines. The tool check is approximate: it uses the tool set the cell registered for each program (subprograms included) and doesn't check remaining life. |
 | `get_production` | Parts completed, scrapped and in process per order, plus per-day totals, counted the way the cell's own order screen counts. |
 | `get_attention` | One list of what waits on a person: recovery requests, errors, operator calls, damaged fixtures, tools in alarm; parked fixtures are counted. |
 | `list_shared_folders` | The folders you shared and whether each is reachable. |
@@ -162,7 +162,7 @@ builds on the share. To roll back, write an older build's folder name (see `vers
 ## Limits
 
 - **History is short.** `historyDays` in the overview says how many days the cell keeps PMC alarms and result history
-  (about three months on a typical cell). The cell keeps daily production counts for about three months. CNC alarms
+  (90 days unless the cell is set otherwise). The cell keeps daily production counts for about three months. CNC alarms
   are limited to about the last 200 regardless. Older events are not there to read.
 - Results are capped (500 rows and 256 KB per file read, unless you change `limits` in the settings file).
 - **Some numbers have no known meaning.** The meanings of some status numbers were worked out from the installed MAS-A5

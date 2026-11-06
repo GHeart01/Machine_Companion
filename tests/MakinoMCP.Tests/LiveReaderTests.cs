@@ -1,4 +1,5 @@
 using Xunit;
+using Xunit.Abstractions;
 using MakinoMCP.Core.Cell;
 using MakinoMCP.Core.Settings;
 
@@ -6,9 +7,41 @@ namespace MakinoMCP.Tests;
 
 // Reads a real cell. Skipped unless MAKINOMCP_LIVE_SETTINGS points at a settings file; run locally only.
 // Assertions are structural: nothing here may name a device, count or value from a real cell.
-public class LiveReaderTests
+public class LiveReaderTests(ITestOutputHelper output)
 {
     private const string EnvVar = "MAKINOMCP_LIVE_SETTINGS";
+
+    /// <summary>The cell settings the 2026-11 corrections depend on, as each tool reports them: printed (local runs
+    /// only) so a developer learns the cell's values; asserted only for shape.</summary>
+    [SkippableFact]
+    public async Task Live_settings_behind_the_corrections_are_reported()
+    {
+        var reader = Reader();
+        var overview = await reader.GetOverviewAsync(CancellationToken.None);
+        var orders = await reader.GetOrdersAsync(activeOnly: true, CancellationToken.None);
+        var tools = await reader.GetToolsAsync(null, "all", null, CancellationToken.None);
+        var attention = await reader.GetAttentionAsync(includeParked: false, CancellationToken.None);
+
+        output.WriteLine($"historyDays {overview.HistoryDays}, assumed {overview.HistoryDaysAssumed}");
+        output.WriteLine($"completeIncludesScrap {orders.CompleteIncludesScrap}; orders with machiningSuspended " +
+                         $"{orders.Orders.Count(o => o.MachiningSuspended == true)}");
+        output.WriteLine($"diameterIsRadius {tools.DiameterIsRadius}, assumed {tools.DiameterTypeAssumed}");
+        output.WriteLine($"lackingToolScope {attention.LackingToolScope}; not computed " +
+                         $"{attention.NotAvailable.Contains(SqlMakinoReader.LackingToolsNotComputed)}");
+
+        Assert.True(overview.HistoryDays is null or > 0); // null: this login can't read the settings
+        Assert.All(orders.Orders, o => Assert.True(o.MachiningSuspended is null or true));
+        // The cell works out lacking tools (and says for which jobs), or notAvailable says it doesn't, or that its
+        // settings can't be read; never two of these.
+        Assert.Equal(1, new[]
+        {
+            attention.LackingToolScope is not null,
+            attention.NotAvailable.Contains(SqlMakinoReader.LackingToolsNotComputed),
+            attention.NotAvailable.Contains(SqlMakinoReader.LackingToolsSettingUnknown),
+        }.Count(b => b));
+        // Disconnected devices show no mode or emergency stop.
+        Assert.All(overview.Devices.Where(d => d.Connected == false), d => Assert.True(d.Mode is null && d.Emergency is null));
+    }
 
     private static McpSettings LiveSettings()
     {
@@ -278,6 +311,54 @@ public class LiveReaderTests
         var capped = await Reader(1).GetProductionAsync(7, null, null, true, ct);
         Assert.True(capped.Capped);
         Assert.Single(capped.Orders);
+    }
+
+    /// <summary>The vendor-view fallback (for a login that can't read Quantities or OrderCompletedQtyResults) run for
+    /// real: matched on order name, part and revision, from the order's registration on, it must give the same window
+    /// sums as the table path.</summary>
+    [SkippableFact]
+    public async Task Live_view_fallback_production_sql_runs_and_agrees_with_the_tables()
+    {
+        var ct = CancellationToken.None;
+        var s = LiveSettings();
+        var viewSchema = new SchemaInfo(new Dictionary<string, string[]>
+        {
+            ["Orders"] = ["OrderID", "PartID", "OrderName", "Quantity", "Status", "DueDate", "RegistrationDate"],
+            ["Parts"] = ["PartID", "PartName", "Revision"],
+            ["ViewOrders"] = ["OrderName", "PartName", "PartRevision", "NormalQty", "ScrapQty", "RemainQty", "InProcQty"],
+            ["ViewDayOrderCompletedQty"] = ["ProductionDate", "OrderName", "PartName", "PartRevision", "NormalQtyDay", "ScrapQtyDay"],
+        }.SelectMany(t => t.Value.Select(c => (t.Key, c))));
+        var sql = SqlMakinoReader.ProductionSql(viewSchema, byOrder: false, byPart: false, includeIdle: true);
+
+        var fromView = new Dictionary<int, int?>();
+        var production = await Reader(100000).GetProductionAsync(7, null, null, true, ct);
+        await using (var connection = new Microsoft.Data.SqlClient.SqlConnection(s.Makino.ConnectionString()))
+        {
+            await connection.OpenAsync(ct);
+            await using var cmd = connection.CreateCommand();
+            cmd.CommandText = SqlMakinoReader.Isolation + sql;
+            cmd.Parameters.Add("@take", System.Data.SqlDbType.Int).Value = 100001;
+            cmd.Parameters.Add("@from", System.Data.SqlDbType.DateTime).Value = production.ServerTime.Date.AddDays(-6);
+            try
+            {
+                await using var r = await cmd.ExecuteReaderAsync(ct);
+                while (await r.ReadAsync(ct))
+                {
+                    var window = r.GetOrdinal("WindowCompleted");
+                    fromView[Convert.ToInt32(r.GetValue(r.GetOrdinal("OrderID")))] = r.IsDBNull(window) ? null : Convert.ToInt32(r.GetValue(window));
+                }
+            }
+            catch (Microsoft.Data.SqlClient.SqlException e) when (e.Number == 229) // permission denied
+            {
+                Skip.If(true, "the order views aren't readable by this login");
+            }
+        }
+
+        Assert.NotEmpty(fromView);
+        // Same orders, same output in the window (the table path counts by order id, the view by name, part and date).
+        var tableSums = production.Orders.Where(o => o.CompletedInWindow is > 0).Select(o => o.CompletedInWindow).Order().ToList();
+        var viewSums = fromView.Values.Where(v => v is > 0).Order().ToList();
+        Assert.Equal(tableSums, viewSums);
     }
 
     [SkippableFact]

@@ -107,7 +107,8 @@ public sealed partial class SqlMakinoReader
         {
             var what = new List<string>();
             if (d.Recovery == true) what.Add("recovery request");
-            if (d.Emergency == true) what.Add("emergency stop");
+            // The emergency flag is stale or a placeholder while the device is disconnected.
+            if (d.Emergency == true && d.Connected != false) what.Add("emergency stop");
             if (d.Connected == false) what.Add("disconnected");
             else if (d.Status == DashDown) what.Add(Codes.DeviceDashStatus(d.Status));
             if (d.Status == DashError) what.Add(Codes.DeviceDashStatus(d.Status));
@@ -140,8 +141,9 @@ public sealed partial class SqlMakinoReader
         foreach (var c in rows.Commands)
         {
             var detail = new List<string>();
-            // WorkSetCommand.OperationStatus has no confirmed meaning yet (it isn't WorkSetResults' list): raw code.
-            if (c.Status is > 0) detail.Add($"status {CodeText(c.Status)}");
+            // WorkSetCommand.OperationStatus is the same list as WorkSetResults.OperationStatus (the console reads both
+            // as WorkSetStationOperationStatus): how far the operator has got with the instruction.
+            if (c.Status is > 0) detail.Add($"status {Codes.WorkSetOperation(c.Status)}");
             if (c.Quantity is > 0) detail.Add($"quantity {c.Quantity}");
             items.Add((RankWorkSet, new AttentionItem("work set", Codes.WorkSetCommandOperation(c.Operation))
             {
@@ -239,8 +241,8 @@ public sealed partial class SqlMakinoReader
         var merged = new List<(string Place, string Condition, int N, int Lacking)>();
         foreach (var r in rows)
         {
-            var place = r.Type is null or 0
-                ? "unknown"
+            var place = r.Type is null ? "unknown"
+                : r.Type == OutOfSystem ? OutOfSystemWords
                 : devices.FirstOrDefault(d => d.Type == r.Type && d.Number == r.Number).Name ?? Codes.DeviceType(r.Type);
             var condition = string.Join(", ", new[] { r.Suspended ? "machining suspended" : null, r.Held ? "work-set hold" : null }.OfType<string>());
             var i = merged.FindIndex(m => m.Place == place && m.Condition == condition);
@@ -292,6 +294,25 @@ public sealed partial class SqlMakinoReader
         }
         if (schema.HasTable(Itd) && DerivedStatusSql(schema) == "0") missing.Add("tools in alarm");
         return missing;
+    }
+
+    /// <summary>notAvailable's words when the cell's settings leave PalletFixtures.LackingTool meaningless.</summary>
+    internal const string LackingToolsNotComputed =
+        "fixtures lacking tools (the cell doesn't work them out: its FixtureToolLackInfo setting is off)";
+
+    internal const string LackingToolsSettingUnknown =
+        "whether the cell works out fixtures lacking tools (its settings can't be read, so none may only mean it doesn't)";
+
+    /// <summary>Whether the cell marks fixtures lacking tools (SystemParameters FixtureToolLackInfo 1 or 2; 0 or no
+    /// row is the vendor's default, off, and then the flag is cleared, so "none" would be a false all-clear) and,
+    /// when it does, which jobs it checks (CheckLackToolsAllRemainingJobs, default 0). Null settings: this login
+    /// can't read them, so neither is known.</summary>
+    internal static (bool? Computed, string? Scope) LackingToolSetting(IReadOnlyDictionary<string, string>? settings)
+    {
+        if (settings is null) return (null, null);
+        if (ToInt(settings.GetValueOrDefault("FixtureToolLackInfo")) is not (1 or 2)) return (false, null);
+        var scope = ToInt(settings.GetValueOrDefault("CheckLackToolsAllRemainingJobs")) ?? 0;
+        return (true, Codes.LackingToolScope(scope));
     }
 
     /// <summary>Typed text on one line, runs of spaces collapsed.</summary>
@@ -495,6 +516,21 @@ public sealed partial class SqlMakinoReader
         var schema = s.Schema;
         var notAvailable = AttentionColumnsMissing(schema);
 
+        // With the cell's lacking-tool setting off, LackingTool is always 0: the fixture queries act as if the column
+        // weren't there, and notAvailable says why.
+        var (lackComputed, lackScope) = LackingToolSetting(
+            await SystemParametersAsync(s, ct, "FixtureToolLackInfo", "CheckLackToolsAllRemainingJobs"));
+        var fixtureSchema = schema;
+        if (schema.Has("PalletFixtures", "LackingTool"))
+        {
+            if (lackComputed == false)
+            {
+                fixtureSchema = schema.Without("PalletFixtures", "LackingTool");
+                notAvailable.Add(LackingToolsNotComputed);
+            }
+            else if (lackComputed is null) notAvailable.Add(LackingToolsSettingUnknown);
+        }
+
         var devices = s.Devices.ToDictionary(d => d.Id, d => new AttentionDevice(d.Name, d.Type));
 
         // Device states; the extra columns (TotalCycleCount) come through the overview's own SQL.
@@ -576,7 +612,7 @@ public sealed partial class SqlMakinoReader
         if (schema.HasTable("PalletFixtures"))
         {
             if (!schema.HasTable("FixtureRun")) notAvailable.Add("each fixture's current order and process");
-            using (var cmd = Command(s.Connection, AttentionFixturesSql(schema, includeParked)))
+            using (var cmd = Command(s.Connection, AttentionFixturesSql(fixtureSchema, includeParked)))
             {
                 AddTake(cmd);
                 using var r = await cmd.ExecuteReaderAsync(ct);
@@ -591,7 +627,7 @@ public sealed partial class SqlMakinoReader
                     });
                 }
             }
-            if (AttentionFixtureCountsSql(schema) is { } countSql)
+            if (AttentionFixtureCountsSql(fixtureSchema) is { } countSql)
             {
                 using var cmd = Command(s.Connection, countSql);
                 using var r = await cmd.ExecuteReaderAsync(ct);
@@ -600,13 +636,13 @@ public sealed partial class SqlMakinoReader
                 {
                     for (var i = 0; i < FixtureFlags.Length; i++)
                     {
-                        if (schema.Has("PalletFixtures", FixtureFlags[i].Column) && (Int(r, $"C{i}") ?? 0) is > 0 and var n)
+                        if (fixtureSchema.Has("PalletFixtures", FixtureFlags[i].Column) && (Int(r, $"C{i}") ?? 0) is > 0 and var n)
                             found[FixtureFlags[i].Key] = n;
                     }
                 }
                 fixtureCounts = found;
             }
-            if (AttentionParkedSql(schema) is { } parkedSql)
+            if (AttentionParkedSql(fixtureSchema) is { } parkedSql)
             {
                 using var cmd = Command(s.Connection, parkedSql);
                 using var r = await cmd.ExecuteReaderAsync(ct);
@@ -647,7 +683,9 @@ public sealed partial class SqlMakinoReader
             {
                 transportTotal = Int(r, "Total");
                 var to = Location(s, Int(r, "DestDeviceType"), Int(r, "DestDeviceNumber"), Int(r, "DestDevicePosition"));
-                transports.Add(new AttentionTransport(Int(r, "PalletNumber"), to == "unknown" ? "" : to, Int(r, "Status"), Date(r, "EntryDate")));
+                // A destination of type 0 or none is unset, not a place.
+                transports.Add(new AttentionTransport(Int(r, "PalletNumber"), to is "unknown" or OutOfSystemWords ? "" : to,
+                    Int(r, "Status"), Date(r, "EntryDate")));
             }
         }
         else notAvailable.Add("manual transports");
@@ -656,7 +694,10 @@ public sealed partial class SqlMakinoReader
         {
             FixtureCounts = fixtureCounts, Parked = parked, CommandTotal = commandTotal, TransportTotal = transportTotal,
         };
-        return BuildAttention(s.Now, _cap, rows, notAvailable, includeParked);
+        return BuildAttention(s.Now, _cap, rows, notAvailable, includeParked) with
+        {
+            LackingToolScope = fixtureSchema.Has("PalletFixtures", "LackingTool") ? lackScope : null,
+        };
     }
 
     private static bool Has(SqlDataReader r, string column)

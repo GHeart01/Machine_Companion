@@ -14,9 +14,12 @@ public sealed partial class SqlMakinoReader
     public const string SeveralPartsNote =
         "Several parts match, so no routing is shown: ask again with one candidate's exact name (and revision when names repeat).";
 
+    // MainProgramTools is the tool set the cell itself registered for each program (its own scan follows the
+    // subprograms; shared subprograms unless the cell is set not to scan them), the same rows the console's View Tool
+    // Set shows.
     public const string ToolCheckNote =
-        "approximate: main program only, subprograms not followed; usable = tools of that type on the machine in status " +
-        "ready or life warning (as get_tools shows it), remaining life not checked";
+        "approximate: the tool set the cell registered for the program (its subprograms included); usable = tools of " +
+        "that type on the machine in status ready or life warning (as get_tools shows it), remaining life not checked";
 
     /// <summary>A part the search found: name, revision ("" when blank) and how many processes it has.</summary>
     internal sealed record PartMatch(int Id, string Name, string Revision, int ProcessCount);

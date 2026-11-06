@@ -108,10 +108,13 @@ public sealed partial class SqlMakinoReader
             vehicles = await ReadVehiclesAsync(r, s.Devices, ct);
         }
         int? historyDays = null;
+        var historyAssumed = false;
         if (historySql is not null)
         {
             await r.NextResultAsync(ct);
+            // No row: the cell runs on the vendor's default.
             if (await r.ReadAsync(ct)) historyDays = HistoryDays(Str(r, "ParameterValue"));
+            else (historyDays, historyAssumed) = (DefaultHistoryDays, true);
         }
 
         var devices = new List<DeviceState>();
@@ -128,7 +131,8 @@ public sealed partial class SqlMakinoReader
                 state = machines.TryGetValue(d.Id, out var m)
                     ? state with
                     {
-                        Connected = m.Connected, Emergency = m.Emergency, Mode = Words(m.Mode, Codes.CncMode),
+                        Connected = m.Connected, Emergency = Live(m.Connected, m.Emergency),
+                        Mode = Live(m.Connected, Words(m.Mode, Codes.CncMode)),
                         Action = Words(m.Action, Codes.MachineAction), SubAction = Words(m.SubAction, Codes.MachineSubAction),
                         Pallets = m.Pallets, NotAvailable = missing,
                         Status = Words(m.Status, Codes.DeviceDashStatus), RecoveryRequest = m.Recovery,
@@ -144,7 +148,7 @@ public sealed partial class SqlMakinoReader
                 state = stations.TryGetValue(d.Id, out var w)
                     ? state with
                     {
-                        Connected = w.Connected, Emergency = w.Emergency, Mode = StationMode(w),
+                        Connected = w.Connected, Emergency = Live(w.Connected, w.Emergency), Mode = StationMode(w),
                         Pallets = w.Pallets, NotAvailable = missing,
                         Status = Words(w.Status, Codes.DeviceDashStatus), RecoveryRequest = w.Recovery,
                     }
@@ -156,7 +160,8 @@ public sealed partial class SqlMakinoReader
                 state = vehicles.TryGetValue(d.Id, out var v)
                     ? state with
                     {
-                        Connected = v.Connected, Emergency = v.Emergency, Mode = Words(v.Mode, Codes.VehicleMode),
+                        Connected = v.Connected, Emergency = Live(v.Connected, v.Emergency),
+                        Mode = Live(v.Connected, Words(v.Mode, Codes.VehicleMode)),
                         Action = Words(v.Command, Codes.VehicleCommand), Pallets = v.Pallets, NotAvailable = missing,
                         Status = Words(v.Status, Codes.DeviceDashStatus), RecoveryRequest = v.Recovery,
                         TransportFrom = v.From.Length > 0 ? v.From : null, TransportTo = v.To.Length > 0 ? v.To : null,
@@ -165,14 +170,18 @@ public sealed partial class SqlMakinoReader
             }
             devices.Add(state);
         }
-        return new CellOverview(s.Now, devices) { HistoryDays = historyDays };
+        return new CellOverview(s.Now, devices) { HistoryDays = historyDays, HistoryDaysAssumed = Assumed(historyAssumed) };
     }
 
     private static string? Words(int? code, Func<int?, string> words) => code is null ? null : words(code);
 
+    /// <summary>A value the cell only keeps current while the device is connected: null when it isn't. At server start
+    /// an unconnected device gets placeholder values, and after a disconnect the last ones stay.</summary>
+    internal static T? Live<T>(bool? connected, T? value) => connected == false ? default : value;
+
     private static string? StationMode(StatusRow w)
     {
-        var mode = Words(w.Mode, Codes.WssMode);
+        var mode = Live(w.Connected, Words(w.Mode, Codes.WssMode));
         if (w.Skip != true) return mode;
         return mode is null ? "skipped" : $"{mode}, skipped";
     }
@@ -345,6 +354,9 @@ public sealed partial class SqlMakinoReader
         return (vehicles.FirstOrDefault(d => number is not null && d.Number == number)
                 ?? vehicles.FirstOrDefault(d => name.Length > 0 && string.Equals(d.Name, name, StringComparison.OrdinalIgnoreCase)))?.Id;
     }
+
+    /// <summary>The days of history the cell keeps when SystemParameters has no PreserveResults row (the vendor's default).</summary>
+    internal const int DefaultHistoryDays = 90;
 
     /// <summary>How long the cell keeps its history (days); null when SystemParameters or its columns are missing.</summary>
     internal static string? HistoryDaysSql(SchemaInfo schema) => SystemParameterSql(schema, "PreserveResults");

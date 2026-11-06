@@ -144,8 +144,8 @@ public sealed partial class SqlMakinoReader
                 Int(r, "PalletNumber"), detail, result);
     }
 
-    /// <summary>A machining result in words: the finish flags (enum names or a number), plus the alarm number when the
-    /// cycle ended abnormally.</summary>
+    /// <summary>A machining result in words: the finish flags (enum names or a number), then, when the cycle ended
+    /// abnormally, "abnormal finish" and its alarm number if it has one. An abnormal cycle never reads "normal".</summary>
     public static string MachiningResult(string? finishStatus, string? alarmNumber, bool abnormal)
     {
         var raw = (finishStatus ?? "").Trim();
@@ -164,8 +164,10 @@ public sealed partial class SqlMakinoReader
             words = Join(unknown.Count == 0 || bits != 0 ? Codes.MachiningFinish(bits) : "", string.Join(", ", unknown));
         }
 
+        if (!abnormal) return words;
         var alarm = (alarmNumber ?? "").Trim();
-        return abnormal && alarm.Length > 0 && alarm != "0" ? Join(words, $"alarm {alarm}") : words;
+        return Join(words == Codes.MachiningFinish(0) ? "" : words, "abnormal finish",
+            alarm.Length > 0 && alarm != "0" ? $"alarm {alarm}" : "");
     }
 
     private static string WorkSetResult(int? operationStatus, string errorCode) =>

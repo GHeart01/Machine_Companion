@@ -147,6 +147,30 @@ public sealed partial class SqlMakinoReader : IMakinoReader
             ? $"(SELECT TOP 1 p.PalletNumber FROM Pallets p WHERE p.PalletID = {palletId}) AS {name}"
             : $"CAST(NULL AS int) AS {name}";
 
+    /// <summary>The SystemParameters rows named <paramref name="names"/> (ParameterName, ParameterValue), the first
+    /// system's first; null when the table or those columns can't be read. The names are constants from this code,
+    /// never user input.</summary>
+    internal static string? SystemParametersSql(SchemaInfo schema, IEnumerable<string> names)
+    {
+        if (!schema.Has("SystemParameters", "ParameterName") || !schema.Has("SystemParameters", "ParameterValue")) return null;
+        var order = schema.Has("SystemParameters", "SystemID") ? "SystemID, ParameterName" : "ParameterName";
+        var list = string.Join(", ", names.Select(n => $"'{n}'"));
+        return $"SELECT ParameterName, ParameterValue FROM SystemParameters WHERE ParameterName IN ({list}) ORDER BY {order};";
+    }
+
+    /// <summary>The cell's settings by name (case-insensitive; a name the cell has no row for is absent, which the
+    /// vendor reads as its default). Null when this login can't read SystemParameters: then nothing is known.</summary>
+    private static async Task<IReadOnlyDictionary<string, string>?> SystemParametersAsync(
+        Session s, CancellationToken ct, params string[] names)
+    {
+        if (SystemParametersSql(s.Schema, names) is not { } sql) return null;
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        using var cmd = Command(s.Connection, sql);
+        using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct)) values.TryAdd(Str(r, "ParameterName"), Str(r, "ParameterValue")); // first system wins
+        return values;
+    }
+
     /// <summary>A raw code nobody has mapped: "code N", or "" when NULL.</summary>
     internal static string CodeText(int? value) => value is null ? "" : $"code {value}";
 

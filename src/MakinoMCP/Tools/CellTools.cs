@@ -12,14 +12,18 @@ public static class CellTools
 
     [McpServerTool(Name = "get_cell_overview", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("What is every device in the cell doing right now? Start here. For each device (machines, vehicles, " +
-                 "work-set stations, …): connected, emergency stop, status (the cell's own down/idle/busy/manual/error), " +
-                 "recoveryRequest (true: the device waits for an operator to recover it), mode, current action, the " +
+                 "work-set stations, …): connected, emergency stop and mode (both left out while disconnected, when the " +
+                 "cell's values are stale), status (the cell's own down/idle/busy/manual/error: a machine closed or " +
+                 "stopped at an operator call reads idle, and error comes from an open PMC alarm, emergency stop or " +
+                 "recovery, never from a CNC alarm, so check the open alarm count too), " +
+                 "recoveryRequest (true: the device waits for an operator to recover it), current action, the " +
                  "pallets on it with each position's state (\"next …\" spots are pallets reserved to come there next), " +
                  "how many alarms and warnings are open, and when it last finished something (lastActivity). Machines " +
                  "also show toolStatus (ready, lacking tools, tool alarm, …), cncRun, operatorCall, runJob and program " +
                  "(main and executing O-number); the vehicle shows its transport command (in action), transportFrom/transportTo and the " +
                  "pallets on its buffers. historyDays is how many days the cell keeps PMC alarms and result history " +
-                 "(null when it doesn't say; CNC alarms are limited to about the last 200 regardless). lastActivity " +
+                 "(the vendor's default of 90 with historyDaysAssumed when the cell doesn't say; CNC alarms are " +
+                 "limited to about the last 200 regardless). lastActivity " +
                  "looks back 30 days: null means nothing finished in that time, not " +
                  "that it never did. Status values carry no timestamp, so compare lastActivity with serverTime to " +
                  "notice a device that is connected but has done nothing for hours. notAvailable names fields this " +
@@ -56,7 +60,9 @@ public static class CellTools
 
     [McpServerTool(Name = "get_utilization", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("How has each device's time been spent? One row per device and day, newest first: hours down, idle, " +
-                 "busy, manual and in error, busy percent, and OEE percent where the cell keeps it. Default: the last 7 " +
+                 "busy, manual and in error, busy percent, and OEE percent where the cell keeps it. busyPercent is the " +
+                 "share of time in the busy status, not the console's Machine Utilization report, which counts all the " +
+                 "time a pallet is in the machine and usually reads higher. Default: the last 7 " +
                  "days (today counts as one, and is only part of a day), every device.")]
     public static Task<string> GetUtilization(
         ToolContext context,
@@ -68,7 +74,9 @@ public static class CellTools
     [McpServerTool(Name = "get_recent_activity", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("What has the cell actually done lately, and were there gaps? Machining, work-set station and " +
                  "vehicle transport results, newest first: kind, device, start and finish, pallet, detail (program or " +
-                 "operation) and result. Default: started in the last 8 hours, every device. A long gap between items " +
+                 "operation) and result (a machining result says \"abnormal finish\" when the cycle ended abnormally; " +
+                 "tool life or spare tool selected alone is information, not a fault). Default: started in the last 8 " +
+                 "hours, every device. A long gap between items " +
                  "means nothing was finished in that time.")]
     public static Task<string> GetRecentActivity(
         ToolContext context,
@@ -79,9 +87,12 @@ public static class CellTools
 
     [McpServerTool(Name = "get_orders", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("Is there work queued in the cell, and what has finished? Orders, latest due first: name, part, " +
-                 "status, quantity (required), completedQty (good parts out of the last process), scrapQty, " +
-                 "remainingQty (not started yet), suspended, due and completed time. It lists the whole queue, so fields " +
-                 "at their default are left out: suspended only when true, due and completed only when set, a quantity of " +
+                 "status (\"suspended\" is an order suspended as a whole), quantity (required), completedQty (good parts " +
+                 "out of the last process), scrapQty, remainingQty (not started yet), machiningSuspended (the order's " +
+                 "machining suspend: its waiting fixtures aren't machined; only where the cell's setting makes it count), " +
+                 "due and completed time. completeIncludesScrap: true means the cell calls an order complete once good " +
+                 "plus scrap parts reach its quantity. It lists the whole queue, so fields " +
+                 "at their default are left out: machiningSuspended only when true, due and completed only when set, a quantity of " +
                  "0 (notAvailable says when the quantities can't be read). Default: active orders only (not " +
                  "complete, cancelled or undefined); activeOnly=false includes finished ones too. get_production adds " +
                  "parts in process and the counts per day.")]
@@ -93,8 +104,11 @@ public static class CellTools
 
     [McpServerTool(Name = "get_pallets", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("Where is each pallet and what state is it in? Every pallet: number, name, status (idle, machining, " +
-                 "waiting for machining, machining suspended, transport, damaged, …), workStatus (not completed, normal, " +
-                 "abnormal, cancel; none when there is no work on it), location (a device, stocker shelf or station) and " +
+                 "waiting for machining, machining suspended, work-set hold, damaged, …; idle also covers a pallet whose " +
+                 "work is finished, and the transport states mean a manual or special transport is set up, not that the " +
+                 "vehicle is carrying it now), workStatus (the state of the work on it, not the pallet's health: not " +
+                 "completed, normal result, scrap or abnormal work set, cancelled; none when there is no work on it), " +
+                 "location (a device, stocker shelf or station, or out of system for a pallet taken out) and " +
                  "the fixtures on it. Values whose meaning is not known are shown as \"code N\".")]
     public static Task<string> GetPallets(ToolContext context, CancellationToken ct) =>
         context.Database("get_pallets", (r, t) => r.GetPalletsAsync(t), ct);
@@ -114,8 +128,10 @@ public static class CellTools
                  "picks, most severe first: itn (the physical tool), ftn (its tool type), name (the FTN comment), kind, " +
                  "location (machine and pot, or the tool crib / presetter), status (derived as the System Console " +
                  "shows it: an alarm bit set means alarm even if the stored status still says ready), flags (alarm tool, prohibited, " +
-                 "absent), movingTo (during a tool in/out), and per cutter: status, alarms, life and measured length/" +
-                 "diameter (in lengthUnit, mm or inch as the cell keeps them). life: unit (min, count, m or inch), limit, " +
+                 "absent), movingTo (during a tool in/out), and per cutter: status, alarms (BT2 alarm: the tool measured " +
+                 "too long, e.g. pulled out of its holder, not a break), life and measured length/" +
+                 "diameter (in lengthUnit, mm or inch as the cell keeps them; diameterIsRadius: true means the cell " +
+                 "stores radii in its diameter values). life: unit (min, count, m or inch), limit, " +
                  "warnAtUsed, used, remaining " +
                  "and usedPercent, already corrected for whether this cell counts life up or down (lifeDirectionAssumed: " +
                  "true means the cell doesn't say and up was assumed); note \"not life-managed\" means the tool has no " +
@@ -134,7 +150,8 @@ public static class CellTools
     [McpServerTool(Name = "get_tool_changes", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("What changed in the tool data? Every change the cell recorded (presetter measurements, tool data " +
                  "imports, manual edits, alarms set or cleared after machining), newest first: time, device (where the " +
-                 "tool was), itn, ftn, user, and only the values that changed (lengths in lengthUnit), e.g. " +
+                 "tool was), itn, ftn, user, and only the values that changed (lengths in lengthUnit; diameters are " +
+                 "radii when diameterIsRadius), e.g. " +
                  "\"length 101.234 → 101.250 mm\", " +
                  "\"status ready → alarm\", \"tool life alarm on\", \"life used 75.0 → 0.0 min (reset)\". By default the " +
                  "routine updates are left out (lifeUpdatesLeftOut): the life-count ticks after each use, and rows in " +
@@ -152,8 +169,9 @@ public static class CellTools
 
     [McpServerTool(Name = "get_tool_alarms", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("Which tools alarmed lately (worn out, broken, …)? Newest first: time, device, pot, itn, ftn, alarms " +
-                 "(tool life alarm, broken tool, spindle load, …), the tool's life then, and its length/diameter (in " +
-                 "lengthUnit). source " +
+                 "(tool life alarm, BTS alarm: broken tool, BT2 alarm: tool measured too long (pulled out), SL alarm: " +
+                 "spindle load, …), the tool's life then, and its length/diameter (in lengthUnit; radii when " +
+                 "diameterIsRadius). source " +
                  "says where they come from: the cell's tool alarm history, or, when this login can't read it, the tool " +
                  "data changes in which an alarm bit turned on (no pot: see notAvailable). Default: the last 7 days, " +
                  "every device and tool.")]
@@ -187,12 +205,14 @@ public static class CellTools
                  "containing the text next to an exact match. The routing: processes in order (number, name, status, " +
                  "maxFixtures, the fixtures that can hold it as \"pallet N fixture M\"), their operations (parts per " +
                  "clamp) and jobs in order: type (work setting, machining, …), workSet (load/unload) and infoFile " +
-                 "(work instructions), program (NC program), minutes (planned time), operatorCall, feasibleDevices. " +
+                 "(work instructions), program (NC program), minutes (planned time; for work setting an operator-entered " +
+                 "plan, never measured), operatorCall, feasibleDevices. " +
                  "With includeTools (default), each machining job lists the tool types (ftn, name) its main program " +
                  "needs, how many (needed), the life one run uses (cutting), how many usable tools of that type " +
                  "(status ready or life warning) sit on each feasible machine (usable) and missingOn: the machines " +
-                 "with too few. That check is approximate (toolCheck): main program only, subprograms not followed, " +
-                 "remaining life not checked. notAvailable names what this cell or login can't show.")]
+                 "with too few. That check is approximate (toolCheck): it uses the tool set the cell registered for the " +
+                 "program, subprograms included, and doesn't check remaining life. notAvailable names what this cell or " +
+                 "login can't show.")]
     public static Task<string> GetPartRouting(
         ToolContext context,
         [Description("The part name, or part of it.")] string part,
@@ -204,8 +224,9 @@ public static class CellTools
     [McpServerTool(Name = "get_production", ReadOnly = true, Idempotent = true, OpenWorld = false)]
     [Description("How many parts has the cell made, and how far along is each order? Per order, counted the way the " +
                  "cell's own order screen counts: quantity (required), completedQty (good parts out of the last " +
-                 "process), scrapQty (any process), remainingQty (not started), inProcessQty (started, not finished: " +
-                 "clampedQty on fixtures now plus parts waiting between processes), status, completedInWindow and " +
+                 "process), scrapQty (any process), remainingQty (material put in for the first process, not started), " +
+                 "inProcessQty (started, not finished: clampedQty on fixtures now plus parts waiting for a later " +
+                 "process, including material put in there directly), status, completedInWindow and " +
                  "scrapInWindow; daily: per production day (date, completed, scrap; days with none left out) the totals " +
                  "over the listed orders, or each order's own days when an order or part is named (dailyCapped: the " +
                  "oldest days didn't fit the row limit). Orders " +
@@ -213,7 +234,8 @@ public static class CellTools
                  "as one) and only the active orders something happened to in them (output, scrap, or parts on a " +
                  "fixture that isn't suspended or on hold); otherActiveOrders counts the rest, includeIdle=true lists " +
                  "them too. Naming an order or a part (exact name, else every name containing the text) shows its " +
-                 "orders whatever their status or activity. The cell keeps daily counts for about three months.")]
+                 "orders whatever their status or activity. completeIncludesScrap: true means an order counts as " +
+                 "complete once good plus scrap parts reach its quantity. The cell keeps daily counts for about three months.")]
     public static Task<string> GetProduction(
         ToolContext context,
         [Description("How many days of daily counts, from today back (today counts as one). Default 7.")] int days = 7,
@@ -228,15 +250,20 @@ public static class CellTools
                  "request, error, emergency stop, disconnected or a machine's operator call; instructions set at a " +
                  "work-set station (clamp, unclamp, …); manual transports not finished; " +
                  "fixtures damaged, pre-machining suspended (with the reason) or past their reclamp time; tools in " +
-                 "alarm or with an offset error per machine; fixtures lacking tools for their next machining; stations " +
+                 "alarm or with an offset error per machine; fixtures lacking tools (lackingToolScope: which of their " +
+                 "jobs the cell checks; when the cell doesn't work this out, notAvailable says so, so no such items " +
+                 "is then not an all-clear); stations " +
                  "or the vehicle over their maintenance cycle count. Fixtures that are only suspended or held at the " +
                  "work-set station (operators park fixtures this way) are counted in parked: how many, how many of " +
                  "them lack tools, per place (where their pallets are) and condition; includeParked=true lists them " +
-                 "last as items with the reason the operator typed (detail). Each item: kind, what, device or " +
+                 "last as items. A fixture's detail is its status reason: one text shared by suspend, hold, damaged and " +
+                 "off duty, typed by an operator or written by the cell, possibly empty or left from an earlier " +
+                 "condition (a machine recovery can suspend fixtures too). Each item: kind, what, device or " +
                  "pallet/fixture, order and process, detail, since (only when the cell records it). counts: how many " +
                  "of each condition the cell has, parked ones included, even past the row cap. " +
-                 "machineToolStatus: each machine's tool status, as context only (\"lacking tools\" there usually means " +
-                 "a later job waits for a tool; the fixtures concerned are the items). notAvailable names sections " +
+                 "machineToolStatus: each machine's tool status, as context only, one value by precedence (\"lacking " +
+                 "tools\" there usually means a later job waits for a tool, and it hides tool alarms: see get_tools " +
+                 "filter=alarm; the fixtures concerned are the items). notAvailable names sections " +
                  "this cell or login can't show.")]
     public static Task<string> GetAttention(
         ToolContext context,

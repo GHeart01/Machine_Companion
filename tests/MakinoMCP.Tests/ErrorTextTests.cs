@@ -78,12 +78,16 @@ public class ErrorTextTests
 
     [Theory]
     [InlineData("Normal", "", false, "normal")]
-    [InlineData("BrokenToolShort", "", true, "broken tool (short)")]
-    [InlineData("BrokenToolShort, ToolLife", "", true, "broken tool (short), tool life")]
-    [InlineData("ToolLife", "", false, "tool life")]
-    [InlineData("65536", "", true, "broken tool (short)")]
+    [InlineData("BrokenToolShort", "", true, "BTS alarm (broken tool), abnormal finish")]
+    [InlineData("BrokenToolShort, ToolLife", "", true, "BTS alarm (broken tool), TL alarm (tool life), abnormal finish")]
+    [InlineData("ToolLife", "", false, "TL alarm (tool life)")]
+    [InlineData("65536", "", true, "BTS alarm (broken tool), abnormal finish")]
     [InlineData("SomethingNew", "", false, "SomethingNew")]
-    [InlineData("BrokenToolLong", "1234", true, "broken tool (long), alarm 1234")]
+    [InlineData("BrokenToolLong", "1234", true, "BT2 alarm (tool too long), abnormal finish, alarm 1234")]
+    // An abnormal finish without an alarm number, or with flags that read normal, is still abnormal.
+    [InlineData("Normal", "", true, "abnormal finish")]
+    [InlineData("Normal", "0", true, "abnormal finish")]
+    [InlineData("", "", true, "abnormal finish")]
     [InlineData("Normal", "1234", false, "normal")]
     [InlineData(null, null, false, "")]
     public void MachiningResult_reads_enum_names(string? finish, string? alarm, bool abnormal, string expected)

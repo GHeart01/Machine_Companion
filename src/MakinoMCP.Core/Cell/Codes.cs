@@ -27,57 +27,6 @@ public static class Codes
         [18] = "oil dump",
     };
 
-    // The cell's in-memory pallet states (PalletStatus). The Pallets table stores dashboard codes instead: see
-    // PalletDisplayStatuses.
-    private static readonly Dictionary<int, string> PalletStatuses = new()
-    {
-        [0] = "undefined",
-        [1] = "no fixture",
-        [2] = "fixture loaded",
-        [3] = "damaged",
-        [4] = "material pallet",
-        [5] = "extra tool pallet",
-        [10] = "input",
-        [11] = "output",
-        [12] = "manual transport",
-        [13] = "extra tool pallet transport",
-        [14] = "pallet change transport",
-        [15] = "manual transport reclamp",
-        [16] = "manual transport reclamp warning",
-        [17] = "exchange",
-        [18] = "fixture change",
-        [19] = "warm-up transport",
-        [20] = "processing",
-        [30] = "waiting for machining",
-        [31] = "waiting for work setting",
-        [32] = "waiting for cleaning",
-        [33] = "waiting for turning",
-        [34] = "waiting for deburring",
-        [35] = "waiting for measuring",
-        [40] = "work setting finished",
-        [41] = "machining finished",
-        [42] = "cleaning finished",
-        [43] = "turning finished",
-        [44] = "deburring finished",
-        [45] = "measuring finished",
-        [50] = "machining suspended",
-        [51] = "work setting suspended",
-        [52] = "cleaning suspended",
-        [53] = "turning suspended",
-        [54] = "deburring suspended",
-        [55] = "machining suspended (reclamp)",
-        [56] = "cleaning suspended (reclamp)",
-        [57] = "turning suspended (reclamp)",
-        [58] = "deburring suspended (reclamp)",
-        [59] = "pre-machining suspended",
-        [60] = "machining off-duty process",
-        [61] = "turning off-duty process",
-        [62] = "deburring off-duty process",
-        [70] = "measuring suspended",
-        [80] = "measuring suspended (reclamp)",
-        [110] = "check fixtures",
-    };
-
     private static readonly Dictionary<int, string> CncModes = new()
     {
         [0] = "MDI",
@@ -86,7 +35,7 @@ public static class Codes
         [4] = "handle",
         [5] = "jog",
         [9] = "reference return",
-        [10] = "remote",
+        [10] = "remote (tape)",
         [100] = "rapid",
         [101] = "DNC",
         [200] = "manual",
@@ -181,27 +130,37 @@ public static class Codes
         [30] = "check fixtures",
     };
 
+    // WorkSetStatus.WSSMode (PDevMode). The console shows every value but system and maintenance as local.
     private static readonly Dictionary<int, string> WssModes = new()
     {
         [0] = "system",
+        [1] = "local (from-to)",
+        [2] = "local (jog high)",
+        [4] = "local (jog low)",
         [16] = "maintenance",
         [32] = "local",
+        [48] = "local (manual)",
+        [64] = "local (teaching)",
+        [128] = "local (reference)",
     };
 
+    // MachineResults.FinishStatus (EndOfProgramFinishStatus), named as the console names them. BT2 is a tool measured
+    // too long (pulled out of its holder), not a break. Tool life and spare tool selected are informational unless the
+    // result is also abnormal.
     private static readonly Dictionary<int, string> MachiningFinishBits = new()
     {
-        [0x1] = "M940",
-        [0x10000] = "broken tool (short)",
-        [0x20000] = "broken tool (long)",
-        [0x40000] = "adaptive control",
-        [0x80000] = "spindle load",
-        [0x100000] = "tool life",
+        [0x1] = "M940 (the program ended itself)",
+        [0x10000] = "BTS alarm (broken tool)",
+        [0x20000] = "BT2 alarm (tool too long)",
+        [0x40000] = "AC alarm (adaptive control)",
+        [0x80000] = "SL alarm (spindle load)",
+        [0x100000] = "TL alarm (tool life)",
         [0x200000] = "fixture alarm",
-        [0x400000] = "spare tool select",
-        [0x800000] = "tool prep check",
-        [0x1000000] = "abort switch",
+        [0x400000] = "STS (spare tool selected)",
+        [0x800000] = "tool prep check failed",
+        [0x1000000] = "system abort (aborted at the machine)",
         [0x2000000] = "system mode off",
-        [0x4000000] = "not seated",
+        [0x4000000] = "pallet not seated",
         [0x8000000] = "work vacuum",
     };
 
@@ -265,11 +224,11 @@ public static class Codes
         [0x1] = "alarm tool",
         [0x2] = "tool life alarm",
         [0x4] = "tool life warning",
-        [0x8] = "broken tool (short)",
-        [0x10] = "broken tool (long)",
-        [0x20] = "adaptive control",
-        [0x40] = "spindle load",
-        [0x80] = "spindle load low",
+        [0x8] = "BTS alarm (broken tool)",
+        [0x10] = "BT2 alarm (tool too long)",
+        [0x20] = "AC alarm (adaptive control)",
+        [0x40] = "SL alarm (spindle load)",
+        [0x80] = "SL low alarm (spindle load too low)",
         [0x100] = "tool ID alarm",
         [0x200] = "not inspected",
         [0x400] = "STS not OK",
@@ -300,8 +259,8 @@ public static class Codes
         [2] = "waiting for processing",
         [3] = "processing",
         [4] = "finished",
-        [5] = "load after",
-        [6] = "unload before",
+        [5] = "after-load program running",
+        [6] = "before-unload program running",
     };
 
     // The dashboard Status of MachineStatus, WorkSetStatus and VehicleStatus: the same buckets as the day summaries.
@@ -352,7 +311,11 @@ public static class Codes
         [4] = "manual transport",
     };
 
-    // Pallets.PalletStatus as the cell's dashboard procedure rewrites it (not the in-memory PalletStatus list above).
+    // Pallets.PalletStatus as the cell's dashboard procedure (UpdatePalletStatus) rewrites the in-memory pallet state.
+    // Every in-memory state it doesn't map is stored as 0 "idle": no fixtures, no work, material pallet, extra tool
+    // pallet, every "... finished" state, reclamp waits, warm-up transport and check fixtures. So a pallet whose work
+    // is done reads idle with work status "normal result". 12 and 14 mean the pallet is in a special transport state,
+    // not that the vehicle is carrying it right now.
     private static readonly Dictionary<int, string> PalletDisplayStatuses = new()
     {
         [0] = "idle",
@@ -360,27 +323,27 @@ public static class Codes
         [2] = "work setting",
         [3] = "in another device",
         [4] = "waiting for machining",
-        [5] = "waiting for work setting",
-        [6] = "waiting for work setting",
+        [5] = "waiting for work setting (no result on it)",
+        [6] = "waiting for work setting (with a result to unload)",
         [7] = "waiting for an auxiliary device",
         [8] = "machining suspended",
-        [9] = "work setting suspended",
-        [10] = "work setting suspended",
+        [9] = "work-set hold",
+        [10] = "work-set hold (with a result on it)",
         [11] = "auxiliary device suspended",
-        [12] = "transport",
+        [12] = "pallet input/output, manual transport or exchange",
         [13] = "damaged",
-        [14] = "pallet active",
+        [14] = "special transport (extra tool pallet, APC pallet change, reclamp or fixture change)",
     };
 
     // Pallets.WorkStatus as the same procedure rewrites it; 0 is the raw "undefined" it leaves in place when there is
-    // no work to report (idle, transport, damaged).
+    // no work to report (idle, transport, damaged). It is the state of the work on the pallet, not the pallet's health.
     private static readonly Dictionary<int, string> PalletWorkStatuses = new()
     {
         [0] = "none",
-        [1] = "not completed",
-        [2] = "normal",
-        [3] = "abnormal",
-        [4] = "cancel",
+        [1] = "not completed (no result yet)",
+        [2] = "normal result",
+        [3] = "scrap or abnormal work set",
+        [4] = "cancelled (order or process)",
     };
 
     // VehicleStatus.VHCMode (VehicleMode): a list of values, not flags.
@@ -388,11 +351,11 @@ public static class Codes
     {
         [0] = "system",
         [1] = "from-to",
-        [2] = "jog 1",
-        [4] = "jog 2",
+        [2] = "jog high",
+        [4] = "jog low",
         [16] = "maintenance",
-        [32] = "not system",
-        [48] = "manual interrupt",
+        [32] = "local",
+        [48] = "manual",
     };
 
     // Jobs.JobType (ProcessJobType).
@@ -511,6 +474,15 @@ public static class Codes
         [2] = "one-shot",
     };
 
+    // SystemParameters.CheckLackToolsAllRemainingJobs (CheckLackToolAllRemaining): which of a fixture's jobs the cell
+    // checks when it marks the fixture lacking tools.
+    private static readonly Dictionary<int, string> LackingToolScopes = new()
+    {
+        [0] = "its next machining job",
+        [1] = "its machining jobs before the next work setting",
+        [2] = "all its remaining jobs",
+    };
+
     // InformationFiles.InfoType (InformationFileType).
     private static readonly Dictionary<int, string> InfoFileTypes = new()
     {
@@ -520,8 +492,6 @@ public static class Codes
     };
 
     public static string DeviceType(int? value) => Lookup(value, DeviceTypes);
-
-    public static string PalletStatus(int? value) => Lookup(value, PalletStatuses);
 
     public static string CncMode(int? value) => Lookup(value, CncModes);
 
@@ -586,6 +556,8 @@ public static class Codes
     public static string ManualTransportStatus(int? value) => Lookup(value, ManualTransportStatuses);
 
     public static string InfoFileType(int? value) => Lookup(value, InfoFileTypes);
+
+    public static string LackingToolScope(int? value) => Lookup(value, LackingToolScopes);
 
     public static string WorkSetJobOperation(int? value) => Lookup(value, WorkSetJobOperations);
 
