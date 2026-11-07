@@ -62,6 +62,19 @@ internal sealed class SetupForm : Form
     private readonly Button _copyClaudeCode = CopyButton("Copy the Claude Code command");
     private readonly Button _copyCowork = CopyButton("Copy the Cowork entry");
 
+    // Updates (release-zip installs only)
+    private readonly bool _gitHubInstall;
+    private string _updates = "auto"; // kept as loaded when the section is hidden
+    private readonly CheckBox _autoUpdate = new()
+    {
+        Text = "Update MakinoMCP automatically from &GitHub",
+        AutoSize = true,
+        Checked = true,
+        Margin = new Padding(0, 8, 0, 0),
+        AccessibleDescription = "Checks GitHub at most every 6 hours and installs new releases.",
+    };
+    private readonly StatusView _updateStatus = new();
+
     // Bottom bar
     private readonly StatusView _saveStatus = new();
     private readonly Button _save = ActionButton("Sa&ve");
@@ -70,6 +83,8 @@ internal sealed class SetupForm : Form
     public SetupForm(string settingsPath)
     {
         _settingsPath = Path.GetFullPath(settingsPath);
+        // The launcher sits beside the settings file; only a release-zip install on this PC's own disk updates itself.
+        _gitHubInstall = MakinoMCP.Launcher.UpdateSource.DecideForThisPc(Path.GetDirectoryName(_settingsPath) ?? "").GitHubInstall;
 
         SuspendLayout();
         AutoScaleDimensions = new SizeF(96F, 96F);
@@ -96,6 +111,7 @@ internal sealed class SetupForm : Form
         BuildCellDatabase(root);
         BuildSharedFolders(root);
         BuildConnectClaude(root);
+        if (_gitHubInstall) BuildUpdates(root);
         BuildBottomBar(root);
 
         Controls.Add(root);
@@ -241,6 +257,41 @@ internal sealed class SetupForm : Form
         _snippets.SetColumnSpan(how, 2);
         Add(root, _snippets);
     }
+
+    private void BuildUpdates(TableLayoutPanel root)
+    {
+        Add(root, Heading("Updates"));
+        Add(root, _autoUpdate);
+        NextTab(_autoUpdate);
+        var note = Wrapping("MakinoMCP checks GitHub for a new release at most every 6 hours and installs it in this folder. " +
+                            "Claude uses a new version from its next start. Nothing about you or the cell is sent.");
+        note.Margin = new Padding(0, 6, 0, 0);
+        Add(root, note);
+        _updateStatus.Margin = new Padding(0, 6, 0, 0);
+        Add(root, _updateStatus);
+        ShowUpdateStatus();
+    }
+
+    private void ShowUpdateStatus()
+    {
+        if (!_autoUpdate.Checked)
+        {
+            _updateStatus.Set(new StatusLine(StatusKind.Info, "Off: this folder stays on its current version until you update it yourself."));
+            return;
+        }
+        string? json = null;
+        try
+        {
+            var path = UpdateStatus.StatePath();
+            if (File.Exists(path)) json = File.ReadAllText(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        var line = UpdateStatus.Describe(json, DateTime.UtcNow) ?? "Not checked yet: the first check runs when Claude next starts MakinoMCP.";
+        var kind = line.StartsWith("The last check failed", StringComparison.Ordinal) ? StatusKind.Warning : StatusKind.Info;
+        _updateStatus.Set(new StatusLine(kind, line));
+    }
+
+    private string CurrentUpdates() => !_gitHubInstall ? _updates : _autoUpdate.Checked ? "auto" : "off";
 
     private void BuildBottomBar(TableLayoutPanel root)
     {
@@ -402,6 +453,9 @@ internal sealed class SetupForm : Form
         }
 
         _limits = s.Limits;
+        _updates = s.Updates;
+        _autoUpdate.Checked = !s.UpdatesOff;
+        if (_gitHubInstall) ShowUpdateStatus();
         _connectTimeoutSeconds = s.Makino.ConnectTimeoutSeconds;
         _server.Text = s.Makino.Server;
         _database.Text = s.Makino.Database;
@@ -420,6 +474,8 @@ internal sealed class SetupForm : Form
         foreach (var box in new[] { _server, _database, _user, _password }) box.TextChanged += Dirty;
         _windowsLogin.CheckedChanged += Dirty;
         _trustCertificate.CheckedChanged += Dirty;
+        _autoUpdate.CheckedChanged += Dirty;
+        if (_gitHubInstall) _autoUpdate.CheckedChanged += (_, _) => ShowUpdateStatus();
         _folders.CellValueChanged += Dirty;
         _folders.RowsAdded += Dirty;
         _folders.RowsRemoved += Dirty;
@@ -546,7 +602,7 @@ internal sealed class SetupForm : Form
 
         try
         {
-            SettingsStore.Save(_settingsPath, new McpSettings(CurrentLogin(), folders, _limits));
+            SettingsStore.Save(_settingsPath, new McpSettings(CurrentLogin(), folders, _limits, CurrentUpdates()));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException
             or ArgumentException or System.Security.SecurityException)
