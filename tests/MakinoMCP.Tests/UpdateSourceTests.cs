@@ -69,6 +69,21 @@ public class UpdateSourceTests : IDisposable
         Assert.False(UpdateSource.UpdatesOff(Path.Combine(_dir, "missing.json")));
         // Comments are allowed in the settings file (SettingsStore skips them).
         Assert.True(UpdateSource.UpdatesOff(Settings("{ // mine\n \"updates\": \"off\" }")));
+        // The app reads property names case-insensitively; so does the launcher.
+        Assert.True(UpdateSource.UpdatesOff(Settings("{ \"Updates\": \"off\" }")));
+        Assert.True(UpdateSource.UpdatesOff(Settings("{ \"UPDATES\" : \"Off\" }")));
+        // A value that merely mentions the words doesn't count.
+        Assert.False(UpdateSource.UpdatesOff(Settings("{ \"folders\": [ { \"description\": \"set \\\"updates\\\": \\\"off\\\" later\" } ] }")));
+    }
+
+    [Fact]
+    public void Decide_says_when_the_share_list_couldnt_be_read()
+    {
+        Marker(GoodMarker);
+        var d = UpdateSource.Decide(_dir, Path.Combine(_dir, "MakinoMCP.settings.json"), _ => false, null, null);
+        Assert.True(d.GitHubInstall);
+        Assert.True(d.ShareCheckSkipped);
+        Assert.False(UpdateSource.Decide(_dir, Path.Combine(_dir, "MakinoMCP.settings.json"), _ => false, [], null).ShareCheckSkipped);
     }
 
     [Fact]

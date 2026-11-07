@@ -31,6 +31,12 @@ namespace MakinoMCP.Launcher
                 // A release-zip install on this PC's own disk runs its build in place and updates itself from GitHub;
                 // anything else (a share) works as before.
                 UpdateDecision update = UpdateSource.DecideForThisPc(launcherDir.TrimEnd('\\'));
+                // A release zip that doesn't update itself says why, in the update log (never on stdout).
+                if (update.Repository != null && !update.GitHubInstall)
+                    Updater.LogLine(LocalRoot(), launcherDir.TrimEnd('\\'), DateTime.UtcNow, "not updating from GitHub: " + update.Reason);
+                if (update.ShareCheckSkipped)
+                    Updater.LogLine(LocalRoot(), launcherDir.TrimEnd('\\'), DateTime.UtcNow,
+                        "couldn't read this PC's list of shared folders; assumed this folder isn't shared");
                 // Setup (no arguments, or "setup") prepares this PC first: the copy is finished before the setup window
                 // opens, while a small window shows progress. Serving never waits for a copy (see ResolveExe).
                 if (IsSetupMode(args) && !update.GitHubInstall) PrepareThisPc(launcherDir);

@@ -70,13 +70,22 @@ namespace MakinoMCP.Launcher
         {
             Mutex mutex;
             try { mutex = new Mutex(false, MutexName(_installDir)); }
-            catch (UnauthorizedAccessException) { return new UpdateState { Result = "busy" }; } // another user's update
+            catch (Exception ex)
+            {
+                // Access denied: another Windows user's update holds it. Anything else: this PC forbids the object.
+                Log("busy: the update lock can't be opened (" + ex.GetType().Name + ")");
+                return new UpdateState { Result = "busy" };
+            }
             using (mutex)
             {
                 bool mine;
                 try { mine = mutex.WaitOne(0); }
                 catch (AbandonedMutexException) { mine = true; }
-                if (!mine) return new UpdateState { Result = "busy" };
+                if (!mine)
+                {
+                    Log("busy: another update of this folder is running");
+                    return new UpdateState { Result = "busy" };
+                }
                 try { return RunLocked(); }
                 finally { mutex.ReleaseMutex(); }
             }
@@ -148,14 +157,17 @@ namespace MakinoMCP.Launcher
             }
         }
 
-        private void Log(string line)
+        private void Log(string line) => LogLine(_stateDir, _installDir, _utcNow(), line);
+
+        /// <summary>One line in stateDir\logs\update-&lt;date&gt;.log. Never throws.</summary>
+        internal static void LogLine(string stateDir, string installDir, DateTime utcNow, string line)
         {
             try
             {
-                string dir = Path.Combine(_stateDir, "logs");
+                string dir = Path.Combine(stateDir, "logs");
                 Directory.CreateDirectory(dir);
-                File.AppendAllText(Path.Combine(dir, "update-" + _utcNow().ToString("yyyyMMdd", CultureInfo.InvariantCulture) + ".log"),
-                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + " [" + _installDir + "] " + line + Environment.NewLine);
+                File.AppendAllText(Path.Combine(dir, "update-" + utcNow.ToString("yyyyMMdd", CultureInfo.InvariantCulture) + ".log"),
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + " [" + installDir + "] " + line + Environment.NewLine);
             }
             catch { }
         }
@@ -167,10 +179,23 @@ namespace MakinoMCP.Launcher
                 Directory.CreateDirectory(_stateDir);
                 string tmp = StatePath + ".tmp-" + Guid.NewGuid().ToString("N");
                 using (var f = File.Create(tmp)) new DataContractJsonSerializer(typeof(UpdateState)).WriteObject(f, s);
-                if (File.Exists(StatePath)) File.Replace(tmp, StatePath, null);
-                else File.Move(tmp, StatePath);
+                try
+                {
+                    UpdateApplier.Retry(() =>
+                    {
+                        if (File.Exists(StatePath)) File.Replace(tmp, StatePath, null);
+                        else File.Move(tmp, StatePath);
+                    });
+                }
+                finally
+                {
+                    try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Log("couldn't save " + StateFileName + ": " + ex.Message);
+            }
         }
 
         internal static UpdateState ReadState(string path)
@@ -227,13 +252,22 @@ namespace MakinoMCP.Launcher
         private readonly HttpClient _client;
 
         internal GitHubReleaseSource()
-        {
-            var handler = new HttpClientHandler
+            : this(new HttpClientHandler
             {
                 AllowAutoRedirect = false,
                 UseProxy = true,
                 DefaultProxyCredentials = CredentialCache.DefaultCredentials,
-            };
+            }, TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(15))
+        {
+        }
+
+        private readonly TimeSpan _apiTimeout;
+        private readonly TimeSpan _downloadTimeout;
+
+        internal GitHubReleaseSource(HttpMessageHandler handler, TimeSpan apiTimeout, TimeSpan downloadTimeout)
+        {
+            _apiTimeout = apiTimeout;
+            _downloadTimeout = downloadTimeout;
             _client = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
             string version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0";
             _client.DefaultRequestHeaders.UserAgent.ParseAdd("MakinoMCP-updater/" + version);
@@ -241,40 +275,63 @@ namespace MakinoMCP.Launcher
 
         public void Dispose() => _client.Dispose();
 
+        // Each call has one deadline for everything: the request, redirects and the whole body. When it passes, the
+        // response is disposed, which also ends a read that the stream itself doesn't let be cancelled.
         public string LatestJson(string repository)
         {
-            using (var r = Get("https://api.github.com/repos/" + repository + "/releases/latest", "application/vnd.github+json", TimeSpan.FromSeconds(30)))
-                return Encoding.UTF8.GetString(ReadCapped(r, 1024 * 1024));
+            using (var cts = new CancellationTokenSource(_apiTimeout))
+                return Encoding.UTF8.GetString(ReadAll("https://api.github.com/repos/" + repository + "/releases/latest",
+                    "application/vnd.github+json", 1024 * 1024, null, cts.Token));
         }
 
         public string DownloadText(string url, int maxBytes)
         {
-            using (var r = Get(url, "application/octet-stream", TimeSpan.FromSeconds(30)))
-                return Encoding.UTF8.GetString(ReadCapped(r, maxBytes));
+            using (var cts = new CancellationTokenSource(_apiTimeout))
+                return Encoding.UTF8.GetString(ReadAll(url, "application/octet-stream", maxBytes, null, cts.Token));
         }
 
         public void Download(string url, string path, long maxBytes)
         {
-            using (var r = Get(url, "application/octet-stream", TimeSpan.FromMinutes(15)))
+            using (var cts = new CancellationTokenSource(_downloadTimeout))
+            using (var to = new FileStream(path, FileMode.CreateNew, FileAccess.Write))
+                ReadAll(url, "application/octet-stream", maxBytes, to, cts.Token);
+        }
+
+        // Copies the body to `to`, or returns it when `to` is null; throws past maxBytes or the deadline.
+        private byte[] ReadAll(string url, string accept, long maxBytes, Stream to, CancellationToken token)
+        {
+            using (var r = Get(url, accept, token))
             {
-                if (r.Content.Headers.ContentLength > maxBytes) throw new InvalidDataException("the download is larger than " + maxBytes + " bytes");
+                string tooBig = "the answer is larger than " + maxBytes + " bytes";
+                if (r.Content.Headers.ContentLength > maxBytes) throw new InvalidDataException(tooBig);
+                var buffer = new MemoryStream();
+                var target = to ?? buffer;
                 using (var from = r.Content.ReadAsStreamAsync().GetAwaiter().GetResult())
-                using (var to = new FileStream(path, FileMode.CreateNew, FileAccess.Write))
+                using (token.Register(() => { try { r.Dispose(); from.Dispose(); } catch { } }))
                 {
-                    var buffer = new byte[81920];
+                    var chunk = new byte[81920];
                     long total = 0;
-                    int n;
-                    while ((n = from.Read(buffer, 0, buffer.Length)) > 0)
+                    try
                     {
-                        total += n;
-                        if (total > maxBytes) throw new InvalidDataException("the download is larger than " + maxBytes + " bytes");
-                        to.Write(buffer, 0, n);
+                        int n;
+                        while ((n = from.ReadAsync(chunk, 0, chunk.Length, token).GetAwaiter().GetResult()) > 0)
+                        {
+                            total += n;
+                            if (total > maxBytes) throw new InvalidDataException(tooBig);
+                            target.Write(chunk, 0, n);
+                        }
                     }
+                    catch (Exception) when (token.IsCancellationRequested)
+                    {
+                        throw new TimeoutException("GitHub didn't finish answering in time");
+                    }
+                    if (token.IsCancellationRequested) throw new TimeoutException("GitHub didn't finish answering in time");
                 }
+                return to == null ? buffer.ToArray() : null;
             }
         }
 
-        private HttpResponseMessage Get(string url, string accept, TimeSpan timeout)
+        private HttpResponseMessage Get(string url, string accept, CancellationToken token)
         {
             var uri = new Uri(url);
             for (int i = 0; i <= MaxRedirects; i++)
@@ -282,42 +339,32 @@ namespace MakinoMCP.Launcher
                 if (uri.Scheme != Uri.UriSchemeHttps) throw new InvalidDataException("refusing a non-HTTPS address");
                 var request = new HttpRequestMessage(HttpMethod.Get, uri);
                 request.Headers.Accept.ParseAdd(accept);
-                using (var cts = new CancellationTokenSource(timeout))
+                HttpResponseMessage response;
+                try
                 {
-                    var response = _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token).GetAwaiter().GetResult();
-                    int code = (int)response.StatusCode;
-                    if (code >= 300 && code < 400 && response.Headers.Location != null)
-                    {
-                        var next = response.Headers.Location.IsAbsoluteUri ? response.Headers.Location : new Uri(uri, response.Headers.Location);
-                        response.Dispose();
-                        uri = next;
-                        continue;
-                    }
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        response.Dispose();
-                        throw new HttpRequestException("GitHub answered " + code + " " + response.ReasonPhrase);
-                    }
-                    return response;
+                    response = _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).GetAwaiter().GetResult();
                 }
+                catch (Exception) when (token.IsCancellationRequested)
+                {
+                    throw new TimeoutException("GitHub didn't answer in time");
+                }
+                int code = (int)response.StatusCode;
+                if (code >= 300 && code < 400 && response.Headers.Location != null)
+                {
+                    var next = response.Headers.Location.IsAbsoluteUri ? response.Headers.Location : new Uri(uri, response.Headers.Location);
+                    response.Dispose();
+                    uri = next;
+                    continue;
+                }
+                if (!response.IsSuccessStatusCode)
+                {
+                    string reason = response.ReasonPhrase;
+                    response.Dispose();
+                    throw new HttpRequestException("GitHub answered " + code + " " + reason);
+                }
+                return response;
             }
             throw new HttpRequestException("too many redirects");
-        }
-
-        private static byte[] ReadCapped(HttpResponseMessage r, int maxBytes)
-        {
-            using (var s = r.Content.ReadAsStreamAsync().GetAwaiter().GetResult())
-            using (var ms = new MemoryStream())
-            {
-                var buffer = new byte[16384];
-                int n;
-                while ((n = s.Read(buffer, 0, buffer.Length)) > 0)
-                {
-                    if (ms.Length + n > maxBytes) throw new InvalidDataException("the answer is larger than " + maxBytes + " bytes");
-                    ms.Write(buffer, 0, n);
-                }
-                return ms.ToArray();
-            }
         }
     }
 }

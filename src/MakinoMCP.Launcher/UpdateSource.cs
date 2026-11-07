@@ -30,12 +30,6 @@ namespace MakinoMCP.Launcher
             [DataMember(Name = "repository")] public string Repository { get; set; }
         }
 
-        [DataContract]
-        private sealed class UpdatesOnly
-        {
-            [DataMember(Name = "updates")] public string Updates { get; set; }
-        }
-
         /// <summary>The GitHub repository the marker names, or null when there is no valid marker.</summary>
         internal static string ReadRepository(string installDir)
         {
@@ -114,9 +108,21 @@ namespace MakinoMCP.Launcher
         /// missing or unreadable file, or no such field, counts as on.</summary>
         internal static bool UpdatesOff(string settingsPath)
         {
-            var s = ReadJson<UpdatesOnly>(settingsPath);
-            return s != null && string.Equals(s.Updates?.Trim(), "off", StringComparison.OrdinalIgnoreCase);
+            try
+            {
+                if (!File.Exists(settingsPath) || new FileInfo(settingsPath).Length > 1024 * 1024) return false;
+                // The app reads property names in any case ("updates", "Updates"), so this does too. Only a real key
+                // counts: a quote that isn't escaped, so the words inside some other string value don't.
+                var m = UpdatesKey.Match(StripComments(File.ReadAllText(settingsPath)));
+                return m.Success && string.Equals(m.Groups[1].Value.Trim(), "off", StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
         }
+
+        private static readonly Regex UpdatesKey = new Regex(@"(?<!\\)""updates""\s*:\s*""([^""\\]*)""", RegexOptions.IgnoreCase);
 
         /// <summary>"0.6.0" from the build name "0.6.0-20261107-1232"; null for anything else.</summary>
         internal static Version InstalledVersion(string build)
@@ -137,6 +143,7 @@ namespace MakinoMCP.Launcher
             if (IsNetworkPath(installDir, isNetworkDrive)) { d.Reason = "the install folder is on a network drive"; return d; }
             if (IsInsideLocalShare(installDir, sharePaths)) { d.Reason = "the install folder is shared on the network"; return d; }
             d.GitHubInstall = true;
+            d.ShareCheckSkipped = sharePaths == null;
             if (!string.IsNullOrEmpty(noUpdateEnv)) { d.Reason = NoUpdateVariable + " is set"; return d; }
             if (UpdatesOff(settingsPath)) { d.Reason = "updates are turned off in " + SettingsFileName; return d; }
             d.UpdatesOn = true;
@@ -209,6 +216,8 @@ namespace MakinoMCP.Launcher
         /// <summary>GitHubInstall, and updates aren't turned off.</summary>
         public bool UpdatesOn { get; set; }
         public string Repository { get; set; }
+        /// <summary>This PC's list of shared folders couldn't be read, so "not shared" was assumed (logged).</summary>
+        public bool ShareCheckSkipped { get; set; }
         /// <summary>Why not, in a few words; null when UpdatesOn.</summary>
         public string Reason { get; set; }
     }

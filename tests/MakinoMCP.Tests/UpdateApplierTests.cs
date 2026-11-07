@@ -122,6 +122,97 @@ public class UpdateApplierTests : IDisposable
         Assert.False(File.Exists(Path.Combine(_root, "evil.txt")));
     }
 
+    [Theory]
+    [InlineData("//Users/Public/makinomcp-evil-{0}.txt")]
+    [InlineData("///localhost/c$/makinomcp-evil-{0}.txt")]
+    [InlineData("\\\\Users\\Public\\makinomcp-evil-{0}.txt")]
+    public void Apply_RejectsEmptySegmentEscape(string tail)
+    {
+        var name = string.Format(tail, Guid.NewGuid().ToString("N"));
+        var r = Apply(Zip(extra: z => z.CreateEntry($"versions/{NewBuild}" + name)));
+        Assert.False(r.Applied);
+        Assert.Equal(OldBuild, Current());
+        Assert.False(File.Exists(@"C:" + name.Replace('/', '\\').TrimStart('\\').Insert(0, "\\")));
+    }
+
+    [Fact]
+    public void Apply_SignedInstall_RejectsExtraFilesInBuild()
+    {
+        var r = Apply(Zip(extra: z => z.CreateEntry($"versions/{NewBuild}/version.dll")), isSigned: _ => true);
+        Assert.False(r.Applied);
+        Assert.Contains("version.dll", r.Reason);
+        Assert.Equal(OldBuild, Current());
+    }
+
+    [Fact]
+    public void Apply_UnsignedInstall_AllowsExtraFiles() =>
+        Assert.True(Apply(Zip(extra: z => z.CreateEntry($"versions/{NewBuild}/notes.txt"))).Applied);
+
+    [Theory]
+    [InlineData("<configuration><runtime><appDomainManagerAssembly value=\"x\" /></runtime></configuration>")]
+    [InlineData("<configuration><runtime><assemblyBinding><probing privatePath=\"versions\" /></assemblyBinding></runtime></configuration>")]
+    [InlineData("<configuration><runtime><assemblyBinding><dependentAssembly><codeBase href=\"file:///x.dll\" /></dependentAssembly></assemblyBinding></runtime></configuration>")]
+    public void Apply_SignedLauncher_RejectsConfigThatLoadsCode(string config)
+    {
+        var path = Path.Combine(_root, "cfg.zip");
+        using (var z = ZipFile.Open(path, ZipArchiveMode.Create))
+        {
+            foreach (var (name, text) in new[] { ("current.txt", NewBuild), ($"versions/{NewBuild}/MakinoMCP.exe", "new app"),
+                         ("MakinoMCP.exe", "new launcher"), ("MakinoMCP.exe.config", config) })
+            {
+                using var w = new StreamWriter(z.CreateEntry(name).Open());
+                w.Write(text);
+            }
+        }
+        var r = Apply(path, isSigned: _ => true);
+        Assert.False(r.Applied);
+        Assert.Equal("old config", Text("MakinoMCP.exe.config"));
+        Assert.Equal(OldBuild, Current());
+    }
+
+    [Theory]
+    [InlineData("SignPath Foundation", true)]
+    [InlineData("Evil SignPath Foundation Ltd", false)]
+    [InlineData("signpath foundation", false)]
+    [InlineData(null, false)]
+    public void SignerMatches_exact_common_name(string? name, bool expected) =>
+        Assert.Equal(expected, Signatures.SignerMatches(name));
+
+    [Theory]
+    [InlineData(0, true)]
+    [InlineData(unchecked((int)0x800B010E), true)]  // CERT_E_REVOCATION_FAILURE: status unknown
+    [InlineData(unchecked((int)0x80092013), true)]  // CRYPT_E_REVOCATION_OFFLINE
+    [InlineData(unchecked((int)0x80092012), true)]  // CRYPT_E_NO_REVOCATION_CHECK
+    [InlineData(unchecked((int)0x800B010C), false)] // CERT_E_REVOKED
+    [InlineData(unchecked((int)0x800B0100), false)] // TRUST_E_NOSIGNATURE
+    [InlineData(unchecked((int)0x80096010), false)] // TRUST_E_BAD_DIGEST
+    public void TrustResult_accepts_only_valid_or_unknown_revocation(int result, bool expected) =>
+        Assert.Equal(expected, Signatures.IsAcceptableTrustResult(result));
+
+    [Fact]
+    public void Retry_rides_out_a_briefly_held_file()
+    {
+        // A virus scanner opens a freshly written exe for a moment; renaming its folder fails until it lets go.
+        var from = Path.Combine(_root, "from");
+        Directory.CreateDirectory(from);
+        var exe = Path.Combine(from, "MakinoMCP.exe");
+        File.WriteAllText(exe, "x");
+        var held = new FileStream(exe, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var release = new Timer(_ => held.Dispose(), null, 400, Timeout.Infinite);
+        var to = Path.Combine(_root, "to");
+        UpdateApplier.Retry(() => Directory.Move(from, to));
+        Assert.True(File.Exists(Path.Combine(to, "MakinoMCP.exe")));
+    }
+
+    [Fact]
+    public void Retry_gives_up_and_throws_when_the_file_stays_held()
+    {
+        var from = Path.Combine(_root, "stuck");
+        Directory.CreateDirectory(from);
+        using var held = new FileStream(Path.Combine(from, "a.exe"), FileMode.Create, FileAccess.Write, FileShare.Read);
+        Assert.ThrowsAny<IOException>(() => UpdateApplier.Retry(() => Directory.Move(from, Path.Combine(_root, "stuck2"))));
+    }
+
     [Fact]
     public void Apply_RejectsRootedEntry()
     {

@@ -196,6 +196,8 @@ public class UpdaterTests : IDisposable
         {
             Assert.Equal("busy", Updater(src).Run().Result);
             Assert.Equal(0, src.Checks);
+            var log = string.Concat(Directory.GetFiles(Path.Combine(_state, "logs")).Select(File.ReadAllText));
+            Assert.Contains("busy", log);
         }
         finally
         {

@@ -27,9 +27,11 @@ namespace MakinoMCP.Launcher
                 // The one API that reads the signer from a signed PE file; .NET 10 marks it obsolete in favour of
                 // X509CertificateLoader, which can't read PE files. The tests compile this file on .NET 10.
 #pragma warning disable SYSLIB0057
-                var cert = X509Certificate.CreateFromSignedFile(exePath);
+                using (var cert = new X509Certificate2(X509Certificate.CreateFromSignedFile(exePath)))
 #pragma warning restore SYSLIB0057
-                if (cert.Subject.IndexOf(Signer, StringComparison.OrdinalIgnoreCase) < 0) return false;
+                {
+                    if (!SignerMatches(cert.GetNameInfo(X509NameType.SimpleName, false))) return false;
+                }
                 return string.Equals(FileVersionInfo.GetVersionInfo(exePath).ProductName, Product, StringComparison.Ordinal);
             }
             catch
@@ -38,8 +40,18 @@ namespace MakinoMCP.Launcher
             }
         }
 
-        private const int TrustEProviderUnknown = unchecked((int)0x800B0001);
         private const int CertERevocationFailure = unchecked((int)0x800B010E); // revocation status unknown (offline)
+
+        private const int CryptERevocationOffline = unchecked((int)0x80092013);
+        private const int CryptENoRevocationCheck = unchecked((int)0x80092012);
+
+        /// <summary>The signer's common name is exactly SignPath Foundation.</summary>
+        internal static bool SignerMatches(string commonName) => string.Equals(commonName, Signer, StringComparison.Ordinal);
+
+        /// <summary>A valid signature, or one whose revocation status Windows can't tell offline; a revoked or broken
+        /// one never.</summary>
+        internal static bool IsAcceptableTrustResult(int result) =>
+            result == 0 || result == CertERevocationFailure || result == CryptERevocationOffline || result == CryptENoRevocationCheck;
 
         /// <summary>A valid embedded Authenticode signature, whoever signed it.</summary>
         internal static bool HasValidSignature(string path)
@@ -65,7 +77,7 @@ namespace MakinoMCP.Launcher
                 int result = WinVerifyTrust(IntPtr.Zero, ref action, ref data);
                 data.dwStateAction = 2;        // WTD_STATEACTION_CLOSE
                 WinVerifyTrust(IntPtr.Zero, ref action, ref data);
-                return result == 0 || result == CertERevocationFailure;
+                return IsAcceptableTrustResult(result);
             }
             finally
             {

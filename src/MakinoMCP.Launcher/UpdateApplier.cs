@@ -19,6 +19,11 @@ namespace MakinoMCP.Launcher
         private static readonly string[] LauncherFiles = { "MakinoMCP.exe", "MakinoMCP.exe.config" };
         private static readonly string[] TopFiles = { "MakinoMCP.settings.example.json", "README.md", "LICENSE" };
         private const string OldLaunchers = "old-launchers";
+        // What a published build folder holds (publish.ps1). A signed install takes nothing else: a DLL beside the signed
+        // exe would be loaded by it. Add here when a build ships a new file.
+        private static readonly string[] SignedBuildFiles = { "MakinoMCP.exe", "build.txt", "version.txt", "LICENSE" };
+        // .config elements that make the net48 launcher load other assemblies.
+        private static readonly string[] ConfigLoadsCode = { "appDomainManager", "probing", "privatePath", "codeBase" };
 
         internal static ApplyResult Apply(string installDir, string zipPath, Version expected, Func<string, bool> isSigned,
             Func<string, bool> inUse, Action<string> log)
@@ -47,24 +52,39 @@ namespace MakinoMCP.Launcher
                     {
                         string name = Name(e);
                         if (name.StartsWith(prefix, StringComparison.Ordinal) && name.Length > prefix.Length && !name.EndsWith("/"))
-                            Extract(e, Path.Combine(tmpBuild, name.Substring(prefix.Length).Replace('/', '\\')));
+                            Extract(e, tmpBuild, name.Substring(prefix.Length).Replace('/', '\\'));
                         else if (LauncherFiles.Contains(name) || TopFiles.Contains(name))
-                            Extract(e, Path.Combine(tmpLauncher, name));
+                            Extract(e, tmpLauncher, name);
                     }
 
-                    // 2. A signed install only takes a signed update (app and launcher alike).
+                    // 2. A signed install only takes a signed update (app and launcher alike), and nothing beside the
+                    //    signed exes that could load other code: a build holds only its known files, and the launcher's
+                    //    .config names no assembly to load.
                     string installedApp = previous == null ? null : Path.Combine(versions, previous, "MakinoMCP.exe");
-                    if (installedApp != null && File.Exists(installedApp) && isSigned(installedApp)
-                        && !isSigned(Path.Combine(tmpBuild, "MakinoMCP.exe")))
-                        return Fail("the installed build is signed but the update is not signed by " + Signatures.Signer, log);
+                    if (installedApp != null && File.Exists(installedApp) && isSigned(installedApp))
+                    {
+                        if (!isSigned(Path.Combine(tmpBuild, "MakinoMCP.exe")))
+                            return Fail("the installed build is signed but the update is not signed by " + Signatures.Signer, log);
+                        string extra = Directory.GetFiles(tmpBuild, "*", SearchOption.AllDirectories)
+                            .Select(f => f.Substring(tmpBuild.Length + 1))
+                            .FirstOrDefault(f => !SignedBuildFiles.Contains(f, StringComparer.OrdinalIgnoreCase));
+                        if (extra != null)
+                            return Fail("the update's build holds " + extra + ", which a signed install doesn't take", log);
+                    }
                     string installedLauncher = Path.Combine(installDir, "MakinoMCP.exe");
-                    if (File.Exists(installedLauncher) && isSigned(installedLauncher)
-                        && !isSigned(Path.Combine(tmpLauncher, "MakinoMCP.exe")))
-                        return Fail("the installed launcher is signed but the new one is not signed by " + Signatures.Signer, log);
+                    if (File.Exists(installedLauncher) && isSigned(installedLauncher))
+                    {
+                        if (!isSigned(Path.Combine(tmpLauncher, "MakinoMCP.exe")))
+                            return Fail("the installed launcher is signed but the new one is not signed by " + Signatures.Signer, log);
+                        string config = File.ReadAllText(Path.Combine(tmpLauncher, "MakinoMCP.exe.config"));
+                        string loads = ConfigLoadsCode.FirstOrDefault(k => config.IndexOf(k, StringComparison.OrdinalIgnoreCase) >= 0);
+                        if (loads != null)
+                            return Fail("the new launcher's .config names code to load (" + loads + "), which a signed install doesn't take", log);
+                    }
 
                     // 3. The build into place.
                     if (Directory.Exists(target) && !File.Exists(Path.Combine(target, "MakinoMCP.exe"))) Directory.Delete(target, true);
-                    if (!Directory.Exists(target)) Directory.Move(tmpBuild, target);
+                    if (!Directory.Exists(target)) { string from = tmpBuild; Retry(() => Directory.Move(from, target)); }
                     else TryDelete(tmpBuild);
                     tmpBuild = null;
 
@@ -99,6 +119,24 @@ namespace MakinoMCP.Launcher
             }
         }
 
+        // A virus scanner briefly opens files that were just written; a rename or replace in that moment fails. Tries
+        // again for about 3 seconds, then lets the last error through.
+        internal static void Retry(Action action)
+        {
+            for (int attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    action();
+                    return;
+                }
+                catch (Exception ex) when ((ex is IOException || ex is UnauthorizedAccessException) && attempt < 15)
+                {
+                    System.Threading.Thread.Sleep(200);
+                }
+            }
+        }
+
         private static ApplyResult Fail(string reason, Action<string> log)
         {
             log("not installed: " + reason);
@@ -117,7 +155,9 @@ namespace MakinoMCP.Launcher
             foreach (var e in zip.Entries)
             {
                 string n = Name(e);
-                if (n.Length == 0 || n.StartsWith("/") || n.Contains(":") || n.Split('/').Any(p => p == ".." || p == "."))
+                // An empty segment ("a//b") would make the rest a rooted path once joined, so it is refused like "..".
+                string[] segments = (n.EndsWith("/") ? n.Substring(0, n.Length - 1) : n).Split('/');
+                if (n.Length == 0 || n.StartsWith("/") || n.Contains(":") || segments.Any(p => p.Length == 0 || p == ".." || p == "."))
                     return "the zip holds an unsafe path (" + e.FullName + ")";
                 total += e.Length;
                 names.Add(n);
@@ -138,8 +178,13 @@ namespace MakinoMCP.Launcher
             return null;
         }
 
-        private static void Extract(ZipArchiveEntry e, string path)
+        // Writes the entry to root\relative, and refuses any path that would land outside root.
+        private static void Extract(ZipArchiveEntry e, string root, string relative)
         {
+            string rootFull = Path.GetFullPath(root).TrimEnd('\\') + "\\";
+            string path = Path.GetFullPath(Path.Combine(rootFull, relative));
+            if (!path.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("the zip entry " + e.FullName + " would land outside the install folder");
             Directory.CreateDirectory(Path.GetDirectoryName(path));
             using (var from = e.Open())
             using (var to = new FileStream(path, FileMode.CreateNew, FileAccess.Write))
@@ -163,10 +208,10 @@ namespace MakinoMCP.Launcher
                     string live = Path.Combine(installDir, f);
                     if (!File.Exists(live)) continue;
                     string to = Path.Combine(aside, f + "." + stamp);
-                    File.Move(live, to);
+                    Retry(() => File.Move(live, to));
                     moved.Add(new KeyValuePair<string, string>(live, to));
                 }
-                foreach (string f in changed) File.Copy(Path.Combine(tmpLauncher, f), Path.Combine(installDir, f), true);
+                foreach (string f in changed) Retry(() => File.Copy(Path.Combine(tmpLauncher, f), Path.Combine(installDir, f), true));
                 log("replaced " + string.Join(", ", changed));
                 return null;
             }
@@ -219,8 +264,11 @@ namespace MakinoMCP.Launcher
             string current = Path.Combine(installDir, "current.txt");
             string tmp = current + ".tmp";
             File.WriteAllText(tmp, build);
-            if (File.Exists(current)) File.Replace(tmp, current, null);
-            else File.Move(tmp, current);
+            Retry(() =>
+            {
+                if (File.Exists(current)) File.Replace(tmp, current, null);
+                else File.Move(tmp, current);
+            });
         }
 
         private static bool CanWrite(string versions)
