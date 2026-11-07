@@ -74,7 +74,7 @@ Machine-specific notes (which share it is published to, the live-test settings, 
 | `scripts/check-private.ps1` | fails on private names (patterns from `-Patterns` or env `PRIVATE_PATTERNS`); never prints the patterns |
 | `site/` | the GitHub Pages docs page (single self-contained HTML) |
 | `.github/workflows` | `ci.yml` (build, test, private check), `release.yml` (on `v*` tags: layout, SignPath signing of both exes once the `SIGNPATH_ORGANIZATION_ID` variable is set, zip via `publish.ps1 -ZipExisting`, SHA-256, provenance attestation), `pages.yml` |
-| `.signpath/` | `artifact-configuration.xml`: what SignPath signs (both `MakinoMCP.exe`, product name MakinoMCP, launcher version = `<Version>`, app version = build). SignPath keeps its own copy: paste changes there |
+| `.signpath/` | `artifact-configuration.xml`: what SignPath signs (both `MakinoMCP.exe`, product name MakinoMCP, product version `<Version>` on both: SignPath wants one per build). SignPath keeps its own copy: paste changes there |
 
 Published layout (what a share or the release zip holds): `MakinoMCP.exe` (launcher) + `.config`, `current.txt`,
 `MakinoMCP.settings.example.json`, `versions\<build>\` (`MakinoMCP.exe` self-contained, single file, compressed;

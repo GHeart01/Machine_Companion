@@ -165,10 +165,11 @@ New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
 Run 'main publish' {
     dotnet publish $main -c Release -r win-x64 --self-contained -p:PublishSingleFile=true `
         -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:Version=$Version `
-        "-p:InformationalVersion=$build" -p:IncludeSourceRevisionInInformationalVersion=false -o $buildDir --nologo
+        -p:IncludeSourceRevisionInInformationalVersion=false -o $buildDir --nologo
 }
-# The launcher carries the plain version (no build stamp, no commit), so publishes of one version leave its hash, and
-# the launcher on the share, alone. SignPath checks both exes' product name and version before signing.
+# Both exes carry the plain version as their product version (no build stamp, no commit): SignPath wants one product
+# version across a build, and publishes of one version then leave the launcher's hash, and the launcher on the share,
+# alone. The build stamp is in the folder name, version.txt and build.txt.
 Run 'launcher publish' {
     dotnet publish $launcher -c Release -p:Version=$Version -p:IncludeSourceRevisionInInformationalVersion=false `
         -o $layout --nologo

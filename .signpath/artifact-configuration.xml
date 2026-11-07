@@ -4,15 +4,15 @@
   artifact configuration on signpath.io, and paste it again whenever it changes here.
 
   The release workflow uploads artifacts/layout (as a zip) and passes two parameters:
-    version  the release version, e.g. 0.7.0 (the launcher's product version)
-    build    the build folder, e.g. 0.7.0-20261107-1200 (the app's product version)
+    version  the release version, e.g. 0.7.0: the product version of both exes (SignPath wants one per build)
+    build    the build folder, e.g. 0.7.0-20261107-1200
   Only the two exes are signed, and only when their product name and version match; every other file passes through
-  unchanged (the workflow checks that).
+  unchanged (the workflow checks that). The defaults never match a real build, so a missing parameter fails the request.
 -->
 <artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
   <parameters>
-    <parameter name="version" />
-    <parameter name="build" />
+    <parameter name="version" default-value="0.0.0" />
+    <parameter name="build" default-value="none" />
   </parameters>
   <zip-file>
     <!-- The launcher (net48): the file Claude starts. -->
@@ -21,7 +21,7 @@
     </pe-file>
     <!-- The app (net10.0, self-contained single file). -->
     <directory path="versions/${build}">
-      <pe-file path="MakinoMCP.exe" product-name="MakinoMCP" product-version="${build}">
+      <pe-file path="MakinoMCP.exe" product-name="MakinoMCP" product-version="${version}">
         <authenticode-sign />
       </pe-file>
     </directory>
