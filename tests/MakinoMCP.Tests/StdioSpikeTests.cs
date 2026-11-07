@@ -415,6 +415,72 @@ public class StdioSpikeTests
         }
     }
 
+    // A release-zip install (marker beside the launcher, on this PC's disk) runs its build where it is: nothing is
+    // copied to %LOCALAPPDATA%\MakinoMCP\app, and with updates off no update process starts.
+    [Fact]
+    public async Task Release_zip_install_runs_in_place()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var install = Path.Combine(root, "install");
+            var localAppData = Path.Combine(root, "localappdata");
+            Directory.CreateDirectory(localAppData);
+            var (launcherOut, mainOut) = BuildOutputs();
+            CopyDir(launcherOut, install);
+            File.WriteAllText(Path.Combine(install, "current.txt"), "0.0.0-test");
+            CopyDir(mainOut, Path.Combine(install, "versions", "0.0.0-test"));
+            File.WriteAllText(Path.Combine(install, "MakinoMCP.update.json"),
+                "{ \"source\": \"github\", \"repository\": \"GHeart01/Machine_Companion\" }");
+            File.WriteAllText(Path.Combine(install, "MakinoMCP.settings.json"), "{ \"updates\": \"off\" }");
+
+            var transport = NewTransport(install, localAppData);
+            await using (var client = await McpClient.CreateAsync(transport))
+            {
+                Assert.Contains("get_cell_overview", (await client.ListToolsAsync()).Select(t => t.Name));
+                var running = ProcessesUnder(root).Select(p => p.MainModule!.FileName).ToList();
+                Assert.Contains(running, f => f.EndsWith(Path.Combine("versions", "0.0.0-test", "MakinoMCP.exe"), StringComparison.OrdinalIgnoreCase));
+            }
+            Assert.False(Directory.Exists(Path.Combine(localAppData, "MakinoMCP", "app")));
+            Assert.False(File.Exists(Path.Combine(localAppData, "MakinoMCP", "update-state.json")));
+        }
+        finally
+        {
+            await CleanUp(root);
+        }
+    }
+
+    // Updates on but checked an hour ago: no update process, no request to GitHub.
+    [Fact]
+    public async Task Release_zip_install_waits_six_hours_between_checks()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var install = Path.Combine(root, "install");
+            var localAppData = Path.Combine(root, "localappdata");
+            var state = Path.Combine(localAppData, "MakinoMCP", "update-state.json");
+            Directory.CreateDirectory(Path.GetDirectoryName(state)!);
+            var stateText = "{\"lastAttemptUtc\":\"" + DateTime.UtcNow.AddHours(-1).ToString("yyyy-MM-ddTHH:mm:ssZ") + "\",\"result\":\"up-to-date\"}";
+            File.WriteAllText(state, stateText);
+            var (launcherOut, mainOut) = BuildOutputs();
+            CopyDir(launcherOut, install);
+            File.WriteAllText(Path.Combine(install, "current.txt"), "0.0.0-test");
+            CopyDir(mainOut, Path.Combine(install, "versions", "0.0.0-test"));
+            File.WriteAllText(Path.Combine(install, "MakinoMCP.update.json"),
+                "{ \"source\": \"github\", \"repository\": \"GHeart01/Machine_Companion\" }");
+
+            await using (var client = await McpClient.CreateAsync(NewTransport(install, localAppData)))
+                Assert.NotEmpty(await client.ListToolsAsync());
+            await Task.Delay(1500);
+            Assert.Equal(stateText, File.ReadAllText(state));
+        }
+        finally
+        {
+            await CleanUp(root);
+        }
+    }
+
     private static StdioClientTransport NewTransport(string share, string localAppData) => new(new StdioClientTransportOptions
     {
         Name = "makino-spike",

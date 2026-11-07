@@ -24,10 +24,18 @@ namespace MakinoMCP.Launcher
                 // Middle step of StartPrefetch: starts the copy and exits at once, so the copy has no living parent
                 // and survives the MCP client ending the session's process tree.
                 if (args.Length == 2 && args[0] == "--prefetch-detach") { StartDetached("--prefetch", args[1]); return 0; }
+                // Background update of a release-zip install from GitHub; silent, outcome in update-state.json.
+                if (args.Length == 1 && args[0] == "--update") return RunUpdate(launcherDir);
+                if (args.Length == 1 && args[0] == "--update-detach") { StartDetached("--update", null); return 0; }
+
+                // A release-zip install on this PC's own disk runs its build in place and updates itself from GitHub;
+                // anything else (a share) works as before.
+                UpdateDecision update = UpdateSource.DecideForThisPc(launcherDir.TrimEnd('\\'));
                 // Setup (no arguments, or "setup") prepares this PC first: the copy is finished before the setup window
                 // opens, while a small window shows progress. Serving never waits for a copy (see ResolveExe).
-                if (IsSetupMode(args)) PrepareThisPc(launcherDir);
-                string exe = ResolveExe(launcherDir);
+                if (IsSetupMode(args) && !update.GitHubInstall) PrepareThisPc(launcherDir);
+                if (update.UpdatesOn) StartUpdateIfDue(launcherDir);
+                string exe = update.GitHubInstall ? ResolveInPlace(launcherDir) : ResolveExe(launcherDir);
                 if (exe == null)
                 {
                     Console.Error.WriteLine("MakinoMCP: no installed version found.");
@@ -99,6 +107,70 @@ namespace MakinoMCP.Launcher
                 Application.Run(form);
             }
             return error;
+        }
+
+        // %LOCALAPPDATA%\MakinoMCP: the update state file and logs.
+        private static string LocalRoot() => Path.GetDirectoryName(LocalApp());
+
+        private static Updater NewUpdater(string launcherDir, IReleaseSource source)
+        {
+            return new Updater(launcherDir.TrimEnd('\\'), LocalRoot(), source, () => DateTime.UtcNow,
+                Signatures.IsSignPathSigned, d =>
+                {
+                    var running = RunningFolders();
+                    return running.Contains(d.TrimEnd('\\'));
+                });
+        }
+
+        // Starts the background update when the last check is 6 hours old. Never waits and never fails the start.
+        private static void StartUpdateIfDue(string launcherDir)
+        {
+            try
+            {
+                if (NewUpdater(launcherDir, null).Due()) StartDetached("--update-detach", null);
+            }
+            catch { }
+        }
+
+        private static int RunUpdate(string launcherDir)
+        {
+            try
+            {
+                // Checked again here: the settings or the environment may have changed since the start asked.
+                if (!UpdateSource.DecideForThisPc(launcherDir.TrimEnd('\\')).UpdatesOn) return 0;
+                using (var source = new GitHubReleaseSource())
+                {
+                    var updater = NewUpdater(launcherDir, source);
+                    if (updater.Due()) updater.Run();
+                }
+                return 0;
+            }
+            catch
+            {
+                return 1;
+            }
+        }
+
+        // A release-zip install runs versions\<current.txt>\MakinoMCP.exe where it is: it's on this PC's disk already,
+        // so the copy to %LOCALAPPDATA% (there because a share is slow) gains nothing, and keeping out of that folder
+        // keeps a share install on the same PC from deleting this install's builds. Falls back to the newest build.
+        private static string ResolveInPlace(string launcherDir)
+        {
+            string versions = Path.Combine(launcherDir, "versions");
+            string current = UpdateApplier.ReadCurrent(launcherDir);
+            if (current != null && IsValidVersion(current))
+            {
+                string exe = Path.Combine(versions, current, "MakinoMCP.exe");
+                if (File.Exists(exe)) return exe;
+            }
+            Console.Error.WriteLine("MakinoMCP: the build in current.txt is missing; using the newest build in " + versions + ".");
+            if (!Directory.Exists(versions)) return null;
+            return Directory.GetDirectories(versions)
+                .Where(d => !Path.GetFileName(d).StartsWith(".") && Path.GetFileName(d).IndexOf(".tmp", StringComparison.OrdinalIgnoreCase) < 0)
+                .Where(d => File.Exists(Path.Combine(d, "MakinoMCP.exe")))
+                .OrderByDescending(d => Directory.GetCreationTimeUtc(d))
+                .Select(d => Path.Combine(d, "MakinoMCP.exe"))
+                .FirstOrDefault();
         }
 
         private static string LocalApp()
@@ -236,7 +308,7 @@ namespace MakinoMCP.Launcher
             StartDetached("--prefetch-detach", version);
         }
 
-        // Starts "MakinoMCP.exe <verb> <version>" detached: out of the client's job when the job allows it,
+        // Starts "MakinoMCP.exe <verb> [<version>]" detached: out of the client's job when the job allows it,
         // bInheritHandles FALSE and no std handles, so it can't hold the MCP client's stdio pipes open.
         private static void StartDetached(string verb, string version)
         {
@@ -246,10 +318,11 @@ namespace MakinoMCP.Launcher
                 var si = new STARTUPINFO();
                 si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
                 PROCESS_INFORMATION pi;
+                string commandLine = Quote(self) + " " + verb + (version == null ? "" : " " + Quote(version));
                 // A job that forbids breakaway refuses the flag (access denied): then start inside the job.
-                if (!CreateProcessW(null, new StringBuilder(Quote(self) + " " + verb + " " + Quote(version)), IntPtr.Zero, IntPtr.Zero,
+                if (!CreateProcessW(null, new StringBuilder(commandLine), IntPtr.Zero, IntPtr.Zero,
                         false, CreateNoWindow | CreateBreakawayFromJob, IntPtr.Zero, Path.GetTempPath(), ref si, out pi)
-                    && !CreateProcessW(null, new StringBuilder(Quote(self) + " " + verb + " " + Quote(version)), IntPtr.Zero, IntPtr.Zero,
+                    && !CreateProcessW(null, new StringBuilder(commandLine), IntPtr.Zero, IntPtr.Zero,
                         false, CreateNoWindow, IntPtr.Zero, Path.GetTempPath(), ref si, out pi))
                 {
                     Console.Error.WriteLine("MakinoMCP: could not start the background copy (Win32 error " + Marshal.GetLastWin32Error() + ").");

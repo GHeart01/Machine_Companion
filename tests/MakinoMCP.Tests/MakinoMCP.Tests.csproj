@@ -17,6 +17,7 @@
     <Compile Include="..\..\src\MakinoMCP.Launcher\ReleaseInfo.cs" Link="Launcher\ReleaseInfo.cs" />
     <Compile Include="..\..\src\MakinoMCP.Launcher\UpdateApplier.cs" Link="Launcher\UpdateApplier.cs" />
     <Compile Include="..\..\src\MakinoMCP.Launcher\Signatures.cs" Link="Launcher\Signatures.cs" />
+    <Compile Include="..\..\src\MakinoMCP.Launcher\Updater.cs" Link="Launcher\Updater.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\MakinoMCP\MakinoMCP.csproj" />
