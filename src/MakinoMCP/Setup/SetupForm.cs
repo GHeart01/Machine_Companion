@@ -64,6 +64,8 @@ internal sealed class SetupForm : Form
 
     // Updates (release-zip installs only)
     private readonly bool _gitHubInstall;
+    private readonly string? _notUpdatingReason;
+    private readonly string? _installedFrom;
     private string _updates = "auto"; // kept as loaded when the section is hidden
     private readonly CheckBox _autoUpdate = new()
     {
@@ -80,11 +82,15 @@ internal sealed class SetupForm : Form
     private readonly Button _save = ActionButton("Sa&ve");
     private readonly Button _close = ActionButton("Close");
 
-    public SetupForm(string settingsPath)
+    public SetupForm(string settingsPath, string? installedFrom = null)
     {
         _settingsPath = Path.GetFullPath(settingsPath);
-        // The launcher sits beside the settings file; only a release-zip install on this PC's own disk updates itself.
-        _gitHubInstall = MakinoMCP.Launcher.UpdateSource.DecideForThisPc(Path.GetDirectoryName(_settingsPath) ?? "").GitHubInstall;
+        // The share's launcher, as Claude would have it registered (a UNC path, not a mapped letter).
+        _installedFrom = installedFrom is null ? null : UncPath.FromMapped(installedFrom, UncPath.DriveToUnc);
+        // The launcher sits beside the settings file; only an install on this PC's own disk updates itself.
+        var decision = MakinoMCP.Launcher.UpdateSource.DecideForThisPc(Path.GetDirectoryName(_settingsPath) ?? "");
+        _gitHubInstall = decision.GitHubInstall;
+        _notUpdatingReason = decision.Reason;
 
         SuspendLayout();
         AutoScaleDimensions = new SizeF(96F, 96F);
@@ -111,7 +117,7 @@ internal sealed class SetupForm : Form
         BuildCellDatabase(root);
         BuildSharedFolders(root);
         BuildConnectClaude(root);
-        if (_gitHubInstall) BuildUpdates(root);
+        BuildUpdates(root);
         BuildBottomBar(root);
 
         Controls.Add(root);
@@ -261,6 +267,16 @@ internal sealed class SetupForm : Form
     private void BuildUpdates(TableLayoutPanel root)
     {
         Add(root, Heading("Updates"));
+        if (!_gitHubInstall)
+        {
+            // A copy that doesn't update itself: say why, and how to get one that does.
+            _updateStatus.Margin = new Padding(0, 8, 0, 0);
+            _updateStatus.Set(new StatusLine(StatusKind.Warning,
+                $"This copy doesn't update itself: {_notUpdatingReason}. Unzip the release into a folder on this PC, " +
+                @"for example %LOCALAPPDATA%\Programs\MakinoMCP, or open MakinoMCP.exe from the shop's share to install it on this PC."));
+            Add(root, _updateStatus);
+            return;
+        }
         Add(root, _autoUpdate);
         NextTab(_autoUpdate);
         var note = Wrapping("MakinoMCP checks GitHub for a new release at most every 6 hours and installs it in this folder. " +
@@ -780,6 +796,37 @@ internal sealed class SetupForm : Form
     {
         base.OnShown(e);
         await RefreshSwitchAsync();
+        await MoveClaudeHereIfInstalledFromShareAsync();
+    }
+
+    /// <summary>Opened by the share's installer, and Claude starts MakinoMCP from that share: point Claude at this PC's
+    /// copy (Claude Code, and Cowork where it is set up), the same change the switch makes.</summary>
+    private async Task MoveClaudeHereIfInstalledFromShareAsync()
+    {
+        if (_switchFacts is not { } facts || _switch is not { } sw || _switchBusy) return;
+        if (!ClaudeSwitch.ShouldMoveFrom(facts, _installedFrom)) return;
+        var launcher = Launcher();
+        SetSwitchBusy(true);
+        _changingTo = true;
+        _claudeStatus.Set(new StatusLine(StatusKind.Info, "Moving Claude to the copy on this PC…"));
+        StatusLine outcome;
+        try
+        {
+            outcome = await Task.Run(() => sw.TurnOnAsync(launcher, facts.Claude, CancellationToken.None));
+            if (outcome.Kind != StatusKind.Error)
+                outcome = new StatusLine(StatusKind.Success,
+                    $"MakinoMCP is installed on this PC, and Claude now starts it from here instead of the share. {ClaudeSwitch.RestartText}");
+        }
+        catch (Exception ex) // never a crash or a stack trace: the message in plain words
+        {
+            outcome = new StatusLine(StatusKind.Error, $"Couldn't move Claude to the copy on this PC: {ex.Message}");
+        }
+        finally
+        {
+            _changingTo = null;
+        }
+        if (IsDisposed || _closing.IsCancellationRequested) return;
+        await RefreshSwitchAsync(outcome, turnedOn: true, wasChecked: true);
     }
 
     protected override void OnLoad(EventArgs e)

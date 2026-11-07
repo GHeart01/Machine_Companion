@@ -4,6 +4,8 @@ using Xunit;
 
 namespace MakinoMCP.Tests;
 
+// The real launcher in temp install folders, driven through an MCP client. A copy on this PC runs its build where it
+// is; a copy on the network (reached here through \\127.0.0.1\C$) installs itself on the PC and hands over to that copy.
 public class StdioSpikeTests
 {
     private static readonly string[] ToolNames =
@@ -13,30 +15,61 @@ public class StdioSpikeTests
         "list_shared_folders", "read_file", "search_files",
     ];
 
+    private const string Marker = "{ \"source\": \"github\", \"repository\": \"GHeart01/Machine_Companion\" }";
+    private const string UpdatesOff = "{ \"updates\": \"off\" }";
+
+    private sealed class Folders : IAsyncDisposable
+    {
+        public readonly string Root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
+        public string LocalAppData => Path.Combine(Root, "localappdata");
+        public string PcInstall => Path.Combine(LocalAppData, "Programs", "MakinoMCP");
+        public Folders() => Directory.CreateDirectory(LocalAppData);
+
+        /// <summary>A launcher folder at dir: launcher, current.txt and the build, optionally marker and settings.</summary>
+        public string Layout(string dir, string? current = "0.0.0-test", bool marker = false, string? settings = UpdatesOff, string? buildName = null)
+        {
+            var (launcherOut, mainOut) = BuildOutputs();
+            CopyDir(launcherOut, dir);
+            if (current != null) File.WriteAllText(Path.Combine(dir, "current.txt"), current);
+            CopyDir(mainOut, Path.Combine(dir, "versions", buildName ?? current ?? "0.0.0-test"));
+            if (marker) File.WriteAllText(Path.Combine(dir, "MakinoMCP.update.json"), Marker);
+            // Tests never ask GitHub: updates are off unless a test says otherwise.
+            if (settings != null) File.WriteAllText(Path.Combine(dir, "MakinoMCP.settings.json"), settings);
+            return dir;
+        }
+
+        public StdioClientTransport Transport(string launcherDir) => new(new StdioClientTransportOptions
+        {
+            Name = "makino-spike",
+            Command = Path.Combine(launcherDir, "MakinoMCP.exe"),
+            Arguments = ["serve"],
+            EnvironmentVariables = new Dictionary<string, string?> { ["LOCALAPPDATA"] = LocalAppData },
+        });
+
+        public List<string> Running() => ProcessesUnder(Root).Select(p => p.MainModule!.FileName).ToList();
+
+        public async ValueTask DisposeAsync() => await CleanUp(Root);
+    }
+
+    // \\127.0.0.1\C$\... for a local path: a real network path to the same folder (needs the admin share).
+    private static string? Unc(string path)
+    {
+        var unc = @"\\127.0.0.1\" + path[0] + "$" + path.Substring(2);
+        try { return Directory.Exists(unc) ? unc : null; } catch { return null; }
+    }
+
+    private static bool RunsFrom(List<string> running, string dir) =>
+        running.Any(f => f.StartsWith(dir + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                         && f.EndsWith("MakinoMCP.exe", StringComparison.OrdinalIgnoreCase)
+                         && f.Contains(Path.DirectorySeparatorChar + "versions" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+
     [Fact]
     public async Task Launcher_serves_tools_over_stdio()
     {
-        var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
-        try
+        await using var f = new Folders();
+        var install = f.Layout(Path.Combine(f.Root, "install"));
+        await using (var client = await McpClient.CreateAsync(f.Transport(install)))
         {
-            var share = Path.Combine(root, "share");
-            var localAppData = Path.Combine(root, "localappdata");
-            Directory.CreateDirectory(localAppData);
-
-            var (launcherOut, mainOut) = BuildOutputs();
-            CopyDir(launcherOut, share);
-            File.WriteAllText(Path.Combine(share, "current.txt"), "0.0.0-test");
-            CopyDir(mainOut, Path.Combine(share, "versions", "0.0.0-test"));
-
-            var transport = new StdioClientTransport(new StdioClientTransportOptions
-            {
-                Name = "makino-spike",
-                Command = Path.Combine(share, "MakinoMCP.exe"),
-                Arguments = ["serve"],
-                EnvironmentVariables = new Dictionary<string, string?> { ["LOCALAPPDATA"] = localAppData },
-            });
-
-            await using var client = await McpClient.CreateAsync(transport);
             var tools = await client.ListToolsAsync();
             Assert.Equal(ToolNames.Order(), tools.Select(t => t.Name).Order());
             Assert.Contains("get_cell_overview", client.ServerInstructions);
@@ -45,455 +78,161 @@ public class StdioSpikeTests
             Assert.Contains("\"openOnly\"", alarms);
             Assert.DoesNotContain("context", alarms, StringComparison.OrdinalIgnoreCase);
 
-            // No settings file on the share: every tool still answers, with what to do.
+            // Only "updates": "off" in the settings file: every tool still answers, with what to do.
             var result = await client.CallToolAsync("get_cell_overview");
             var text = Assert.IsType<TextContentBlock>(Assert.Single(result.Content));
-            Assert.Contains("run MakinoMCP.exe", text.Text);
             Assert.Contains("\"error\"", text.Text);
+
+            // The build runs where it is, never from a copy.
+            Assert.True(RunsFrom(f.Running(), install));
         }
-        finally
-        {
-            await CleanUp(root);
-        }
+        Assert.False(Directory.Exists(Path.Combine(f.LocalAppData, "MakinoMCP", "app")));
+        Assert.False(Directory.Exists(f.PcInstall));
     }
 
-    [Fact]
-    public async Task Launcher_runs_newest_local_version_when_share_is_unreachable()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            var share = Path.Combine(root, "share");
-            var localAppData = Path.Combine(root, "localappdata");
-
-            var (launcherOut, mainOut) = BuildOutputs();
-            CopyDir(launcherOut, share); // no current.txt, no app\ folder: the share's content is unreachable
-            CopyDir(mainOut, Path.Combine(localAppData, "MakinoMCP", "app", "0.0.0-local"));
-
-            var transport = new StdioClientTransport(new StdioClientTransportOptions
-            {
-                Name = "makino-spike",
-                Command = Path.Combine(share, "MakinoMCP.exe"),
-                Arguments = ["serve"],
-                EnvironmentVariables = new Dictionary<string, string?> { ["LOCALAPPDATA"] = localAppData },
-            });
-
-            await using var client = await McpClient.CreateAsync(transport);
-            var tools = await client.ListToolsAsync();
-            Assert.Equal(ToolNames.Order(), tools.Select(t => t.Name).Order());
-        }
-        finally
-        {
-            await CleanUp(root);
-        }
-    }
-
-    [Fact]
-    public async Task First_start_serves_from_the_share_and_copies_in_background()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            var share = Path.Combine(root, "share");
-            var localAppData = Path.Combine(root, "localappdata");
-            Directory.CreateDirectory(localAppData);
-
-            var (launcherOut, mainOut) = BuildOutputs();
-            CopyDir(launcherOut, share);
-            File.WriteAllText(Path.Combine(share, "current.txt"), "0.0.0-test");
-            CopyDir(mainOut, Path.Combine(share, "versions", "0.0.0-test"));
-
-            await using (var client = await McpClient.CreateAsync(NewTransport(share, localAppData)))
-            {
-                var tools = await client.ListToolsAsync();
-                Assert.Equal(ToolNames.Order(), tools.Select(t => t.Name).Order());
-            }
-
-            var app = Path.Combine(localAppData, "MakinoMCP", "app");
-            var installed = Path.Combine(app, "0.0.0-test", "MakinoMCP.exe");
-            var deadline = DateTime.UtcNow.AddSeconds(60);
-            while (DateTime.UtcNow < deadline && !File.Exists(installed)) await Task.Delay(200);
-            Assert.True(File.Exists(installed), "the background copy never produced " + installed);
-            Assert.Empty(Directory.GetDirectories(app, "*.tmp*"));
-        }
-        finally
-        {
-            await CleanUp(root);
-        }
-    }
-
-    [Fact]
-    public async Task Second_start_uses_the_local_copy()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            var share = Path.Combine(root, "share");
-            var localAppData = Path.Combine(root, "localappdata");
-
-            var (launcherOut, mainOut) = BuildOutputs();
-            CopyDir(launcherOut, share);
-            File.WriteAllText(Path.Combine(share, "current.txt"), "0.0.0-test");
-            // The share names the version but holds no files for it: only the local copy can serve this session,
-            // and with the copy present no background copy is started.
-            CopyDir(mainOut, Path.Combine(localAppData, "MakinoMCP", "app", "0.0.0-test"));
-
-            await using (var client = await McpClient.CreateAsync(NewTransport(share, localAppData)))
-            {
-                var tools = await client.ListToolsAsync();
-                Assert.Equal(ToolNames.Order(), tools.Select(t => t.Name).Order());
-            }
-
-            Assert.Empty(Directory.GetDirectories(Path.Combine(localAppData, "MakinoMCP", "app"), "*.tmp*"));
-        }
-        finally
-        {
-            await CleanUp(root);
-        }
-    }
-
-    [Fact]
-    public async Task A_new_build_is_served_from_the_previous_local_copy_while_it_copies()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            var share = Path.Combine(root, "share");
-            var localAppData = Path.Combine(root, "localappdata");
-
-            var (launcherOut, mainOut) = BuildOutputs();
-            CopyDir(launcherOut, share);
-            File.WriteAllText(Path.Combine(share, "current.txt"), "0.0.0-new");
-            // The new build on the share can't run at all, so a working session proves the previous local copy served it.
-            var newBuild = Directory.CreateDirectory(Path.Combine(share, "versions", "0.0.0-new")).FullName;
-            File.WriteAllText(Path.Combine(newBuild, "MakinoMCP.exe"), "not a program");
-            CopyDir(mainOut, Path.Combine(localAppData, "MakinoMCP", "app", "0.0.0-old"));
-
-            await using (var client = await McpClient.CreateAsync(NewTransport(share, localAppData)))
-            {
-                var tools = await client.ListToolsAsync();
-                Assert.Equal(ToolNames.Order(), tools.Select(t => t.Name).Order());
-            }
-
-            var copied = Path.Combine(localAppData, "MakinoMCP", "app", "0.0.0-new", "MakinoMCP.exe");
-            var deadline = DateTime.UtcNow.AddSeconds(30);
-            while (DateTime.UtcNow < deadline && !File.Exists(copied)) await Task.Delay(200);
-            Assert.True(File.Exists(copied), "the new build was never copied in the background");
-        }
-        finally
-        {
-            await CleanUp(root);
-        }
-    }
-
-    [Fact]
-    public async Task Prefetch_does_not_hold_the_clients_stdout_open()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            var share = Path.Combine(root, "share");
-            var localAppData = Path.Combine(root, "localappdata");
-            Directory.CreateDirectory(localAppData);
-
-            var (launcherOut, mainOut) = BuildOutputs();
-            CopyDir(launcherOut, share);
-            File.WriteAllText(Path.Combine(share, "current.txt"), "0.0.0-test");
-            var version = Path.Combine(share, "versions", "0.0.0-test");
-            CopyDir(mainOut, version);
-            var pad = Directory.CreateDirectory(Path.Combine(version, "pad")).FullName;
-            for (var i = 0; i < 12000; i++) File.WriteAllText(Path.Combine(pad, $"f{i}.txt"), "x");
-
-            var psi = new System.Diagnostics.ProcessStartInfo(Path.Combine(share, "MakinoMCP.exe"), "serve")
-            {
-                UseShellExecute = false,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-            };
-            psi.Environment["LOCALAPPDATA"] = localAppData;
-            using var launcher = System.Diagnostics.Process.Start(psi)!;
-            var stderr = launcher.StandardError.ReadToEndAsync();
-            await Task.Delay(1500);
-            launcher.StandardInput.Close();
-            Assert.True(launcher.WaitForExit(20000), "launcher did not exit after stdin closed");
-
-            var eof = launcher.StandardOutput.ReadToEndAsync();
-            var finished = await Task.WhenAny(eof, Task.Delay(5000));
-            var prefetchStillCopying = Directory.GetDirectories(Path.Combine(localAppData, "MakinoMCP", "app"), "*.tmp*").Length > 0;
-            Assert.True(finished == eof, "stdout stayed open after the launcher exited (the prefetch inherited the pipe)");
-            Assert.True(prefetchStillCopying, "the copy finished too early for this test to prove anything; add more files");
-        }
-        finally
-        {
-            await CleanUp(root);
-        }
-    }
-
-    [Fact]
-    public async Task The_copy_survives_the_client_killing_the_sessions_process_tree()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            var share = Path.Combine(root, "share");
-            var localAppData = Path.Combine(root, "localappdata");
-            Directory.CreateDirectory(localAppData);
-
-            var (launcherOut, mainOut) = BuildOutputs();
-            CopyDir(launcherOut, share);
-            File.WriteAllText(Path.Combine(share, "current.txt"), "0.0.0-test");
-            var version = Path.Combine(share, "versions", "0.0.0-test");
-            CopyDir(mainOut, version);
-            var pad = Directory.CreateDirectory(Path.Combine(version, "pad")).FullName;
-            for (var i = 0; i < 12000; i++) File.WriteAllText(Path.Combine(pad, $"f{i}.txt"), "x");
-
-            var psi = new System.Diagnostics.ProcessStartInfo(Path.Combine(share, "MakinoMCP.exe"), "serve")
-            {
-                UseShellExecute = false,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-            };
-            psi.Environment["LOCALAPPDATA"] = localAppData;
-            using var launcher = System.Diagnostics.Process.Start(psi)!;
-            _ = launcher.StandardOutput.ReadToEndAsync();
-            _ = launcher.StandardError.ReadToEndAsync();
-            var app = Path.Combine(localAppData, "MakinoMCP", "app");
-            var started = DateTime.UtcNow.AddSeconds(20);
-            while (DateTime.UtcNow < started && !(Directory.Exists(app) && Directory.GetDirectories(app, "*.tmp*").Length > 0))
-                await Task.Delay(100);
-            Assert.True(Directory.GetDirectories(app, "*.tmp*").Length > 0, "the background copy never started");
-
-            // What an MCP client does when a session closes: end the whole tree, as taskkill /T /F does.
-            launcher.Kill(entireProcessTree: true);
-            launcher.WaitForExit(10000);
-
-            var installed = Path.Combine(app, "0.0.0-test", "MakinoMCP.exe");
-            var deadline = DateTime.UtcNow.AddSeconds(90);
-            while (DateTime.UtcNow < deadline && !File.Exists(installed)) await Task.Delay(200);
-            Assert.True(File.Exists(installed), "the copy died with the session's process tree");
-        }
-        finally
-        {
-            await CleanUp(root);
-        }
-    }
-
-    [Fact]
-    public async Task Setup_copies_to_this_pc_before_starting_the_local_copy()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            var share = Path.Combine(root, "share");
-            var localAppData = Path.Combine(root, "localappdata");
-            Directory.CreateDirectory(localAppData);
-
-            var (launcherOut, _) = BuildOutputs();
-            CopyDir(launcherOut, share);
-            File.WriteAllText(Path.Combine(share, "current.txt"), "0.0.0-test");
-            // Stand-in for the main exe: cmd.exe prints its prompt, which names the folder it was started in.
-            var version = Directory.CreateDirectory(Path.Combine(share, "versions", "0.0.0-test")).FullName;
-            File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), Path.Combine(version, "MakinoMCP.exe"));
-
-            var psi = new System.Diagnostics.ProcessStartInfo(Path.Combine(share, "MakinoMCP.exe"), "setup")
-            {
-                UseShellExecute = false,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-            };
-            psi.Environment["LOCALAPPDATA"] = localAppData;
-            psi.Environment["MAKINOMCP_NO_WINDOW"] = "1"; // tests never show the progress window
-            using var launcher = System.Diagnostics.Process.Start(psi)!;
-            var stdout = launcher.StandardOutput.ReadToEndAsync();
-            var stderr = launcher.StandardError.ReadToEndAsync();
-            launcher.StandardInput.Close();
-            Assert.True(launcher.WaitForExit(30000), "launcher did not exit");
-
-            var installed = Path.Combine(localAppData, "MakinoMCP", "app", "0.0.0-test");
-            Assert.True(File.Exists(Path.Combine(installed, "MakinoMCP.exe")), "setup did not copy the version to this PC");
-            Assert.Empty(Directory.GetDirectories(Path.Combine(localAppData, "MakinoMCP", "app"), "*.tmp*"));
-            // The child ran from the local copy, and the copy was complete before it started (no background copy to wait for).
-            Assert.Contains(installed, await stdout, StringComparison.OrdinalIgnoreCase);
-            Assert.DoesNotContain("share", (await stderr).Replace(root, ""), StringComparison.OrdinalIgnoreCase);
-        }
-        finally
-        {
-            await CleanUp(root);
-        }
-    }
-
-    [Fact]
-    public async Task Setup_falls_back_to_the_share_when_the_copy_fails()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            var share = Path.Combine(root, "share");
-            var localAppData = Path.Combine(root, "localappdata");
-            Directory.CreateDirectory(localAppData);
-
-            var (launcherOut, _) = BuildOutputs();
-            CopyDir(launcherOut, share);
-            File.WriteAllText(Path.Combine(share, "current.txt"), "0.0.0-test");
-            var version = Directory.CreateDirectory(Path.Combine(share, "versions", "0.0.0-test")).FullName;
-            File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), Path.Combine(version, "MakinoMCP.exe"));
-            var locked = Path.Combine(version, "zz-locked.bin"); // copied after the exe, so the copy fails part-way
-            File.WriteAllText(locked, "x");
-
-            var psi = new System.Diagnostics.ProcessStartInfo(Path.Combine(share, "MakinoMCP.exe"), "setup")
-            {
-                UseShellExecute = false,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-            };
-            psi.Environment["LOCALAPPDATA"] = localAppData;
-            psi.Environment["MAKINOMCP_NO_WINDOW"] = "1";
-            string output, error;
-            using (new FileStream(locked, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
-            {
-                using var launcher = System.Diagnostics.Process.Start(psi)!;
-                var stdout = launcher.StandardOutput.ReadToEndAsync();
-                var stderr = launcher.StandardError.ReadToEndAsync();
-                launcher.StandardInput.Close();
-                Assert.True(launcher.WaitForExit(30000), "launcher did not exit");
-                output = await stdout;
-                error = await stderr;
-            }
-
-            Assert.Contains("Couldn't copy MakinoMCP to this PC", error);
-            Assert.Contains("Opening it from the share instead", error);
-            Assert.Contains(version, output, StringComparison.OrdinalIgnoreCase); // the share copy was started
-            // The background prefetch the share run starts fails too and cleans up; wait for it.
-            var app = Path.Combine(localAppData, "MakinoMCP", "app");
-            var deadline = DateTime.UtcNow.AddSeconds(15);
-            while (DateTime.UtcNow < deadline && Directory.Exists(app) && Directory.GetDirectories(app, "*.tmp*").Length > 0)
-                await Task.Delay(200);
-            Assert.False(Directory.Exists(app) && Directory.GetDirectories(app, "*.tmp*").Length > 0, "a .tmp folder was left behind");
-            Assert.False(Directory.Exists(Path.Combine(app, "0.0.0-test")));
-        }
-        finally
-        {
-            await CleanUp(root);
-        }
-    }
-
-    [Fact]
-    public async Task Invalid_version_in_current_txt_falls_back_to_newest_local()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            var share = Path.Combine(root, "share");
-            var localAppData = Path.Combine(root, "localappdata");
-
-            var (launcherOut, mainOut) = BuildOutputs();
-            CopyDir(launcherOut, share);
-            File.WriteAllText(Path.Combine(share, "current.txt"), @"..\..\escape");
-            CopyDir(mainOut, Path.Combine(root, "escape")); // what a traversal would reach
-            CopyDir(mainOut, Path.Combine(localAppData, "MakinoMCP", "app", "0.0.0-local"));
-
-            await using (var client = await McpClient.CreateAsync(NewTransport(share, localAppData)))
-            {
-                var tools = await client.ListToolsAsync();
-                Assert.Equal(ToolNames.Order(), tools.Select(t => t.Name).Order());
-            }
-
-            Assert.False(Directory.Exists(Path.Combine(localAppData, "escape")) || Directory.Exists(Path.Combine(localAppData, "escape.tmp")));
-            Assert.Equal(["0.0.0-local"], Directory.GetDirectories(Path.Combine(localAppData, "MakinoMCP", "app")).Select(Path.GetFileName));
-        }
-        finally
-        {
-            await CleanUp(root);
-        }
-    }
-
-    // A release-zip install (marker beside the launcher, on this PC's disk) runs its build where it is: nothing is
-    // copied to %LOCALAPPDATA%\MakinoMCP\app, and with updates off no update process starts.
     [Fact]
     public async Task Release_zip_install_runs_in_place()
     {
-        var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
-        try
+        await using var f = new Folders();
+        var install = f.Layout(Path.Combine(f.Root, "install"), marker: true);
+        await using (var client = await McpClient.CreateAsync(f.Transport(install)))
         {
-            var install = Path.Combine(root, "install");
-            var localAppData = Path.Combine(root, "localappdata");
-            Directory.CreateDirectory(localAppData);
-            var (launcherOut, mainOut) = BuildOutputs();
-            CopyDir(launcherOut, install);
-            File.WriteAllText(Path.Combine(install, "current.txt"), "0.0.0-test");
-            CopyDir(mainOut, Path.Combine(install, "versions", "0.0.0-test"));
-            File.WriteAllText(Path.Combine(install, "MakinoMCP.update.json"),
-                "{ \"source\": \"github\", \"repository\": \"GHeart01/Machine_Companion\" }");
-            File.WriteAllText(Path.Combine(install, "MakinoMCP.settings.json"), "{ \"updates\": \"off\" }");
-
-            var transport = NewTransport(install, localAppData);
-            await using (var client = await McpClient.CreateAsync(transport))
-            {
-                Assert.Contains("get_cell_overview", (await client.ListToolsAsync()).Select(t => t.Name));
-                var running = ProcessesUnder(root).Select(p => p.MainModule!.FileName).ToList();
-                Assert.Contains(running, f => f.EndsWith(Path.Combine("versions", "0.0.0-test", "MakinoMCP.exe"), StringComparison.OrdinalIgnoreCase));
-            }
-            Assert.False(Directory.Exists(Path.Combine(localAppData, "MakinoMCP", "app")));
-            Assert.False(File.Exists(Path.Combine(localAppData, "MakinoMCP", "update-state.json")));
+            Assert.Contains("get_cell_overview", (await client.ListToolsAsync()).Select(t => t.Name));
+            Assert.True(RunsFrom(f.Running(), install));
         }
-        finally
-        {
-            await CleanUp(root);
-        }
+        Assert.False(File.Exists(Path.Combine(f.LocalAppData, "MakinoMCP", "update-state.json")));
     }
 
     // Updates on but checked an hour ago: no update process, no request to GitHub.
     [Fact]
     public async Task Release_zip_install_waits_six_hours_between_checks()
     {
-        var root = Path.Combine(Path.GetTempPath(), "makinomcp-spike-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            var install = Path.Combine(root, "install");
-            var localAppData = Path.Combine(root, "localappdata");
-            var state = Path.Combine(localAppData, "MakinoMCP", "update-state.json");
-            Directory.CreateDirectory(Path.GetDirectoryName(state)!);
-            var stateText = "{\"lastAttemptUtc\":\"" + DateTime.UtcNow.AddHours(-1).ToString("yyyy-MM-ddTHH:mm:ssZ") + "\",\"result\":\"up-to-date\"}";
-            File.WriteAllText(state, stateText);
-            var (launcherOut, mainOut) = BuildOutputs();
-            CopyDir(launcherOut, install);
-            File.WriteAllText(Path.Combine(install, "current.txt"), "0.0.0-test");
-            CopyDir(mainOut, Path.Combine(install, "versions", "0.0.0-test"));
-            File.WriteAllText(Path.Combine(install, "MakinoMCP.update.json"),
-                "{ \"source\": \"github\", \"repository\": \"GHeart01/Machine_Companion\" }");
+        await using var f = new Folders();
+        var install = f.Layout(Path.Combine(f.Root, "install"), marker: true, settings: null);
+        var state = Path.Combine(f.LocalAppData, "MakinoMCP", "update-state.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(state)!);
+        var stateText = "{\"lastAttemptUtc\":\"" + DateTime.UtcNow.AddHours(-1).ToString("yyyy-MM-ddTHH:mm:ssZ") + "\",\"result\":\"up-to-date\"}";
+        File.WriteAllText(state, stateText);
 
-            await using (var client = await McpClient.CreateAsync(NewTransport(install, localAppData)))
-                Assert.NotEmpty(await client.ListToolsAsync());
-            await Task.Delay(1500);
-            Assert.Equal(stateText, File.ReadAllText(state));
-        }
-        finally
+        await using (var client = await McpClient.CreateAsync(f.Transport(install)))
+            Assert.NotEmpty(await client.ListToolsAsync());
+        await Task.Delay(1500);
+        Assert.Equal(stateText, File.ReadAllText(state));
+    }
+
+    // The developer layout: the app in app\ beside the launcher, no current.txt.
+    [Fact]
+    public async Task Dev_layout_runs_app_folder()
+    {
+        await using var f = new Folders();
+        var dir = Path.Combine(f.Root, "dev");
+        var (launcherOut, mainOut) = BuildOutputs();
+        CopyDir(launcherOut, dir);
+        CopyDir(mainOut, Path.Combine(dir, "app"));
+        await using var client = await McpClient.CreateAsync(f.Transport(dir));
+        Assert.NotEmpty(await client.ListToolsAsync());
+        Assert.Contains(f.Running(), p => p.EndsWith(Path.Combine("dev", "app", "MakinoMCP.exe"), StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Theory]
+    [InlineData("0.0.0-gone")]
+    [InlineData(@"..\..\escape")]
+    public async Task Missing_or_invalid_build_runs_newest(string current)
+    {
+        await using var f = new Folders();
+        var install = f.Layout(Path.Combine(f.Root, "install"), current: current, buildName: "0.0.0-there");
+        await using var client = await McpClient.CreateAsync(f.Transport(install));
+        Assert.NotEmpty(await client.ListToolsAsync());
+        Assert.Contains(f.Running(), p => p.EndsWith(Path.Combine("versions", "0.0.0-there", "MakinoMCP.exe"), StringComparison.OrdinalIgnoreCase));
+    }
+
+    // Copies older versions made in %LOCALAPPDATA%\MakinoMCP\app are removed once nothing runs from them.
+    [Fact]
+    public async Task Old_cache_is_tidied()
+    {
+        await using var f = new Folders();
+        var install = f.Layout(Path.Combine(f.Root, "install"));
+        var app = Path.Combine(f.LocalAppData, "MakinoMCP", "app");
+        Directory.CreateDirectory(Path.Combine(app, "0.6.0-old"));
+        File.WriteAllText(Path.Combine(app, "0.6.0-old", "MakinoMCP.exe"), "old copy");
+
+        await using (var client = await McpClient.CreateAsync(f.Transport(install)))
+            Assert.NotEmpty(await client.ListToolsAsync());
+        var deadline = DateTime.UtcNow.AddSeconds(20);
+        while (DateTime.UtcNow < deadline && Directory.Exists(app)) await Task.Delay(200);
+        Assert.False(Directory.Exists(app));
+    }
+
+    // A PC that already has its own copy: the share's launcher hands the session to it.
+    [SkippableFact]
+    public async Task Share_hands_over_to_the_pcs_copy()
+    {
+        await using var f = new Folders();
+        var share = Unc(f.Layout(Path.Combine(f.Root, "share"), settings: null));
+        Skip.If(share is null, @"\\127.0.0.1\C$ isn't reachable here");
+        f.Layout(f.PcInstall, current: "0.0.0-pc", marker: true);
+
+        await using (var client = await McpClient.CreateAsync(f.Transport(share!)))
         {
-            await CleanUp(root);
+            Assert.NotEmpty(await client.ListToolsAsync());
+            Assert.True(RunsFrom(f.Running(), f.PcInstall), "the session should run the PC's copy");
         }
     }
 
-    private static StdioClientTransport NewTransport(string share, string localAppData) => new(new StdioClientTransportOptions
+    // The first start from a share on a PC: served from the share, while the PC's copy installs in the background.
+    [SkippableFact]
+    public async Task Share_serves_first_and_installs_on_the_pc()
     {
-        Name = "makino-spike",
-        Command = Path.Combine(share, "MakinoMCP.exe"),
-        Arguments = ["serve"],
-        EnvironmentVariables = new Dictionary<string, string?> { ["LOCALAPPDATA"] = localAppData },
-    });
+        await using var f = new Folders();
+        var share = Unc(f.Layout(Path.Combine(f.Root, "share"), settings: UpdatesOff));
+        Skip.If(share is null, @"\\127.0.0.1\C$ isn't reachable here");
 
-    // A detached prefetch may still be copying and holds files in the layout: wait for it (kill after a timeout),
-    // then delete, retrying while Windows releases the executables.
+        await using (var client = await McpClient.CreateAsync(f.Transport(share!)))
+            Assert.NotEmpty(await client.ListToolsAsync());
+
+        var installed = Path.Combine(f.PcInstall, "versions", "0.0.0-test", "MakinoMCP.exe");
+        var deadline = DateTime.UtcNow.AddSeconds(60);
+        while (DateTime.UtcNow < deadline && !File.Exists(Path.Combine(f.PcInstall, "current.txt"))) await Task.Delay(200);
+        Assert.True(File.Exists(installed), "the PC's copy was never installed");
+        Assert.True(File.Exists(Path.Combine(f.PcInstall, "MakinoMCP.update.json")));
+        Assert.Contains("off", File.ReadAllText(Path.Combine(f.PcInstall, "MakinoMCP.settings.json")));
+
+        // The next start runs the PC's copy.
+        await using (var client = await McpClient.CreateAsync(f.Transport(share!)))
+        {
+            Assert.NotEmpty(await client.ListToolsAsync());
+            Assert.True(RunsFrom(f.Running(), f.PcInstall));
+        }
+    }
+
+    // Opening MakinoMCP.exe on the share installs it on the PC and opens the PC copy's setup window.
+    [SkippableFact]
+    public async Task Share_setup_installs_and_opens_the_pcs_setup()
+    {
+        await using var f = new Folders();
+        var share = Unc(f.Layout(Path.Combine(f.Root, "share"), settings: UpdatesOff));
+        Skip.If(share is null, @"\\127.0.0.1\C$ isn't reachable here");
+
+        var psi = new System.Diagnostics.ProcessStartInfo(Path.Combine(share!, "MakinoMCP.exe")) { UseShellExecute = false };
+        psi.Environment["LOCALAPPDATA"] = f.LocalAppData;
+        psi.Environment["MAKINOMCP_NO_WINDOW"] = "1"; // no progress window in tests
+        using (var p = System.Diagnostics.Process.Start(psi)!)
+        {
+            Assert.True(p.WaitForExit(120_000));
+            Assert.Equal(0, p.ExitCode);
+        }
+        Assert.True(File.Exists(Path.Combine(f.PcInstall, "versions", "0.0.0-test", "MakinoMCP.exe")));
+        // The PC's launcher started its setup window (closed again by the clean-up).
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (DateTime.UtcNow < deadline && !RunsFrom(f.Running(), f.PcInstall)) await Task.Delay(200);
+        Assert.True(RunsFrom(f.Running(), f.PcInstall), "the PC copy's setup window should be open");
+    }
+
+    // A detached process may still be running and holds files in the layout: wait for it (kill after a timeout),
+    // then delete, retrying while Windows releases the executables. Setup windows never exit on their own.
     private static async Task CleanUp(string root)
     {
-        var deadline = DateTime.UtcNow.AddSeconds(90);
+        var deadline = DateTime.UtcNow.AddSeconds(30);
         while (DateTime.UtcNow < deadline && ProcessesUnder(root).Any()) await Task.Delay(200);
         foreach (var p in ProcessesUnder(root))
         {
@@ -506,14 +245,18 @@ public class StdioSpikeTests
         }
     }
 
+    // Processes started from root, by its local path or through \\127.0.0.1\C$.
     private static List<System.Diagnostics.Process> ProcessesUnder(string root)
     {
+        var unc = @"\\127.0.0.1\" + root[0] + "$" + root.Substring(2);
         var found = new List<System.Diagnostics.Process>();
         foreach (var p in System.Diagnostics.Process.GetProcessesByName("MakinoMCP"))
         {
             try
             {
-                if (p.MainModule?.FileName.StartsWith(root, StringComparison.OrdinalIgnoreCase) == true) found.Add(p);
+                var file = p.MainModule?.FileName;
+                if (file is not null && (file.StartsWith(root, StringComparison.OrdinalIgnoreCase) || file.StartsWith(unc, StringComparison.OrdinalIgnoreCase)))
+                    found.Add(p);
             }
             catch { }
         }

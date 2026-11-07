@@ -13,6 +13,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="..\..\src\MakinoMCP.Launcher\VersionCopier.cs" Link="VersionCopier.cs" />
+    <Compile Include="..\..\src\MakinoMCP.Launcher\OldCache.cs" Link="Launcher\OldCache.cs" />
+    <Compile Include="..\..\src\MakinoMCP.Launcher\ShareInstaller.cs" Link="Launcher\ShareInstaller.cs" />
     <Compile Include="..\..\src\MakinoMCP.Launcher\UpdateSource.cs" Link="Launcher\UpdateSource.cs" />
     <Compile Include="..\..\src\MakinoMCP.Launcher\ReleaseInfo.cs" Link="Launcher\ReleaseInfo.cs" />
     <Compile Include="..\..\src\MakinoMCP.Launcher\UpdateApplier.cs" Link="Launcher\UpdateApplier.cs" />

@@ -51,6 +51,11 @@ namespace MakinoMCP.Launcher
             return true; // a relative or odd path: don't guess it's local
         }
 
+        /// <summary>A launcher folder that other PCs run from: on the network, or inside a folder this PC shares. Such a
+        /// copy installs itself on each PC instead of running (ShareInstaller).</summary>
+        internal static bool IsInstallerFolder(string dir, Func<string, bool> isNetworkDrive, IEnumerable<string> sharePaths) =>
+            IsNetworkPath(dir, isNetworkDrive) || IsInsideLocalShare(dir, sharePaths);
+
         internal static bool IsNetworkDrive(string root)
         {
             try { return new DriveInfo(root).DriveType == DriveType.Network; }

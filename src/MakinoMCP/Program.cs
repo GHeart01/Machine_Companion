@@ -23,8 +23,17 @@ internal static class Program
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        Application.Run(new SetupForm(SettingsStore.DefaultPath(args)));
+        Application.Run(new SetupForm(SettingsStore.DefaultPath(args), InstalledFrom(args)));
         return 0;
+    }
+
+    // "--installed-from <share launcher>": the share's copy just installed MakinoMCP on this PC and opened this window.
+    private static string? InstalledFrom(string[] args)
+    {
+        for (var i = 0; i < args.Length - 1; i++)
+            if (string.Equals(args[i], "--installed-from", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(args[i + 1]))
+                return args[i + 1];
+        return null;
     }
 
     private static async Task<int> Serve(string[] args)

@@ -19,6 +19,12 @@ public sealed class ClaudeSwitch(
     private const string CoworkMissing = " Cowork doesn't have it: turn this off and on again to add it.";
     private const string CoworkLeft = " Cowork still has it: turn this on and off again to remove it.";
 
+    /// <summary>True when the setup window was opened by the share's installer (<paramref name="installedFrom"/> is the
+    /// share's launcher) and Claude Code starts MakinoMCP from that share: then it moves Claude to this PC's copy.</summary>
+    public static bool ShouldMoveFrom(SwitchFacts f, string? installedFrom) =>
+        installedFrom is not null && f.Claude is { State: RegistrationState.On } c
+        && string.Equals(c.Command, installedFrom, StringComparison.OrdinalIgnoreCase);
+
     public static SwitchView Describe(SwitchFacts f)
     {
         if (f.Claude is null)

@@ -77,6 +77,17 @@ public class UpdateSourceTests : IDisposable
     }
 
     [Fact]
+    public void IsInstallerFolder_network_or_shared_but_not_plain_local()
+    {
+        Func<string, bool> zIsNetwork = root => root.StartsWith("Z", StringComparison.OrdinalIgnoreCase);
+        Assert.True(UpdateSource.IsInstallerFolder(@"\\server\share\MakinoMCP", zIsNetwork, []));
+        Assert.True(UpdateSource.IsInstallerFolder(@"Z:\Tools\MakinoMCP", zIsNetwork, []));
+        Assert.True(UpdateSource.IsInstallerFolder(@"C:\Tools\MakinoMCP", zIsNetwork, [@"C:\Tools"]));
+        Assert.False(UpdateSource.IsInstallerFolder(@"C:\Tools\MakinoMCP", zIsNetwork, []));
+        Assert.False(UpdateSource.IsInstallerFolder(@"C:\Tools\MakinoMCP", zIsNetwork, null));
+    }
+
+    [Fact]
     public void Decide_says_when_the_share_list_couldnt_be_read()
     {
         Marker(GoodMarker);

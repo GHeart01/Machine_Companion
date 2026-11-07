@@ -6,8 +6,8 @@ using System.Runtime.InteropServices;
 
 namespace MakinoMCP.Launcher
 {
-    // The one routine that copies versions\<v> from the share to the PC, used by setup (with progress) and the
-    // detached prefetch (without). Per file it calls CopyFileEx: as fast as File.Copy (measured on the real share,
+    // The one routine that copies a build from the share into the PC's own install (ShareInstaller), used by setup
+    // (with progress) and the detached install (without). Per file it calls CopyFileEx: as fast as File.Copy (measured on the real share,
     // faster than a managed stream loop) and it reports bytes while a big file is copying.
     // Also compiled into the tests, so keep it to plain System APIs.
     internal static class VersionCopier
@@ -63,30 +63,6 @@ namespace MakinoMCP.Launcher
                 foreach (string d in Directory.GetDirectories(local, "*.tmp*"))
                 {
                     if (Directory.GetLastWriteTimeUtc(d) < DateTime.UtcNow.AddHours(-1)) TryDelete(d);
-                }
-            }
-            catch { }
-        }
-
-        // Deletes the other builds copied to this PC, keeping `keep` and every folder inUse says a running MakinoMCP
-        // uses (Windows 11 lets a running exe be deleted, so a failed delete is no guard). Temp folders are left to
-        // CleanStale. Never throws: a folder that can't be deleted now is tried again on the next start.
-        internal static void RemoveOtherVersions(string local, string keep, Func<string, bool> inUse)
-        {
-            try
-            {
-                if (!Directory.Exists(local)) return;
-                foreach (string d in Directory.GetDirectories(local))
-                {
-                    string name = Path.GetFileName(d);
-                    if (string.Equals(name, keep, StringComparison.OrdinalIgnoreCase)) continue;
-                    if (name.IndexOf(".tmp", StringComparison.OrdinalIgnoreCase) >= 0) continue;
-                    if (inUse(d)) continue;
-                    // Renamed first, so an interrupted delete never leaves a build folder without its exe; CleanStale
-                    // removes a leftover .tmp folder later.
-                    string doomed = d + ".tmp-del-" + Guid.NewGuid().ToString("N");
-                    try { Directory.Move(d, doomed); } catch { continue; }
-                    TryDelete(doomed);
                 }
             }
             catch { }

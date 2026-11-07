@@ -9,8 +9,9 @@ using System.Windows.Forms;
 
 namespace MakinoMCP.Launcher
 {
-    // Starts the real MakinoMCP.exe (a local copy if present; otherwise straight from the share while a background copy is made) and pumps
-    // stdin/stdout/stderr between the MCP client and it as raw bytes. Stdout carries only MCP messages.
+    // Starts the install's MakinoMCP.exe (versions\<current.txt>, where it is) and pumps stdin/stdout/stderr between the
+    // MCP client and it as raw bytes. Stdout carries only MCP messages. A copy on a share installs itself on each PC
+    // that opens it (ShareInstaller) and hands over to that copy; every install updates itself from GitHub (Updater).
     internal static class Program
     {
         [STAThread]
@@ -19,17 +20,22 @@ namespace MakinoMCP.Launcher
             try
             {
                 string launcherDir = AppDomain.CurrentDomain.BaseDirectory;
-                // Background copy started when this PC lacks the current build; must stay silent (no stdout/stderr).
-                if (args.Length == 2 && args[0] == "--prefetch") return Prefetch(launcherDir, args[1]);
-                // Middle step of StartPrefetch: starts the copy and exits at once, so the copy has no living parent
-                // and survives the MCP client ending the session's process tree.
-                if (args.Length == 2 && args[0] == "--prefetch-detach") { StartDetached("--prefetch", args[1]); return 0; }
-                // Background update of a release-zip install from GitHub; silent, outcome in update-state.json.
+                // Background install from a share onto this PC; silent (no stdout/stderr).
+                if (args.Length == 1 && args[0] == "--install") return InstallInBackground(launcherDir);
+                // Middle steps of the detached starts: start the work and exit at once, so it has no living parent and
+                // survives the MCP client ending the session's process tree.
+                if (args.Length == 1 && args[0] == "--install-detach") { StartDetached("--install", null); return 0; }
+                // Background update from GitHub; silent, outcome in update-state.json.
                 if (args.Length == 1 && args[0] == "--update") return RunUpdate(launcherDir);
                 if (args.Length == 1 && args[0] == "--update-detach") { StartDetached("--update", null); return 0; }
 
-                // A release-zip install on this PC's own disk runs its build in place and updates itself from GitHub;
-                // anything else (a share) works as before.
+                // A copy on the network, or in a folder this PC shares, is an installer: Claude never runs from it.
+                if (UpdateSource.IsInstallerFolder(launcherDir.TrimEnd('\\'), UpdateSource.IsNetworkDrive, UpdateSource.LocalSharePaths()))
+                    return RunFromShare(launcherDir, args);
+
+                // Copies of older versions that PCs running from a share kept; gone once nothing runs from them.
+                Task.Run(() => OldCache.Tidy(LocalApp(), d => RunningFolders().Contains(d.TrimEnd('\\'))));
+
                 UpdateDecision update = UpdateSource.DecideForThisPc(launcherDir.TrimEnd('\\'));
                 // A release zip that doesn't update itself says why, in the update log (never on stdout).
                 if (update.Repository != null && !update.GitHubInstall)
@@ -37,17 +43,8 @@ namespace MakinoMCP.Launcher
                 if (update.ShareCheckSkipped)
                     Updater.LogLine(LocalRoot(), launcherDir.TrimEnd('\\'), DateTime.UtcNow,
                         "couldn't read this PC's list of shared folders; assumed this folder isn't shared");
-                // Setup (no arguments, or "setup") prepares this PC first: the copy is finished before the setup window
-                // opens, while a small window shows progress. Serving never waits for a copy (see ResolveExe).
-                if (IsSetupMode(args) && !update.GitHubInstall) PrepareThisPc(launcherDir);
                 if (update.UpdatesOn) StartUpdateIfDue(launcherDir);
-                string exe = update.GitHubInstall ? ResolveInPlace(launcherDir) : ResolveExe(launcherDir);
-                if (exe == null)
-                {
-                    Console.Error.WriteLine("MakinoMCP: no installed version found.");
-                    return 2;
-                }
-                return Run(exe, args, Path.Combine(launcherDir, "MakinoMCP.settings.json")).GetAwaiter().GetResult();
+                return RunInPlace(launcherDir, args);
             }
             catch (Exception ex)
             {
@@ -61,58 +58,98 @@ namespace MakinoMCP.Launcher
             return args.Length == 0 || args[0].Equals("setup", StringComparison.OrdinalIgnoreCase);
         }
 
-        // Copies the current version to this PC if it is not there yet, with a progress window when a desktop is
-        // available. Never throws: on failure it says so and the caller runs the share copy.
-        private static void PrepareThisPc(string launcherDir)
+        // Runs this install's build with its own settings file.
+        private static int RunInPlace(string launcherDir, string[] args)
         {
-            try
+            string exe = ResolveInPlace(launcherDir);
+            if (exe == null)
             {
-                string currentTxt = Path.Combine(launcherDir, "current.txt");
-                if (!File.Exists(currentTxt)) return;
-                string version = File.ReadAllText(currentTxt).Trim();
-                if (!IsValidVersion(version)) return;
-                if (Directory.Exists(Path.Combine(LocalApp(), version))) return;
-                if (!Directory.Exists(Path.Combine(launcherDir, "versions", version))) return;
-
-                Exception error = null;
-                bool showWindow = Environment.UserInteractive
-                    && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MAKINOMCP_NO_WINDOW"));
-                if (showWindow) error = CopyWithWindow(launcherDir, version);
-                else
-                {
-                    try { CopyVersionToLocal(launcherDir, version, null); } catch (Exception ex) { error = ex; }
-                }
-
-                if (error != null)
-                {
-                    string text = "Couldn't copy MakinoMCP to this PC: " + error.Message + ". Opening it from the share instead.";
-                    if (showWindow) MessageBox.Show(text, "MakinoMCP", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    else Console.Error.WriteLine("MakinoMCP: " + text);
-                }
+                Console.Error.WriteLine("MakinoMCP: no installed version found in " + launcherDir + ".");
+                return 2;
             }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine("MakinoMCP: could not prepare this PC (" + ex.Message + ").");
-            }
+            return Run(exe, args, Path.Combine(launcherDir, "MakinoMCP.settings.json")).GetAwaiter().GetResult();
         }
 
-        // A small progress window; the copy runs on a worker thread and the window closes itself when it ends.
-        private static Exception CopyWithWindow(string launcherDir, string version)
+        // A copy on a share: setup installs MakinoMCP on this PC (with a progress window) and opens the PC copy's setup
+        // window, which moves Claude to it; serve hands over to the PC's copy, or, the first time, serves from the share
+        // while the PC's copy installs in the background.
+        private static int RunFromShare(string launcherDir, string[] args)
         {
+            string local = ShareInstaller.LocalInstallDir();
+            string localLauncher = Path.Combine(local, "MakinoMCP.exe");
+            // %LOCALAPPDATA% redirected to the network: nowhere to install, so run from the share as it is.
+            if (UpdateSource.IsInstallerFolder(local, UpdateSource.IsNetworkDrive, UpdateSource.LocalSharePaths()))
+                return RunInPlace(launcherDir, args);
+
+            if (IsSetupMode(args))
+            {
+                if (!ShareInstaller.IsInstalled(local))
+                {
+                    InstallResult r = InstallWithWindow(launcherDir, local);
+                    if (!r.Installed)
+                    {
+                        string text = "Couldn't install MakinoMCP on this PC: " + r.Reason + ". Opening it from the share instead.";
+                        if (ShowWindows()) MessageBox.Show(text, "MakinoMCP", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        else Console.Error.WriteLine("MakinoMCP: " + text);
+                        return RunInPlace(launcherDir, args);
+                    }
+                }
+                string self = Path.Combine(launcherDir, "MakinoMCP.exe");
+                Process.Start(new ProcessStartInfo(localLauncher, "setup --installed-from " + Quote(self))
+                {
+                    UseShellExecute = false,
+                    WorkingDirectory = local,
+                });
+                return 0;
+            }
+
+            if (ShareInstaller.IsInstalled(local)) return Run(localLauncher, args, null).GetAwaiter().GetResult();
+            StartDetached("--install-detach", null);
+            return RunInPlace(launcherDir, args);
+        }
+
+        private static bool ShowWindows() =>
+            Environment.UserInteractive && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MAKINOMCP_NO_WINDOW"));
+
+        // The install with a small progress window when a desktop is there; the copy runs on a worker thread and the
+        // window closes itself when it ends.
+        private static InstallResult InstallWithWindow(string launcherDir, string local)
+        {
+            if (!ShowWindows()) return ShareInstaller.Install(launcherDir, local, null);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            Exception error = null;
+            InstallResult result = null;
             using (var form = new CopyProgressForm())
             {
                 form.Shown += (s, e) => Task.Run(() =>
                 {
-                    try { CopyVersionToLocal(launcherDir, version, form.Report); }
-                    catch (Exception ex) { error = ex; }
+                    result = ShareInstaller.Install(launcherDir, local, form.Report);
                     form.Finish();
                 });
                 Application.Run(form);
             }
-            return error;
+            return result ?? new InstallResult { Installed = false, Reason = "the copy didn't run" };
+        }
+
+        // The detached install: one at a time per user.
+        private static int InstallInBackground(string launcherDir)
+        {
+            try
+            {
+                using (var only = new System.Threading.Mutex(false, @"Local\MakinoMCP-install"))
+                {
+                    bool mine;
+                    try { mine = only.WaitOne(0); }
+                    catch (System.Threading.AbandonedMutexException) { mine = true; }
+                    if (!mine) return 0;
+                    try { return ShareInstaller.Install(launcherDir, ShareInstaller.LocalInstallDir(), null).Installed ? 0 : 1; }
+                    finally { only.ReleaseMutex(); }
+                }
+            }
+            catch
+            {
+                return 1;
+            }
         }
 
         // %LOCALAPPDATA%\MakinoMCP: the update state file and logs.
@@ -157,13 +194,17 @@ namespace MakinoMCP.Launcher
             }
         }
 
-        // A release-zip install runs versions\<current.txt>\MakinoMCP.exe where it is: it's on this PC's disk already,
-        // so the copy to %LOCALAPPDATA% (there because a share is slow) gains nothing, and keeping out of that folder
-        // keeps a share install on the same PC from deleting this install's builds. Falls back to the newest build.
+        // versions\<current.txt>\MakinoMCP.exe, where it is; the newest build when that one is missing; the developer
+        // layout (app\MakinoMCP.exe beside the launcher, no current.txt) for tests.
         private static string ResolveInPlace(string launcherDir)
         {
             string versions = Path.Combine(launcherDir, "versions");
             string current = UpdateApplier.ReadCurrent(launcherDir);
+            if (current == null)
+            {
+                string dev = Path.Combine(launcherDir, "app", "MakinoMCP.exe");
+                if (File.Exists(dev)) return dev;
+            }
             if (current != null && IsValidVersion(current))
             {
                 string exe = Path.Combine(versions, current, "MakinoMCP.exe");
@@ -184,62 +225,6 @@ namespace MakinoMCP.Launcher
             return Path.Combine(
                 Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "MakinoMCP", "app");
-        }
-
-        private static string ResolveExe(string launcherDir)
-        {
-            string currentTxt = Path.Combine(launcherDir, "current.txt");
-            if (!File.Exists(currentTxt))
-            {
-                // Dev layout: MakinoMCP.exe in a sibling app\ folder.
-                string dev = Path.Combine(launcherDir, "app", "MakinoMCP.exe");
-                if (File.Exists(dev)) return dev;
-                // No current.txt and no dev exe: the share may be unreachable, so use what is installed locally.
-                return NewestLocal(LocalApp());
-            }
-
-            string local = LocalApp();
-            try
-            {
-                string version = File.ReadAllText(currentTxt).Trim();
-                if (!IsValidVersion(version)) throw new InvalidDataException("current.txt does not hold a valid version");
-                string target = Path.Combine(local, version);
-                if (Directory.Exists(target) && !File.Exists(Path.Combine(target, "MakinoMCP.exe")))
-                {
-                    // A copy cut short by an interrupted delete: drop it, so this start copies the build again.
-                    try { Directory.Delete(target, true); } catch { }
-                }
-                if (File.Exists(Path.Combine(target, "MakinoMCP.exe")))
-                {
-                    // Every publish is a new build folder, so older copies pile up: remove those no MakinoMCP runs from.
-                    // In the background (the launcher lives for the whole session), silent like everything before Run.
-                    // Matched by build name under an app\ folder, so a short (8.3) LOCALAPPDATA path can't hide one.
-                    Task.Run(() =>
-                    {
-                        var running = RunningFolders()
-                            .Where(f => string.Equals(Path.GetFileName(Path.GetDirectoryName(f)), "app", StringComparison.OrdinalIgnoreCase))
-                            .Select(Path.GetFileName)
-                            .ToList();
-                        VersionCopier.RemoveOtherVersions(local, version,
-                            d => running.Contains(Path.GetFileName(d), StringComparer.OrdinalIgnoreCase));
-                    });
-                    return Path.Combine(target, "MakinoMCP.exe");
-                }
-
-                // This build isn't on the PC yet. Copying it, or even running it from the share, is slower than a
-                // client's connect timeout, so copy it in a detached background process for the next start and serve
-                // this session from the PC's newest copy; a PC that has none runs this build straight from the share.
-                string shareExe = Path.Combine(launcherDir, "versions", version, "MakinoMCP.exe");
-                if (!File.Exists(shareExe)) throw new FileNotFoundException("version " + version + " is not on the share");
-                StartPrefetch(version);
-                return NewestLocal(local) ?? shareExe;
-            }
-            catch (Exception ex)
-            {
-                // Share unreachable (or copy failed): fall back to the newest local version.
-                Console.Error.WriteLine("MakinoMCP: could not update from the share (" + ex.Message + "); using newest local version.");
-                return NewestLocal(local);
-            }
         }
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -305,15 +290,6 @@ namespace MakinoMCP.Launcher
 
         private const int CreateBreakawayFromJob = 0x01000000;
 
-        // Copies <version> to this PC in the background: "--prefetch-detach" starts "--prefetch" and exits, so the copy
-        // outlives an MCP client that ends the session's whole process tree when the session closes (measured: a copy
-        // started as a direct child died with a 5-second session, leaving a half-copied build). Best effort: the
-        // session works without it.
-        private static void StartPrefetch(string version)
-        {
-            StartDetached("--prefetch-detach", version);
-        }
-
         // Starts "MakinoMCP.exe <verb> [<version>]" detached: out of the client's job when the job allows it,
         // bInheritHandles FALSE and no std handles, so it can't hold the MCP client's stdio pipes open.
         private static void StartDetached(string verb, string version)
@@ -353,46 +329,6 @@ namespace MakinoMCP.Launcher
                 && !Path.IsPathRooted(v);
         }
 
-        private static int Prefetch(string launcherDir, string version)
-        {
-            try
-            {
-                if (!IsValidVersion(version)) return 1;
-                // One copy per build at a time: sessions started in quick succession each ask for one.
-                using (var only = new System.Threading.Mutex(false, @"Local\MakinoMCP-prefetch-" + version))
-                {
-                    bool mine;
-                    try { mine = only.WaitOne(0); }
-                    catch (System.Threading.AbandonedMutexException) { mine = true; }
-                    if (!mine) return 0;
-                    try { CopyVersionToLocal(launcherDir, version, null); }
-                    finally { only.ReleaseMutex(); }
-                }
-                return 0;
-            }
-            catch
-            {
-                return 1;
-            }
-        }
-
-        // Copies versions\<version> from the share into place; throws on failure. progress gets (bytes copied, total).
-        private static void CopyVersionToLocal(string launcherDir, string version, Action<long, long> progress)
-        {
-            VersionCopier.CopyToLocal(Path.Combine(launcherDir, "versions", version), LocalApp(), version, progress);
-        }
-
-        private static string NewestLocal(string local)
-        {
-            if (!Directory.Exists(local)) return null;
-            return Directory.GetDirectories(local)
-                .Where(d => Path.GetFileName(d).IndexOf(".tmp", StringComparison.OrdinalIgnoreCase) < 0)
-                .Where(d => File.Exists(Path.Combine(d, "MakinoMCP.exe")))
-                .OrderByDescending(d => Directory.GetCreationTimeUtc(d))
-                .Select(d => Path.Combine(d, "MakinoMCP.exe"))
-                .FirstOrDefault();
-        }
-
         private static async Task<int> Run(string exe, string[] args, string settingsPath)
         {
             var psi = new ProcessStartInfo(exe)
@@ -403,7 +339,8 @@ namespace MakinoMCP.Launcher
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 WorkingDirectory = Path.GetDirectoryName(exe),
-                Arguments = string.Join(" ", args.Concat(new[] { "--settings", settingsPath }).Select(Quote)),
+                // Another launcher (a PC's own copy, started by the share's) adds its own settings path.
+                Arguments = string.Join(" ", (settingsPath == null ? args : args.Concat(new[] { "--settings", settingsPath })).Select(Quote)),
             };
 
             using (var child = Process.Start(psi))

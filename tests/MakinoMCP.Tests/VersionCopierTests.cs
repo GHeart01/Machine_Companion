@@ -64,47 +64,6 @@ public class VersionCopierTests
     }
 
     [Fact]
-    public void Old_builds_are_removed_except_the_kept_one_running_ones_and_temp_folders()
-    {
-        var local = Path.Combine(Path.GetTempPath(), "makinomcp-prune-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            foreach (var name in new[] { "0.2.0", "0.2.0-20261106-0930", "0.2.0-20261106-1015", "0.3.0-20261107-0800", "0.3.0.tmp-abc" })
-            {
-                Directory.CreateDirectory(Path.Combine(local, name));
-                File.WriteAllText(Path.Combine(local, name, "MakinoMCP.exe"), "x");
-            }
-
-            VersionCopier.RemoveOtherVersions(local, "0.3.0-20261107-0800",
-                d => Path.GetFileName(d) == "0.2.0-20261106-1015");
-
-            var left = Directory.GetDirectories(local).Select(Path.GetFileName).Order();
-            Assert.Equal(["0.2.0-20261106-1015", "0.3.0-20261107-0800", "0.3.0.tmp-abc"], left);
-        }
-        finally
-        {
-            Directory.Delete(local, true);
-        }
-    }
-
-    [Fact]
-    public void Removing_old_builds_never_throws()
-    {
-        var local = Path.Combine(Path.GetTempPath(), "makinomcp-prune-" + Guid.NewGuid().ToString("N"));
-        VersionCopier.RemoveOtherVersions(local, "v", _ => false); // no folder yet
-        try
-        {
-            Directory.CreateDirectory(Path.Combine(local, "old"));
-            VersionCopier.RemoveOtherVersions(local, "v", _ => throw new InvalidOperationException());
-            Assert.True(Directory.Exists(Path.Combine(local, "old"))); // unsure whether it's in use: kept
-        }
-        finally
-        {
-            Directory.Delete(local, true);
-        }
-    }
-
-    [Fact]
     public void A_file_that_cannot_be_read_fails_and_leaves_no_temp_folder()
     {
         var root = Path.Combine(Path.GetTempPath(), "makinomcp-copy-" + Guid.NewGuid().ToString("N"));
