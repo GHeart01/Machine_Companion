@@ -32,30 +32,26 @@ A login that can only read is recommended: then the database enforces the promis
 
 ## Install
 
-1. Download `MakinoMCP-<version>-win-x64.zip` from the [latest release](https://github.com/GHeart01/Machine_Companion/releases/latest)
-   and check it against the `.sha256` file next to it.
-2. Unzip it into a folder. Pick one of two ways:
-   - **On each PC** (for example `C:\Tools\MakinoMCP`, on the PC's own disk): that copy updates itself from GitHub
-     (see [Updating](#updating)). Each PC is set up on its own.
-   - **On a share** (for example `\\server\Tools\MakinoMCP`), so every PC uses the same copy and the same settings: the
-     share never updates itself; whoever looks after it puts new versions there.
-3. Run `MakinoMCP.exe`. The setup window opens: enter the server, database and login, press **Test connection**, add any
-   folders to share, then **Save**.
-4. For a share: open `MakinoMCP.exe` once on each PC that will use Claude. The first time, it copies itself to the PC
-   (about a minute on a slow network). After that Claude connects in a second.
+MakinoMCP is installed on each PC that uses Claude, and every copy keeps itself up to date from GitHub. Two ways to put
+it on a PC:
 
-Windows SmartScreen may warn that the program is from an unknown publisher: it is not code-signed. Choose **More info**,
-then **Run anyway** only if you downloaded it from the release above.
+- **From the release zip.** Download `MakinoMCP-<version>-win-x64.zip` from the
+  [latest release](https://github.com/GHeart01/Machine_Companion/releases/latest), check it against the `.sha256` file
+  next to it, and unzip it into a folder on the PC's own disk, for example `%LOCALAPPDATA%\Programs\MakinoMCP` (yours
+  alone, no admin rights needed). Run `MakinoMCP.exe` there.
+- **From your shop's share.** If someone has unzipped the release onto a share (for example `\\server\Tools\MakinoMCP`),
+  open `MakinoMCP.exe` there once on each PC. It installs MakinoMCP into `%LOCALAPPDATA%\Programs\MakinoMCP` on that PC
+  (about a minute on a slow network), takes the share's settings file across if there is one, and opens the PC copy's
+  setup window. Claude never runs from the share.
 
-`MakinoMCP.exe` is a small launcher. `current.txt` names the current build in the `versions` folder; the launcher copies
-that build once to `%LOCALAPPDATA%\MakinoMCP\app\<build>` and from then on runs the PC's own copy. While a new build
-is being copied in the background, Claude is served by the PC's previous copy; on a PC that has none yet, it runs
-straight from the share, which can be too slow for Claude's first connection (open `MakinoMCP.exe` once first). Because PCs run their own copies, a new
-build can be put on the share while people are connected (see [Updating](#updating)). If the share is unreachable it
-runs the newest copy already on the PC. Settings are saved in `MakinoMCP.settings.json` beside the launcher. A copy
-unzipped on a PC's own disk runs its build where it is, without that extra copy.
+In the setup window, enter the server, database and login, press **Test connection**, add any folders to share, then
+**Save**, and turn on **Use MakinoMCP in Claude on this PC**.
 
-The folder holds:
+Windows SmartScreen may warn that the program is from an unknown publisher: it is not code-signed yet. Choose **More
+info**, then **Run anyway** only if you got it from the release above or your shop's share.
+
+`MakinoMCP.exe` is a small launcher: it runs the build `current.txt` names in the `versions` folder and checks GitHub for
+a newer one. Settings are saved in `MakinoMCP.settings.json` beside it. A PC's copy holds:
 
 | | |
 |---|---|
@@ -64,12 +60,12 @@ The folder holds:
 | `MakinoMCP.settings.example.json` | an example settings file |
 | `current.txt` | the build the launcher starts |
 | `versions\<build>\` | the app (`MakinoMCP.exe`), `build.txt` (where and when it was built), `version.txt`, `LICENSE` |
-| `MakinoMCP.update.json` | only in the release zip: lets a copy on a PC's own disk update itself from GitHub |
+| `MakinoMCP.update.json` | which GitHub repository the copy updates from |
 
 ## Connect Claude
 
-**The easy way, on each PC:** open `MakinoMCP.exe` and use the **Use MakinoMCP in Claude on this PC** switch. On adds
-MakinoMCP to Claude Code and to Claude desktop (Cowork, not yet tested) for your Windows account; restart Claude
+**The easy way, on each PC:** open `MakinoMCP.exe` on the PC and use the **Use MakinoMCP in Claude on this PC** switch.
+On adds MakinoMCP to Claude Code and to Claude desktop (Cowork, not yet tested) for your Windows account; restart Claude
 to see the tools. Off removes it from Claude on this PC and stops it. Other PCs aren't affected.
 
 To connect by hand instead, the setup window shows both snippets with your path filled in.
@@ -77,14 +73,14 @@ To connect by hand instead, the setup window shows both snippets with your path 
 **Claude Code** (tested; once per PC, for your user):
 
 ```
-claude mcp add --scope user makino -- "\\server\Tools\MakinoMCP\MakinoMCP.exe" serve
+claude mcp add --scope user makino -- "%LOCALAPPDATA%\Programs\MakinoMCP\MakinoMCP.exe" serve
 ```
 
 **Claude Cowork / Claude Desktop** (not yet tested): add this entry to `mcpServers` in the app's configuration, then
-restart the app.
+restart the app (with your own folder in place of the example).
 
 ```json
-"makino": { "command": "\\\\server\\Tools\\MakinoMCP\\MakinoMCP.exe", "args": ["serve"] }
+"makino": { "command": "C:\\Users\\you\\AppData\\Local\\Programs\\MakinoMCP\\MakinoMCP.exe", "args": ["serve"] }
 ```
 
 The Cowork route is not yet tested. If Cowork doesn't list the MakinoMCP tools after a restart, use Claude Code or
@@ -92,9 +88,7 @@ The Cowork route is not yet tested. If Cowork doesn't list the MakinoMCP tools a
 
 ## Updating
 
-### A copy on a PC's own disk updates itself
-
-A copy unzipped from the release zip onto a PC's own disk keeps itself up to date, with nothing to do:
+Every PC's copy keeps itself up to date, with nothing to do:
 
 - When Claude starts MakinoMCP, it checks GitHub for a newer release, at most once every 6 hours and in the background
   (Claude never waits for it). The check is an anonymous request to `api.github.com`; nothing about you, the PC or the
@@ -110,29 +104,17 @@ A copy unzipped from the release zip onto a PC's own disk keeps itself up to dat
 - To go back to an earlier version, turn updates off and write that build's folder name (see `versions`) into
   `current.txt`. The folder keeps the newest three builds and the one before the last update.
 
-A copy on a network drive or share, or in a folder the PC shares on the network, never updates itself, so one PC can't
-change what other people run. Versions 0.6.0 and older don't have the updater: update those once by hand.
+A share doesn't need updating for PCs to get new versions: a PC installed from an older copy on the share catches up
+from GitHub. To give new PCs a newer starting point, unzip a newer release over the share (keep its
+`MakinoMCP.settings.json`), or from a source checkout run `.\publish.ps1 -Target \\server\Tools\MakinoMCP`.
 
-### A share is updated by whoever looks after it
+### Moving from MakinoMCP 0.7 or older
 
-1. Put the new version on the share, either way:
-   - From a source checkout: `.\publish.ps1 -Target \\server\Tools\MakinoMCP`.
-   - From a release zip: copy its `versions\<build>` folder into the share's `versions` folder, then `MakinoMCP.exe`
-     and `MakinoMCP.exe.config` if they changed, and `current.txt` last. Keep the share's `MakinoMCP.settings.json`.
-     Windows won't overwrite a launcher that is running but does let you move it, so move the old `MakinoMCP.exe`
-     aside first (for example to `versions\old-launchers\MakinoMCP.exe.<date>`). Leave out `MakinoMCP.update.json`
-     (a share ignores it anyway).
-2. Nothing to do on the PCs. The next Claude session on each PC still uses its previous copy and copies the new build
-   in the background; the session after that runs the new build and removes the PC's older copies. To switch a PC
-   over at once, open `MakinoMCP.exe` there (it copies the new build before the setup window opens).
-
-Claude sessions already running keep using their build until they are restarted.
-
-Every publish is a new build, named `<version>-<date>-<time>` (for example `0.2.0-20261106-0930`), and each PC copies
-each build once. `publish.ps1` replaces the launcher only when it changed: one that running sessions still hold open is
-moved into `versions\old-launchers` and deleted by a later publish once nothing uses it. It keeps the newest three
-builds on the share. To roll back, write an older build's folder name (see `versions`) into `current.txt`.
-
+- **Claude started MakinoMCP from a share:** once the share has 0.8 or later, open `MakinoMCP.exe` on the share. It
+  installs MakinoMCP on the PC and moves Claude to that copy; restart Claude.
+- **A copy unzipped on the PC (0.6 or older):** unzip the latest release over it once, keeping your
+  `MakinoMCP.settings.json`. 0.7 copies on a PC update themselves.
+- Copies of older versions in `%LOCALAPPDATA%\MakinoMCP\app` are removed by themselves once nothing uses them.
 ## What to ask Claude
 
 - "What is every machine in the cell doing right now?"
@@ -224,12 +206,13 @@ Free code signing provided by [SignPath.io](https://about.signpath.io/), certifi
 
 What is signed: the two `MakinoMCP.exe` files (the launcher and the app) in the release zip, built by this repository's
 [Release workflow](.github/workflows/release.yml) from a tagged commit. Each release is approved by hand before it is
-signed. Builds published to a share with `publish.ps1` are not signed.
+signed. Builds published to a share with `publish.ps1 -Target` are not signed; a PC installed from one replaces it with
+the signed release at its next update.
 
 **Privacy policy.** This program will not transfer any information to other networked systems unless specifically
 requested by the user or the person installing or operating it. MakinoMCP connects only to the database server and the
-shared folders entered in its setup window, and hands what it reads to the Claude app that started it. A copy installed
-from the release zip on a PC's own disk also checks GitHub for a newer release, at most every 6 hours, with an anonymous
+shared folders entered in its setup window, and hands what it reads to the Claude app that started it. Each PC's copy
+also checks GitHub for a newer release, at most every 6 hours, with an anonymous
 request to `api.github.com`, and downloads and installs it from this repository's releases; nothing about the user, the
 PC or the cell is sent. Turn this off in the setup window or with `"updates": "off"` (see [Updating](#updating)).
 
@@ -240,8 +223,8 @@ dotnet test MakinoMCP.slnx
 .\publish.ps1 -Zip
 ```
 
-The layout is written to `artifacts\layout`. `.\publish.ps1 -Target \\server\Tools\MakinoMCP` puts it on a share without
-touching the settings file already there, as a new build (see [Updating](#updating)).
+The layout is written to `artifacts\layout`. `.\publish.ps1 -Target \\server\Tools\MakinoMCP` puts it on a share, for
+PCs to install from, without touching the settings file already there (see [Updating](#updating)).
 
 ## Licence
 

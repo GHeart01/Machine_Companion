@@ -61,10 +61,12 @@ Machine-specific notes (which share it is published to, the live-test settings, 
   `your-login`, `\\server\Tools`; test data is sample data. `scripts/check-private.ps1` (and CI, via the
   `PRIVATE_PATTERNS` secret) fails on private names. `docs/superpowers/`, `.superpowers/` and real settings files are
   git-ignored.
-- **Only release-zip installs on a PC's own disk update themselves.** The marker `MakinoMCP.update.json` is written into
-  the zip only (`publish.ps1` `Write-Zip`); `-Target` publishes delete it from a share. Network folders and folders the
-  PC shares never update from GitHub. The update check sends nothing but an anonymous GET; README's privacy statement
-  says so and must change if that ever changes. Launcher files compiled into the tests (`VersionCopier`, `UpdateSource`,
+- **Every PC runs its own copy, updated from GitHub; Claude never runs from a share.** A copy on the network or in a
+  folder the PC shares is an installer (`UpdateSource.IsInstallerFolder`): it installs to
+  `%LOCALAPPDATA%\Programs\MakinoMCP` (`ShareInstaller`) and hands over to that copy. Updates come only from GitHub
+  releases (the marker `MakinoMCP.update.json`, written into the zip by `Write-Zip`; the installer writes a default one).
+  The update check sends nothing but an anonymous GET; README's privacy statement says so and must change if that ever
+  changes. Launcher files compiled into the tests (`VersionCopier`, `OldCache`, `ShareInstaller`, `UpdateSource`,
   `ReleaseInfo`, `UpdateApplier`, `Signatures`, `Updater`) stay plain System APIs that build on net48 and net10.
 - **Windows are light theme only** (no `SetColorMode`); colours come from `SystemColors` so High Contrast still works.
 
@@ -74,18 +76,19 @@ Machine-specific notes (which share it is published to, the live-test settings, 
 |---|---|
 | `src/MakinoMCP.Core` | net10.0, no UI or MCP: `Settings` (file model and store), `Cell` (`SqlMakinoReader` split by area (`Alarms`, `History`, `Orders`, `Overview`, `Tools`, `Routing`, `Production`, `Attention`), `SchemaInfo` probing with `SchemaCache` (a failed probe is retried later), `Codes`, `ErrorText`), `Folders` (`SharedFolders`) |
 | `src/MakinoMCP` | net10.0-windows WinExe `MakinoMCP.exe`: `serve` = MCP host (`Tools/CellTools`, `Tools/FolderTools`, `ToolContext` with time budgets 45 s DB / 20 s folders), no args or `setup` = WinForms setup window (`Setup/`), including the "Use MakinoMCP in Claude on this PC" switch (`ClaudeSwitch`: `claude mcp add/remove` via `ClaudeRegistration`, Cowork's config via `CoworkConfig`, stops this user's `serve` processes via `RunningServers`) |
-| `src/MakinoMCP.Launcher` | net48 WinExe, also named `MakinoMCP.exe`, the file users run from a share or a release-zip folder. A release-zip install (`MakinoMCP.update.json` beside it, on the PC's own disk, not inside a folder the PC shares: `UpdateSource.Decide`) runs `versions\<current>` in place and updates itself from GitHub in a detached `--update` process at most every 6 h (`Updater`, `ReleaseInfo`, `UpdateApplier`; SHA-256 check; `Signatures` ratchet: a SignPath-signed install only takes SignPath-signed exes with product name MakinoMCP; state and log in `%LOCALAPPDATA%\MakinoMCP`; off with `"updates": "off"` or `MAKINOMCP_NO_UPDATE`). Everything else works as follows: reads `current.txt`, runs the local copy in `%LOCALAPPDATA%\MakinoMCP\app\<build>\` and removes older local builds nothing runs from; setup mode copies first behind `CopyProgressForm`; serve mode without the current build runs the PC's newest local build (or, on a fresh PC, the share copy) and prefetches in a detached process (`CreateProcessW`, no inherited handles); `VersionCopier` is the one copy routine |
+| `src/MakinoMCP.Launcher` | net48 WinExe, also named `MakinoMCP.exe`, the file Claude starts. On a PC it runs `versions\<current.txt>` in place (newest build if that one is missing; `app\MakinoMCP.exe` dev layout) and updates the folder from GitHub in a detached `--update` process at most every 6 h (`UpdateSource.Decide`, `Updater`, `ReleaseInfo`, `UpdateApplier`; SHA-256 check; `Signatures` ratchet: a SignPath-signed install only takes SignPath-signed exes with product name MakinoMCP; state and log in `%LOCALAPPDATA%\MakinoMCP`; off with `"updates": "off"` or `MAKINOMCP_NO_UPDATE`). On a share it is an installer: setup installs to `%LOCALAPPDATA%\Programs\MakinoMCP` behind `CopyProgressForm` (`ShareInstaller`, `VersionCopier`) and opens that copy's setup with `--installed-from`, which moves Claude there (`ClaudeSwitch.ShouldMoveFrom`); serve hands over to the PC's copy or, the first time, serves from the share while a detached `--install` runs (`CreateProcessW`, no inherited handles). `OldCache` removes the pre-0.8 `%LOCALAPPDATA%\MakinoMCP\app` copies |
 | `tests/MakinoMCP.Tests` | xUnit (SkippableFact for live, junction and symlink tests); `StdioSpikeTests` drive a real launcher layout through an MCP client |
 | `scripts/check-private.ps1` | fails on private names (patterns from `-Patterns` or env `PRIVATE_PATTERNS`); never prints the patterns |
 | `site/` | the GitHub Pages docs page (single self-contained HTML) |
 | `.github/workflows` | `ci.yml` (build, test, private check), `release.yml` (on `v*` tags: layout, SignPath signing of both exes once the `SIGNPATH_ORGANIZATION_ID` variable is set, zip via `publish.ps1 -ZipExisting`, SHA-256, provenance attestation), `pages.yml` |
 | `.signpath/` | `artifact-configuration.xml`: what SignPath signs (both `MakinoMCP.exe`, product name MakinoMCP, product version `<Version>` on both: SignPath wants one per build). SignPath keeps its own copy: paste changes there |
 
-Published layout (what a share or the release zip holds): `MakinoMCP.exe` (launcher) + `.config`, `current.txt`,
-`MakinoMCP.settings.example.json`, `versions\<build>\` (`MakinoMCP.exe` self-contained, single file, compressed;
-`build.txt`, `version.txt`, `LICENSE`), and the user's own `MakinoMCP.settings.json` (never shipped, never
-overwritten). A build is `<Version>-<yyyyMMdd-HHmm>`, new on every publish. On a share, `versions\old-launchers\` holds
-launchers replaced while sessions ran them; the zip adds README.md and LICENSE at its top.
+Published layout (what a PC's copy, a share or the release zip holds): `MakinoMCP.exe` (launcher) + `.config`,
+`current.txt`, `MakinoMCP.settings.example.json`, `versions\<build>\` (`MakinoMCP.exe` self-contained, single file,
+compressed; `build.txt`, `version.txt`, `LICENSE` — 0.7's updater refuses anything else in a signed build, and the zip
+shape must stay what 0.7's `UpdateApplier.CheckShape` accepts), and the user's own `MakinoMCP.settings.json` (never
+shipped, never overwritten). A build is `<Version>-<yyyyMMdd-HHmm>`, new on every publish. `versions\old-launchers\`
+holds launchers replaced while sessions ran them; the zip adds README.md, LICENSE and the update marker at its top.
 
 ## Everyday commands
 
@@ -97,21 +100,20 @@ dotnet test MakinoMCP.slnx -c Release                         # run this too bef
 $env:MAKINOMCP_LIVE_SETTINGS = '<path to a settings file>'; dotnet test MakinoMCP.slnx --filter "FullyQualifiedName~Live"
 .\scripts\check-private.ps1 -Patterns "<one regex per line>"  # before every push
 .\publish.ps1 -Zip                                            # build artifacts\layout and artifacts\MakinoMCP-<v>-win-x64.zip
-.\publish.ps1 -Target \\server\Tools\MakinoMCP                # publish a new build to a share
+.\publish.ps1 -Target \\server\Tools\MakinoMCP                # refresh what a share installs on new PCs
 ```
 
 ## Releasing
 
-1. Raise `<Version>` in `src/MakinoMCP/MakinoMCP.csproj` for a release. A share publish between releases needs no bump:
-   every publish is a new build folder (`<Version>-<yyyyMMdd-HHmm>`), and PCs copy each build once by its name.
+1. Raise `<Version>` in `src/MakinoMCP/MakinoMCP.csproj`. Every PC takes the release from GitHub within 6 hours, so a
+   release is the only way new code reaches PCs.
 2. Commit, push, and wait for CI (`main` requires the `build` check; the owner can bypass).
 3. `git tag v<version>` and `git push origin v<version>`: the Release workflow builds and attaches the zip.
-4. Publish to a share with `publish.ps1 -Target` (the same layout as Engineering Tracker's share). It refuses a target
-   holding files it didn't put there (`-AllowOtherFiles`) and a checkout missing the commit the share runs, from its
-   `build.txt` (`-AllowBehindShare` for a rollback). It writes `versions\<build>`, replaces the launcher only if its
-   hash changed (moving a running one to `versions\old-launchers`, deleted by a later publish once no session holds
-   it open), writes `current.txt` last, and keeps the newest three builds. The launcher removes a PC's older copies
-   that nothing runs from. Roll back by writing an older build name into `current.txt`.
+4. Optionally refresh a share with `publish.ps1 -Target`, so newly installed PCs start from this version (they catch up
+   from GitHub anyway). It refuses a target holding files it didn't put there (`-AllowOtherFiles`) and a checkout
+   missing the commit the share has (`-AllowBehindShare`), replaces the launcher only if its hash changed (a running
+   one is moved to `versions\old-launchers`; on a file server that fails while a session still runs it from there),
+   writes `current.txt` last, and keeps the newest three builds.
 
 ## Open items
 

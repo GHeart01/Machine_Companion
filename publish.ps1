@@ -18,10 +18,10 @@
     versions\old-launchers\               launchers replaced while Claude sessions still ran them; each publish deletes
                                           the ones no session holds open any more
 
-  current.txt is switched to the new build last, so a Claude session starting during a publish still gets the previous,
-  complete build. All but the newest three builds are then removed from the share, in the background. The launcher
-  copies each build to %LOCALAPPDATA%\MakinoMCP\app\<build> and runs it there (the first session after a publish runs
-  the share copy while the PC copies it), and removes the PC's older copies.
+  current.txt is switched to the new build last, so a launcher starting during a publish still gets the previous,
+  complete build. All but the newest three builds are then removed from the share, in the background. PCs don't run
+  from the share: opening MakinoMCP.exe there installs it on the PC (%LOCALAPPDATA%\Programs\MakinoMCP), which then
+  updates itself from GitHub releases. A share only sets the version newly installed PCs start from.
 
   Roll back: write an older build's folder name (see versions\) into current.txt.
 

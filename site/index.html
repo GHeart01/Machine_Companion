@@ -240,9 +240,9 @@ footer a { color: var(--muted); }
       <p class="prose">You need Windows 10 or 11, network access to the cell's SQL Server, and a SQL or Windows login that can read the Makino database.</p>
       <ol class="steps">
         <li>Download <code>MakinoMCP-&lt;version&gt;-win-x64.zip</code> with the button at the top, or from the <a href="https://github.com/GHeart01/Machine_Companion/releases/latest">latest release</a>, and check it against the <code>.sha256</code> file on the release page.</li>
-        <li>Unzip it to a folder: on each PC's own disk, where it keeps itself up to date from GitHub, or on a share, so every PC uses one copy that whoever looks after the share updates.</li>
-        <li>Run <code>MakinoMCP.exe</code>. Enter the server, database and login, choose <strong>Test connection</strong>, add any folders to share, then <strong>Save</strong>.</li>
-        <li>For a share: open <code>MakinoMCP.exe</code> once on each PC that will use Claude. The first time, it copies itself to the PC (about a minute on a slow network). After that Claude connects in a second.</li>
+        <li>Unzip it into a folder on the PC, for example <code>%LOCALAPPDATA%\Programs\MakinoMCP</code>, and run <code>MakinoMCP.exe</code> there. Or, if your shop keeps a copy on a share, open <code>MakinoMCP.exe</code> on the share once: it installs MakinoMCP on the PC and opens its setup window.</li>
+        <li>Enter the server, database and login, choose <strong>Test connection</strong>, add any folders to share, then <strong>Save</strong>.</li>
+        <li>Each PC's copy keeps itself up to date from GitHub; Claude never runs from the share.</li>
         <li>Copy the lines the setup window shows into Claude, as below.</li>
       </ol>
       <p class="note prose">Windows SmartScreen may warn about an unknown publisher, because the program is not code-signed. Choose <strong>More info</strong>, then <strong>Run anyway</strong>, only if you downloaded it from the release above.</p>
@@ -250,9 +250,9 @@ footer a { color: var(--muted); }
       <h3>Connect Claude</h3>
       <p class="prose">The easy way, on each PC: open <code>MakinoMCP.exe</code> and use the <strong>Use MakinoMCP in Claude on this PC</strong> switch. On adds MakinoMCP to Claude Code and to Claude desktop (Cowork, not yet tested) for your Windows account; restart Claude to see the tools. Off removes it from Claude on this PC and stops it. Other PCs aren't affected. To connect by hand instead:</p>
       <p class="label">Claude Code, once per PC (tested)</p>
-      <pre tabindex="0"><code>claude mcp add --scope user makino -- "\\server\Tools\MakinoMCP\MakinoMCP.exe" serve</code></pre>
+      <pre tabindex="0"><code>claude mcp add --scope user makino -- "%LOCALAPPDATA%\Programs\MakinoMCP\MakinoMCP.exe" serve</code></pre>
       <p class="label">Claude Cowork or Claude Desktop (not yet tested): add to <code>mcpServers</code>, then restart the app</p>
-      <pre tabindex="0"><code>"makino": { "command": "\\\\server\\Tools\\MakinoMCP\\MakinoMCP.exe", "args": ["serve"] }</code></pre>
+      <pre tabindex="0"><code>"makino": { "command": "C:\\Users\\you\\AppData\\Local\\Programs\\MakinoMCP\\MakinoMCP.exe", "args": ["serve"] }</code></pre>
       <p class="note prose">The Cowork route is not yet tested. If Cowork doesn't list the MakinoMCP tools after a restart, use Claude Code or <a href="https://github.com/GHeart01/Machine_Companion/issues">open an issue</a>.</p>
     </section>
 
@@ -319,7 +319,7 @@ footer a { color: var(--muted); }
             <ul class="plain">
               <li>The database password is stored in <strong>plain text</strong> in <code>MakinoMCP.settings.json</code>. Protect that folder, and prefer a read-only login or a Windows login.</li>
               <li>Whatever is in the database and the shared folders can appear in your Claude conversation. Share only folders you are happy for Claude to read.</li>
-              <li>A copy unzipped on a PC's own disk updates itself: at most every 6 hours it asks GitHub, anonymously, for a newer release, then downloads it, checks its SHA-256 and installs it. Nothing about you, the PC or the cell is sent. Turn it off in the setup window. Copies on a share never update themselves.</li>
+              <li>Each PC's copy updates itself: at most every 6 hours it asks GitHub, anonymously, for a newer release, then downloads it, checks its SHA-256 and installs it. Nothing about you, the PC or the cell is sent. Turn it off in the setup window.</li>
             </ul>
           </div>
         </div>
