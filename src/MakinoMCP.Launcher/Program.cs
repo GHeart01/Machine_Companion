@@ -34,7 +34,7 @@ namespace MakinoMCP.Launcher
                     return RunFromShare(launcherDir, args);
 
                 // Copies of older versions that PCs running from a share kept; gone once nothing runs from them.
-                Task.Run(() => OldCache.Tidy(LocalApp(), d => RunningFolders().Contains(d.TrimEnd('\\'))));
+                Task.Run(() => OldCache.Tidy(LocalApp(), d => RunningFolders().Contains(d.TrimEnd('\\')), launcherDir));
 
                 UpdateDecision update = UpdateSource.DecideForThisPc(launcherDir.TrimEnd('\\'));
                 // A release zip that doesn't update itself says why, in the update log (never on stdout).
@@ -114,6 +114,26 @@ namespace MakinoMCP.Launcher
         // The install with a small progress window when a desktop is there; the copy runs on a worker thread and the
         // window closes itself when it ends.
         private static InstallResult InstallWithWindow(string launcherDir, string local)
+        {
+            // A Claude session may have started the background install a moment ago: wait for it rather than copy twice.
+            using (var only = new System.Threading.Mutex(false, @"Local\MakinoMCP-install"))
+            {
+                bool mine;
+                try { mine = only.WaitOne(TimeSpan.FromMinutes(3)); }
+                catch (System.Threading.AbandonedMutexException) { mine = true; }
+                try
+                {
+                    if (ShareInstaller.IsInstalled(local)) return new InstallResult { Installed = true, Reason = "already installed" };
+                    return InstallLocked(launcherDir, local);
+                }
+                finally
+                {
+                    if (mine) only.ReleaseMutex();
+                }
+            }
+        }
+
+        private static InstallResult InstallLocked(string launcherDir, string local)
         {
             if (!ShowWindows()) return ShareInstaller.Install(launcherDir, local, null);
             Application.EnableVisualStyles();

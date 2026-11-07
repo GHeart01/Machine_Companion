@@ -11,14 +11,19 @@ namespace MakinoMCP.Launcher
     {
         /// <summary>Deletes the build folders in appDir that inUse says no MakinoMCP runs from, then appDir when empty.
         /// Never throws: whatever can't go now is tried again on a later start.</summary>
-        internal static void Tidy(string appDir, Func<string, bool> inUse)
+        internal static void Tidy(string appDir, Func<string, bool> inUse, string launcherDir)
         {
             try
             {
                 if (!Directory.Exists(appDir)) return;
+                string self = launcherDir == null ? null : Path.GetFullPath(launcherDir).TrimEnd('\\');
                 foreach (string d in Directory.GetDirectories(appDir))
                 {
                     if (inUse(d)) continue;
+                    // An install that happens to live in there (this launcher's own folder) is not an old copy.
+                    string full = Path.GetFullPath(d).TrimEnd('\\');
+                    if (self != null && (string.Equals(self, full, StringComparison.OrdinalIgnoreCase)
+                                         || self.StartsWith(full + "\\", StringComparison.OrdinalIgnoreCase))) continue;
                     // Renamed first, so an interrupted delete never leaves a build folder without its exe.
                     string doomed = d + ".tmp-del-" + Guid.NewGuid().ToString("N");
                     try { Directory.Move(d, doomed); } catch { continue; }

@@ -76,6 +76,30 @@ public class ShareInstallerTests : IDisposable
     }
 
     [Fact]
+    public void Install_repairs_an_interrupted_install()
+    {
+        // A copy cut short: a truncated launcher, no current.txt yet.
+        Directory.CreateDirectory(Local);
+        File.WriteAllText(L("MakinoMCP.exe"), "laun");
+        File.WriteAllText(L("MakinoMCP.settings.json"), "{ \"mine\": true }");
+        var r = ShareInstaller.Install(Share, Local, null);
+        Assert.True(r.Installed, r.Reason);
+        Assert.Equal("launcher", File.ReadAllText(L("MakinoMCP.exe")));
+        Assert.Contains("mine", File.ReadAllText(L("MakinoMCP.settings.json")));
+    }
+
+    [Fact]
+    public void Install_fixes_a_current_txt_that_names_a_missing_build()
+    {
+        Directory.CreateDirectory(Local);
+        File.WriteAllText(L("MakinoMCP.exe"), "launcher");
+        File.WriteAllText(L("current.txt"), "0.8.0-missing");
+        var r = ShareInstaller.Install(Share, Local, null);
+        Assert.True(r.Installed, r.Reason);
+        Assert.Equal(Build, File.ReadAllText(L("current.txt")).Trim());
+    }
+
+    [Fact]
     public void Install_without_share_settings_leaves_none()
     {
         File.Delete(Path.Combine(Share, "MakinoMCP.settings.json"));

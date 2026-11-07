@@ -345,6 +345,20 @@ public class ClaudeRegistrationTests
     }
 
     [Fact]
+    public async Task TurnOn_puts_the_old_entry_back_when_the_new_one_cant_be_added()
+    {
+        var r = new FakeRunner()
+            .Then(0, "Removed MCP server makino from user config\n")
+            .Then(1, "", "Error: could not write the config file\n")
+            .Then(0, "Added stdio MCP server makino\n");
+        var old = ClaudeRegistration.ParseGet(GetUserConnected); // the share's launcher
+        var result = await new ClaudeRegistration(r, Claude).TurnOnAsync(SpacedLauncher, old, CancellationToken.None);
+        Assert.False(result.Ok);
+        Assert.Contains("still starts MakinoMCP from", result.Message);
+        Assert.Equal(ClaudeRegistration.AddArgs(ShareLauncher), r.Calls[2].Args);
+    }
+
+    [Fact]
     public async Task TurnOn_failure_is_one_plain_line()
     {
         var r = new FakeRunner()

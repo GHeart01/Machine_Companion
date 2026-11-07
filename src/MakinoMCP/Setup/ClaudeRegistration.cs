@@ -157,10 +157,19 @@ public sealed partial class ClaudeRegistration(ICommandRunner runner, string cla
         }
 
         var add = await RunAsync(AddArgs(launcher), CancellationToken.None);
-        if (add.Problem is { } problem) return new StepResult(false, $"Claude Code couldn't add MakinoMCP: {problem}");
-        return add.Result!.ExitCode == 0
-            ? StepResult.Done
-            : new StepResult(false, $"Claude Code couldn't add MakinoMCP: {FirstLine(add.Result.AllText) ?? $"it stopped with code {add.Result.ExitCode}."}");
+        string? failure = add.Problem
+            ?? (add.Result!.ExitCode == 0 ? null : FirstLine(add.Result.AllText) ?? $"it stopped with code {add.Result.ExitCode}.");
+        if (failure is null) return StepResult.Done;
+        var message = $"Claude Code couldn't add MakinoMCP: {failure}";
+        // The old entry was removed to make room: put it back, so Claude keeps working the way it did.
+        if (status.State == RegistrationState.On && !string.IsNullOrEmpty(status.Command))
+        {
+            var back = await RunAsync(AddArgs(status.Command), CancellationToken.None);
+            message += back.Problem is null && back.Result!.ExitCode == 0
+                ? $" It still starts MakinoMCP from {status.Command}."
+                : $" Its earlier entry ({status.Command}) couldn't be put back either: turn the switch on again.";
+        }
+        return new StepResult(false, message);
     }
 
     /// <summary>Removes the user-scope entry; nothing to do when <paramref name="current"/> already says Off. Never

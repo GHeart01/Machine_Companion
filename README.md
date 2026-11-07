@@ -41,8 +41,9 @@ it on a PC:
   alone, no admin rights needed). Run `MakinoMCP.exe` there.
 - **From your shop's share.** If someone has unzipped the release onto a share (for example `\\server\Tools\MakinoMCP`),
   open `MakinoMCP.exe` there once on each PC. It installs MakinoMCP into `%LOCALAPPDATA%\Programs\MakinoMCP` on that PC
-  (about a minute on a slow network), takes the share's settings file across if there is one, and opens the PC copy's
-  setup window. Claude never runs from the share.
+  (about a minute on a slow network), takes the share's settings file across once if there is one (later changes to
+  the share's file don't reach the PC), and opens the PC copy's setup window, which points Claude at the PC's copy. A
+  PC whose Claude still starts MakinoMCP from the share is handed over to its own copy.
 
 In the setup window, enter the server, database and login, press **Test connection**, add any folders to share, then
 **Save**, and turn on **Use MakinoMCP in Claude on this PC**.
@@ -72,9 +73,14 @@ To connect by hand instead, the setup window shows both snippets with your path 
 
 **Claude Code** (tested; once per PC, for your user):
 
+In PowerShell:
+
 ```
-claude mcp add --scope user makino -- "%LOCALAPPDATA%\Programs\MakinoMCP\MakinoMCP.exe" serve
+claude mcp add --scope user makino -- "$env:LOCALAPPDATA\Programs\MakinoMCP\MakinoMCP.exe" serve
 ```
+
+In Command Prompt, use `"%LOCALAPPDATA%\Programs\MakinoMCP\MakinoMCP.exe"` instead. The setup window shows the command with your
+own folder filled in.
 
 **Claude Cowork / Claude Desktop** (not yet tested): add this entry to `mcpServers` in the app's configuration, then
 restart the app (with your own folder in place of the example).
@@ -106,7 +112,8 @@ Every PC's copy keeps itself up to date, with nothing to do:
 
 A share doesn't need updating for PCs to get new versions: a PC installed from an older copy on the share catches up
 from GitHub. To give new PCs a newer starting point, unzip a newer release over the share (keep its
-`MakinoMCP.settings.json`), or from a source checkout run `.\publish.ps1 -Target \\server\Tools\MakinoMCP`.
+`MakinoMCP.settings.json`; Windows won't overwrite a `MakinoMCP.exe` that a PC still runs, so move that one aside
+first), or from a source checkout run `.\publish.ps1 -Target \\server\Tools\MakinoMCP`.
 
 ### Moving from MakinoMCP 0.7 or older
 

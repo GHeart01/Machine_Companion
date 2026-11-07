@@ -11,8 +11,11 @@ namespace MakinoMCP.Launcher
     internal static class ShareInstaller
     {
         internal const string DefaultMarker = "{ \"source\": \"github\", \"repository\": \"GHeart01/Machine_Companion\" }";
+        // Until the install counts as installed nothing runs from it, so the launcher files are (re)written from the share:
+        // that also repairs a copy cut short. Settings and the rest are only ever added.
+        private static readonly string[] LauncherFiles = { "MakinoMCP.exe", "MakinoMCP.exe.config" };
         private static readonly string[] CopyIfMissing =
-            { "MakinoMCP.exe", "MakinoMCP.exe.config", "MakinoMCP.settings.json", "MakinoMCP.settings.example.json", "README.md", "LICENSE" };
+            { "MakinoMCP.settings.json", "MakinoMCP.settings.example.json", "README.md", "LICENSE" };
 
         internal static string LocalInstallDir() => Path.Combine(
             Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -42,6 +45,11 @@ namespace MakinoMCP.Launcher
 
                 Directory.CreateDirectory(localDir);
                 VersionCopier.CopyToLocal(source, Path.Combine(localDir, "versions"), build, progress);
+                foreach (string name in LauncherFiles)
+                {
+                    string from = Path.Combine(shareDir, name);
+                    if (File.Exists(from)) CopyWhole(from, Path.Combine(localDir, name));
+                }
                 foreach (string name in CopyIfMissing)
                 {
                     string from = Path.Combine(shareDir, name), to = Path.Combine(localDir, name);
@@ -54,9 +62,13 @@ namespace MakinoMCP.Launcher
                     if (File.Exists(shareMarker)) File.Copy(shareMarker, marker);
                     else File.WriteAllText(marker, DefaultMarker);
                 }
-                // current.txt last: until it is there, the install doesn't count as installed.
+                // current.txt last: until it names this build, the install doesn't count as installed. One that names a
+                // build that isn't there (a copy cut short) is replaced.
                 string current = Path.Combine(localDir, "current.txt");
-                if (!File.Exists(current)) File.WriteAllText(current, build);
+                string tmp = current + ".tmp-" + Guid.NewGuid().ToString("N");
+                File.WriteAllText(tmp, build);
+                if (File.Exists(current)) File.Delete(current);
+                File.Move(tmp, current);
                 return new InstallResult { Installed = IsInstalled(localDir), Build = build,
                     Reason = IsInstalled(localDir) ? null : "the copy on this PC is incomplete" };
             }
@@ -67,6 +79,22 @@ namespace MakinoMCP.Launcher
         }
 
         private static InstallResult Fail(string reason) => new InstallResult { Installed = false, Reason = reason };
+
+        // Copies to a temp name and renames it into place, so a copy cut short never leaves a truncated file at `to`.
+        private static void CopyWhole(string from, string to)
+        {
+            string tmp = to + ".tmp-" + Guid.NewGuid().ToString("N");
+            try
+            {
+                File.Copy(from, tmp);
+                if (File.Exists(to)) File.Delete(to);
+                File.Move(tmp, to);
+            }
+            finally
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+            }
+        }
 
         private static bool IsBuildName(string v) =>
             !string.IsNullOrWhiteSpace(v) && v == v.Trim() && v != "." && !v.Contains("..")

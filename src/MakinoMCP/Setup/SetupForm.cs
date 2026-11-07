@@ -271,9 +271,13 @@ internal sealed class SetupForm : Form
         {
             // A copy that doesn't update itself: say why, and how to get one that does.
             _updateStatus.Margin = new Padding(0, 8, 0, 0);
-            _updateStatus.Set(new StatusLine(StatusKind.Warning,
-                $"This copy doesn't update itself: {_notUpdatingReason}. Unzip the release into a folder on this PC, " +
-                @"for example %LOCALAPPDATA%\Programs\MakinoMCP, or open MakinoMCP.exe from the shop's share to install it on this PC."));
+            var onShare = MakinoMCP.Launcher.UpdateSource.IsInstallerFolder(Path.GetDirectoryName(_settingsPath) ?? "",
+                MakinoMCP.Launcher.UpdateSource.IsNetworkDrive, MakinoMCP.Launcher.UpdateSource.LocalSharePaths());
+            _updateStatus.Set(new StatusLine(StatusKind.Warning, onShare
+                ? "This is the copy on the share, which installs MakinoMCP on each PC; it couldn't install it on this PC. " +
+                  @"Unzip the release into a folder on this PC instead, for example %LOCALAPPDATA%\Programs\MakinoMCP."
+                : $"This copy doesn't update itself: {_notUpdatingReason}. Unzip the release into a folder on this PC, " +
+                  @"for example %LOCALAPPDATA%\Programs\MakinoMCP, or open MakinoMCP.exe from the shop's share to install it on this PC."));
             Add(root, _updateStatus);
             return;
         }
@@ -813,7 +817,8 @@ internal sealed class SetupForm : Form
         try
         {
             outcome = await Task.Run(() => sw.TurnOnAsync(launcher, facts.Claude, CancellationToken.None));
-            if (outcome.Kind != StatusKind.Error)
+            // A warning (Cowork couldn't be updated) is shown as it is.
+            if (outcome.Kind == StatusKind.Success)
                 outcome = new StatusLine(StatusKind.Success,
                     $"MakinoMCP is installed on this PC, and Claude now starts it from here instead of the share. {ClaudeSwitch.RestartText}");
         }

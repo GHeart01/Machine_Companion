@@ -25,7 +25,7 @@ public class OldCacheTests : IDisposable
     {
         Build("0.2.0");
         Build("0.6.0-20261106-1740");
-        OldCache.Tidy(_app, _ => false);
+        OldCache.Tidy(_app, _ => false, null);
         Assert.False(Directory.Exists(_app));
     }
 
@@ -34,11 +34,23 @@ public class OldCacheTests : IDisposable
     {
         var running = Build("0.6.0-20261106-1740");
         Build("0.2.0");
-        OldCache.Tidy(_app, d => string.Equals(d, running, StringComparison.OrdinalIgnoreCase));
+        OldCache.Tidy(_app, d => string.Equals(d, running, StringComparison.OrdinalIgnoreCase), null);
         Assert.True(Directory.Exists(running));
         Assert.Equal([running], Directory.GetDirectories(_app));
     }
 
     [Fact]
-    public void Tidy_missing_folder_is_fine() => OldCache.Tidy(_app, _ => false);
+    public void Tidy_missing_folder_is_fine() => OldCache.Tidy(_app, _ => false, null);
+
+    [Fact]
+    public void Tidy_leaves_a_folder_that_holds_this_launcher()
+    {
+        // Someone installed MakinoMCP into %LOCALAPPDATA%\MakinoMCP\app\mine: that is an install, not an old copy.
+        var install = Build("mine");
+        Directory.CreateDirectory(Path.Combine(install, "versions", "0.8.0-20261107-1500"));
+        Build("0.2.0");
+        OldCache.Tidy(_app, _ => false, install);
+        Assert.True(Directory.Exists(Path.Combine(install, "versions", "0.8.0-20261107-1500")));
+        Assert.False(Directory.Exists(Path.Combine(_app, "0.2.0")));
+    }
 }
