@@ -181,6 +181,25 @@ builds on the share. To roll back, write an older build's folder name (see `vers
   conversation. Share only folders you are happy for it to see.
 - `MakinoMCP.settings.json` is not part of the release and is ignored by git.
 
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by
+[SignPath Foundation](https://signpath.org/).
+
+> Signing is being set up. Until SignPath Foundation accepts the project, releases are not signed and Windows
+> SmartScreen warns the first time `MakinoMCP.exe` runs.
+
+- Committers and reviewers: [GHeart01](https://github.com/GHeart01)
+- Approvers: [GHeart01](https://github.com/GHeart01)
+
+What is signed: the two `MakinoMCP.exe` files (the launcher and the app) in the release zip, built by this repository's
+[Release workflow](.github/workflows/release.yml) from a tagged commit. Each release is approved by hand before it is
+signed. Builds published to a share with `publish.ps1` are not signed.
+
+**Privacy policy.** This program will not transfer any information to other networked systems unless specifically
+requested by the user or the person installing or operating it. MakinoMCP connects only to the database server and the
+shared folders entered in its setup window, and hands what it reads to the Claude app that started it.
+
 ## Build from source
 
 ```

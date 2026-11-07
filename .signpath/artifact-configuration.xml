@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration for MakinoMCP. SignPath keeps its own copy: paste this file into the project's
+  artifact configuration on signpath.io, and paste it again whenever it changes here.
+
+  The release workflow uploads artifacts/layout (as a zip) and passes two parameters:
+    version  the release version, e.g. 0.7.0 (the launcher's product version)
+    build    the build folder, e.g. 0.7.0-20261107-1200 (the app's product version)
+  Only the two exes are signed, and only when their product name and version match; every other file passes through
+  unchanged (the workflow checks that).
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" />
+    <parameter name="build" />
+  </parameters>
+  <zip-file>
+    <!-- The launcher (net48): the file Claude starts. -->
+    <pe-file path="MakinoMCP.exe" product-name="MakinoMCP" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+    <!-- The app (net10.0, self-contained single file). -->
+    <directory path="versions/${build}">
+      <pe-file path="MakinoMCP.exe" product-name="MakinoMCP" product-version="${build}">
+        <authenticode-sign />
+      </pe-file>
+    </directory>
+  </zip-file>
+</artifact-configuration>

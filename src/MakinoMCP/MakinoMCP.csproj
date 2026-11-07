@@ -4,6 +4,8 @@
     <OutputType>WinExe</OutputType>
     <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>MakinoMCP</AssemblyName>
+    <!-- SignPath signs only files whose product name is MakinoMCP (.signpath/artifact-configuration.xml). -->
+    <Product>MakinoMCP</Product>
     <Version>0.6.0</Version>
     <RootNamespace>MakinoMCP</RootNamespace>
   </PropertyGroup>

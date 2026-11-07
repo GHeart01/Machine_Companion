@@ -31,13 +31,16 @@
   Defaults to <Version> in src\MakinoMCP\MakinoMCP.csproj.
 .PARAMETER Zip
   Also write artifacts\MakinoMCP-<version>-win-x64.zip (the layout plus README.md and LICENSE) and its .sha256.
+.PARAMETER ZipExisting
+  Only write the zip, from the artifacts\layout an earlier run built, without testing or building again. The release
+  workflow uses it after SignPath has signed the two exes in that layout.
 .PARAMETER AllowOtherFiles
   Publish even though the target holds files this app did not put there.
 .PARAMETER AllowBehindShare
   Publish even though this checkout does not contain the commit of the build the share runs now (its build.txt).
   Without it that publish stops, since it would remove whatever that build added; use it for a deliberate rollback.
 #>
-param([string]$Target, [string]$Version, [switch]$Zip, [switch]$AllowOtherFiles, [switch]$AllowBehindShare)
+param([string]$Target, [string]$Version, [switch]$Zip, [switch]$ZipExisting, [switch]$AllowOtherFiles, [switch]$AllowBehindShare)
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
@@ -71,6 +74,39 @@ if (-not $Version) {
 }
 $Version = $Version.Trim()
 if ($Version -notmatch '^[0-9A-Za-z][0-9A-Za-z.+-]*$') { throw "Bad version '$Version'." }
+
+$artifacts = Join-Path $root 'artifacts'
+$layout = Join-Path $artifacts 'layout'
+
+# The release zip: the layout plus README.md and LICENSE at its top, and its SHA-256 beside it.
+function Write-Zip {
+    $zipPath = Join-Path $artifacts "MakinoMCP-$Version-win-x64.zip"
+    if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+    [IO.Compression.ZipFile]::CreateFromDirectory($layout, $zipPath, [IO.Compression.CompressionLevel]::Optimal, $false)
+    $archive = [IO.Compression.ZipFile]::Open($zipPath, [IO.Compression.ZipArchiveMode]::Update)
+    try {
+        foreach ($name in 'README.md', 'LICENSE') {
+            [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, (Join-Path $root $name), $name)
+        }
+    } finally { $archive.Dispose() }
+    $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    [IO.File]::WriteAllText("$zipPath.sha256", "$hash  $(Split-Path $zipPath -Leaf)`n")
+    Write-Host "Zip: $zipPath"
+}
+
+if ($ZipExisting) {
+    if ($Target -or $Zip) { throw '-ZipExisting only zips the existing layout; use it without -Target and -Zip.' }
+    $existing = Join-Path $layout 'current.txt'
+    if (-not (Test-Path -LiteralPath $existing)) { throw "No layout to zip: $layout has no current.txt. Run .\publish.ps1 first." }
+    $existingBuild = "$(Get-Content -LiteralPath $existing -TotalCount 1)".Trim()
+    if (-not $existingBuild.StartsWith("$Version-")) { throw "The layout holds build $existingBuild, not version $Version." }
+    foreach ($required in "MakinoMCP.exe", "MakinoMCP.exe.config", "versions\$existingBuild\MakinoMCP.exe") {
+        if (-not (Test-Path -LiteralPath (Join-Path $layout $required))) { throw "The layout has no $required" }
+    }
+    Write-Zip
+    return
+}
 $build = "$Version-$(Get-Date -Format 'yyyyMMdd-HHmm')"
 $commit = Get-Git @('rev-parse', '--short', 'HEAD')
 if (-not $commit) { $commit = 'unknown' }
@@ -122,8 +158,6 @@ if ($Target) {
 
 Run 'tests' { dotnet test (Join-Path $root 'MakinoMCP.slnx') -c Release --nologo }
 
-$artifacts = Join-Path $root 'artifacts'
-$layout = Join-Path $artifacts 'layout'
 $buildDir = Join-Path $layout "versions\$build"
 if (Test-Path -LiteralPath $layout) { Remove-Item -LiteralPath $layout -Recurse -Force }
 New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
@@ -133,7 +167,12 @@ Run 'main publish' {
         -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:Version=$Version `
         "-p:InformationalVersion=$build" -p:IncludeSourceRevisionInInformationalVersion=false -o $buildDir --nologo
 }
-Run 'launcher publish' { dotnet publish $launcher -c Release -o $layout --nologo }
+# The launcher carries the plain version (no build stamp, no commit), so publishes of one version leave its hash, and
+# the launcher on the share, alone. SignPath checks both exes' product name and version before signing.
+Run 'launcher publish' {
+    dotnet publish $launcher -c Release -p:Version=$Version -p:IncludeSourceRevisionInInformationalVersion=false `
+        -o $layout --nologo
+}
 
 Get-ChildItem -LiteralPath $layout -File -Filter '*.pdb' | Remove-Item -Force
 Get-ChildItem -LiteralPath $buildDir -File -Filter '*.pdb' | Remove-Item -Force
@@ -243,19 +282,4 @@ if ($Target) {
 
 # ── Release zip ───────────────────────────────────────────────────────────────────────────────────────────────────
 
-if ($Zip) {
-    $zipPath = Join-Path $artifacts "MakinoMCP-$Version-win-x64.zip"
-    if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
-    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
-    [IO.Compression.ZipFile]::CreateFromDirectory($layout, $zipPath, [IO.Compression.CompressionLevel]::Optimal, $false)
-    # Someone unpacking the zip gets the instructions and licence at the top.
-    $archive = [IO.Compression.ZipFile]::Open($zipPath, [IO.Compression.ZipArchiveMode]::Update)
-    try {
-        foreach ($name in 'README.md', 'LICENSE') {
-            [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, (Join-Path $root $name), $name)
-        }
-    } finally { $archive.Dispose() }
-    $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    [IO.File]::WriteAllText("$zipPath.sha256", "$hash  $(Split-Path $zipPath -Leaf)`n")
-    Write-Host "Zip: $zipPath"
-}
+if ($Zip) { Write-Zip }

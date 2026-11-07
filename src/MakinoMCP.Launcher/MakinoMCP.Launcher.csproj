@@ -3,6 +3,8 @@
     <TargetFramework>net48</TargetFramework>
     <OutputType>WinExe</OutputType>
     <AssemblyName>MakinoMCP</AssemblyName>
+    <!-- SignPath signs only files whose product name is MakinoMCP (.signpath/artifact-configuration.xml). -->
+    <Product>MakinoMCP</Product>
     <RootNamespace>MakinoMCP.Launcher</RootNamespace>
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>

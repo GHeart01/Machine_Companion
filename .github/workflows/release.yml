@@ -8,6 +8,13 @@ permissions:
   contents: write
   id-token: write
   attestations: write
+  actions: read
+
+# Signing with SignPath runs once the repository variable SIGNPATH_ORGANIZATION_ID is set (with the secret
+# SIGNPATH_API_TOKEN); until then releases are built and published unsigned, as before. The other variables are
+# optional: SIGNPATH_PROJECT_SLUG (default MakinoMCP), SIGNPATH_SIGNING_POLICY_SLUG (default release-signing) and
+# SIGNPATH_ARTIFACT_CONFIGURATION_SLUG (default: the project's default configuration, a copy of
+# .signpath/artifact-configuration.xml).
 
 jobs:
   release:
@@ -19,11 +26,71 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: 10.0.x
-      - name: Publish
+      - name: Build the layout
+        id: build
         shell: pwsh
         run: |
           $version = $env:GITHUB_REF_NAME.TrimStart('v')
-          ./publish.ps1 -Zip -Version $version
+          ./publish.ps1 -Version $version
+          $build = (Get-Content artifacts/layout/current.txt -TotalCount 1).Trim()
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "build=$build" >> $env:GITHUB_OUTPUT
+
+      - name: Upload the unsigned layout for signing
+        id: unsigned
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-layout
+          path: artifacts/layout
+          if-no-files-found: error
+          retention-days: 1
+      - name: Sign with SignPath
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'MakinoMCP' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG || 'release-signing' }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          # Every release waits for an approver in SignPath; give them an hour.
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: artifacts/signed
+          parameters: |
+            version: "${{ steps.build.outputs.version }}"
+            build: "${{ steps.build.outputs.build }}"
+      - name: Check and use the signed files
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        shell: pwsh
+        env:
+          BUILD: ${{ steps.build.outputs.build }}
+        run: |
+          $layout = (Resolve-Path artifacts/layout).Path
+          $signed = (Resolve-Path artifacts/signed).Path
+          $exes = 'MakinoMCP.exe', "versions\$env:BUILD\MakinoMCP.exe"
+          # Same files as went in; only the two exes may differ, and both must carry a valid signature.
+          $list = { param($dir) Get-ChildItem -LiteralPath $dir -Recurse -File | ForEach-Object { $_.FullName.Substring($dir.Length + 1) } | Sort-Object }
+          $before = & $list $layout; $after = & $list $signed
+          if (Compare-Object $before $after) { throw "The signed artifact holds different files:`n$(Compare-Object $before $after | Out-String)" }
+          foreach ($f in $before) {
+            $a = (Get-FileHash -LiteralPath (Join-Path $layout $f)).Hash; $b = (Get-FileHash -LiteralPath (Join-Path $signed $f)).Hash
+            if ($exes -contains $f) {
+              if ($a -eq $b) { throw "$f came back unsigned." }
+              $sig = Get-AuthenticodeSignature -LiteralPath (Join-Path $signed $f)
+              if ($sig.Status -ne 'Valid') { throw "$f signature is $($sig.Status): $($sig.StatusMessage)" }
+              Write-Host "$f signed by $($sig.SignerCertificate.Subject)"
+            } elseif ($a -ne $b) { throw "$f changed during signing." }
+          }
+          Remove-Item -LiteralPath $layout -Recurse -Force
+          Move-Item -LiteralPath $signed -Destination $layout
+
+      - name: Zip
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.build.outputs.version }}
+        run: ./publish.ps1 -ZipExisting -Version $env:VERSION
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -34,5 +101,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $zip = Get-ChildItem artifacts -Filter 'MakinoMCP-*-win-x64.zip' | Select-Object -First 1
-          gh release create $env:GITHUB_REF_NAME $zip.FullName "$($zip.FullName).sha256" --title $env:GITHUB_REF_NAME --generate-notes
+          $notes = 'Code signing policy: https://github.com/GHeart01/Machine_Companion#code-signing-policy'
+          gh release create $env:GITHUB_REF_NAME $zip.FullName "$($zip.FullName).sha256" --title $env:GITHUB_REF_NAME --notes $notes --generate-notes
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
