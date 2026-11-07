@@ -3,9 +3,14 @@ using Microsoft.Data.SqlClient;
 
 namespace MakinoMCP.Core.Settings;
 
-/// <summary>Everything MakinoMCP needs from MakinoMCP.settings.json.</summary>
-public sealed record McpSettings(MakinoLogin Makino, IReadOnlyList<SharedFolder> Folders, Limits Limits)
+/// <summary>Everything MakinoMCP needs from MakinoMCP.settings.json. <paramref name="Updates"/> is "auto" or "off":
+/// whether a release-zip install updates itself from GitHub (the launcher reads it; any other value counts as on).</summary>
+public sealed record McpSettings(MakinoLogin Makino, IReadOnlyList<SharedFolder> Folders, Limits Limits, string Updates = "auto")
 {
+    /// <summary>True only when updates are turned off ("off", any case).</summary>
+    [JsonIgnore]
+    public bool UpdatesOff => string.Equals(Updates?.Trim(), "off", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>True when the Makino login is filled in enough to try a connection.</summary>
     [JsonIgnore]
     public bool IsReady =>
@@ -15,7 +20,7 @@ public sealed record McpSettings(MakinoLogin Makino, IReadOnlyList<SharedFolder>
 
     // The generated ToString would print the nested login; keep the password out of any log line.
     public override string ToString() =>
-        $"McpSettings {{ Makino = {Makino}, Folders = {Folders.Count}, Limits = {Limits} }}";
+        $"McpSettings {{ Makino = {Makino}, Folders = {Folders.Count}, Limits = {Limits}, Updates = {Updates} }}";
 }
 
 public sealed record MakinoLogin(

@@ -141,6 +141,47 @@ public class SettingsStoreTests : IDisposable
     }
 
     [Fact]
+    public void Load_MissingUpdates_DefaultsToAuto()
+    {
+        var p = Path.Combine(_dir, "u.json");
+        File.WriteAllText(p, "{ \"makino\": {\"server\":\"s\",\"database\":\"d\",\"useWindowsLogin\":true,\"user\":\"\",\"password\":\"\"}, \"folders\": [] }");
+        var r = SettingsStore.Load(p);
+        Assert.True(r.Problem is null, r.Problem);
+        Assert.Equal("auto", r.Settings!.Updates);
+        Assert.False(r.Settings.UpdatesOff);
+    }
+
+    [Fact]
+    public void SaveLoad_RoundTripsUpdatesOff()
+    {
+        var p = Path.Combine(_dir, "off.json");
+        SettingsStore.Save(p, Sample() with { Updates = "off" });
+        Assert.Contains("\"updates\": \"off\"", File.ReadAllText(p));
+        var r = SettingsStore.Load(p);
+        Assert.Equal("off", r.Settings!.Updates);
+        Assert.True(r.Settings.UpdatesOff);
+        Assert.True((Sample() with { Updates = "OFF" }).UpdatesOff);
+    }
+
+    [Fact]
+    public void Load_UnknownUpdatesValue_KeepsValueAndIsOn()
+    {
+        var p = Path.Combine(_dir, "weekly.json");
+        File.WriteAllText(p, "{ \"makino\": {\"server\":\"s\",\"database\":\"d\",\"useWindowsLogin\":true,\"user\":\"\",\"password\":\"\"}, \"folders\": [], \"updates\": \"weekly\" }");
+        var r = SettingsStore.Load(p);
+        Assert.Equal("weekly", r.Settings!.Updates);
+        Assert.False(r.Settings.UpdatesOff);
+    }
+
+    [Fact]
+    public void Password_never_in_ToString_with_updates()
+    {
+        var s = Sample() with { Updates = "off" };
+        Assert.DoesNotContain("s3cret-pw", s.ToString());
+        Assert.Contains("Updates = off", s.ToString());
+    }
+
+    [Fact]
     public void ConnectionString_sets_app_name_and_retry()
     {
         var cs = Sample().Makino.ConnectionString();

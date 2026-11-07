@@ -41,7 +41,8 @@ public static class SettingsStore
         var settings = new McpSettings(
             raw.Makino ?? new MakinoLogin("", "", false, "", ""),
             raw.Folders ?? [],
-            raw.Limits ?? new Limits());
+            raw.Limits ?? new Limits(),
+            string.IsNullOrWhiteSpace(raw.Updates) ? "auto" : raw.Updates);
         settings = settings with
         {
             Makino = settings.Makino with
