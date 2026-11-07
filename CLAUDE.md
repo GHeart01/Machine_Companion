@@ -61,6 +61,11 @@ Machine-specific notes (which share it is published to, the live-test settings, 
   `your-login`, `\\server\Tools`; test data is sample data. `scripts/check-private.ps1` (and CI, via the
   `PRIVATE_PATTERNS` secret) fails on private names. `docs/superpowers/`, `.superpowers/` and real settings files are
   git-ignored.
+- **Only release-zip installs on a PC's own disk update themselves.** The marker `MakinoMCP.update.json` is written into
+  the zip only (`publish.ps1` `Write-Zip`); `-Target` publishes delete it from a share. Network folders and folders the
+  PC shares never update from GitHub. The update check sends nothing but an anonymous GET; README's privacy statement
+  says so and must change if that ever changes. Launcher files compiled into the tests (`VersionCopier`, `UpdateSource`,
+  `ReleaseInfo`, `UpdateApplier`, `Signatures`, `Updater`) stay plain System APIs that build on net48 and net10.
 - **Windows are light theme only** (no `SetColorMode`); colours come from `SystemColors` so High Contrast still works.
 
 ## Layout
@@ -69,7 +74,7 @@ Machine-specific notes (which share it is published to, the live-test settings, 
 |---|---|
 | `src/MakinoMCP.Core` | net10.0, no UI or MCP: `Settings` (file model and store), `Cell` (`SqlMakinoReader` split by area (`Alarms`, `History`, `Orders`, `Overview`, `Tools`, `Routing`, `Production`, `Attention`), `SchemaInfo` probing with `SchemaCache` (a failed probe is retried later), `Codes`, `ErrorText`), `Folders` (`SharedFolders`) |
 | `src/MakinoMCP` | net10.0-windows WinExe `MakinoMCP.exe`: `serve` = MCP host (`Tools/CellTools`, `Tools/FolderTools`, `ToolContext` with time budgets 45 s DB / 20 s folders), no args or `setup` = WinForms setup window (`Setup/`), including the "Use MakinoMCP in Claude on this PC" switch (`ClaudeSwitch`: `claude mcp add/remove` via `ClaudeRegistration`, Cowork's config via `CoworkConfig`, stops this user's `serve` processes via `RunningServers`) |
-| `src/MakinoMCP.Launcher` | net48 WinExe, also named `MakinoMCP.exe`, the file users run from a share: reads `current.txt`, runs the local copy in `%LOCALAPPDATA%\MakinoMCP\app\<build>\` and removes older local builds nothing runs from; setup mode copies first behind `CopyProgressForm`; serve mode without the current build runs the PC's newest local build (or, on a fresh PC, the share copy) and prefetches in a detached process (`CreateProcessW`, no inherited handles); `VersionCopier` is the one copy routine |
+| `src/MakinoMCP.Launcher` | net48 WinExe, also named `MakinoMCP.exe`, the file users run from a share or a release-zip folder. A release-zip install (`MakinoMCP.update.json` beside it, on the PC's own disk, not inside a folder the PC shares: `UpdateSource.Decide`) runs `versions\<current>` in place and updates itself from GitHub in a detached `--update` process at most every 6 h (`Updater`, `ReleaseInfo`, `UpdateApplier`; SHA-256 check; `Signatures` ratchet: a SignPath-signed install only takes SignPath-signed exes with product name MakinoMCP; state and log in `%LOCALAPPDATA%\MakinoMCP`; off with `"updates": "off"` or `MAKINOMCP_NO_UPDATE`). Everything else works as follows: reads `current.txt`, runs the local copy in `%LOCALAPPDATA%\MakinoMCP\app\<build>\` and removes older local builds nothing runs from; setup mode copies first behind `CopyProgressForm`; serve mode without the current build runs the PC's newest local build (or, on a fresh PC, the share copy) and prefetches in a detached process (`CreateProcessW`, no inherited handles); `VersionCopier` is the one copy routine |
 | `tests/MakinoMCP.Tests` | xUnit (SkippableFact for live, junction and symlink tests); `StdioSpikeTests` drive a real launcher layout through an MCP client |
 | `scripts/check-private.ps1` | fails on private names (patterns from `-Patterns` or env `PRIVATE_PATTERNS`); never prints the patterns |
 | `site/` | the GitHub Pages docs page (single self-contained HTML) |

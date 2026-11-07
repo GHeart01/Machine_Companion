@@ -77,6 +77,25 @@ public class UpdateApplierTests : IDisposable
     }
 
     [Fact]
+    public void Apply_ZipWithBackslashPaths_Installs()
+    {
+        // Windows PowerShell 5.1's ZipFile.CreateFromDirectory stores "versions\<build>\MakinoMCP.exe".
+        var path = Path.Combine(_root, "backslash.zip");
+        using (var z = ZipFile.Open(path, ZipArchiveMode.Create))
+        {
+            foreach (var (name, text) in new[] { ("current.txt", NewBuild), ($@"versions\{NewBuild}\MakinoMCP.exe", "new app"),
+                         ("MakinoMCP.exe", "new launcher"), ("MakinoMCP.exe.config", "old config") })
+            {
+                using var w = new StreamWriter(z.CreateEntry(name).Open());
+                w.Write(text);
+            }
+        }
+        var r = Apply(path);
+        Assert.True(r.Applied, r.Reason);
+        Assert.Equal("new app", Text("versions", NewBuild, "MakinoMCP.exe"));
+    }
+
+    [Fact]
     public void Apply_KeepsSettingsAndMarker()
     {
         Assert.True(Apply(Zip()).Applied);

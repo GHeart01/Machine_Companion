@@ -78,7 +78,16 @@ if ($Version -notmatch '^[0-9A-Za-z][0-9A-Za-z.+-]*$') { throw "Bad version '$Ve
 $artifacts = Join-Path $root 'artifacts'
 $layout = Join-Path $artifacts 'layout'
 
-# The release zip: the layout plus README.md and LICENSE at its top, and its SHA-256 beside it.
+# The release zip is a GitHub install: its marker tells the launcher to update itself from this repository's releases
+# (when unpacked on a PC's own disk). Shares never get it.
+$markerName = 'MakinoMCP.update.json'
+function Get-Repository {
+    $url = Get-Git @('remote', 'get-url', 'origin')
+    if ($url -match 'github\.com[/:]([A-Za-z0-9-]+)/([A-Za-z0-9._-]+?)(\.git)?$') { return "$($Matches[1])/$($Matches[2])" }
+    return 'GHeart01/Machine_Companion'
+}
+
+# The release zip: the layout plus README.md, LICENSE and the update marker at its top, and its SHA-256 beside it.
 function Write-Zip {
     $zipPath = Join-Path $artifacts "MakinoMCP-$Version-win-x64.zip"
     if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
@@ -89,6 +98,8 @@ function Write-Zip {
         foreach ($name in 'README.md', 'LICENSE') {
             [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, (Join-Path $root $name), $name)
         }
+        $writer = New-Object IO.StreamWriter ($archive.CreateEntry($markerName).Open())
+        try { $writer.Write("{ `"source`": `"github`", `"repository`": `"$(Get-Repository)`" }`n") } finally { $writer.Dispose() }
     } finally { $archive.Dispose() }
     $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
     [IO.File]::WriteAllText("$zipPath.sha256", "$hash  $(Split-Path $zipPath -Leaf)`n")
@@ -121,7 +132,7 @@ if ($Target) {
     if (Test-Path -LiteralPath $Target) {
         # README.md, LICENSE and *.old-* at the top are what earlier publishes left there; this one tidies them away.
         $ours = $launcherFiles + @('MakinoMCP.settings.json', 'MakinoMCP.settings.example.json', 'current.txt', 'current.txt.tmp',
-            'versions', 'README.md', 'LICENSE')
+            'versions', 'README.md', 'LICENSE', $markerName)
         $other = @(Get-ChildItem -LiteralPath $Target -Force | Where-Object { $ours -notcontains $_.Name -and $_.Name -notlike '*.old-*' -and $_.Name -notlike '*.old' })
         if ($other.Count -gt 0 -and -not $AllowOtherFiles) {
             $list = ($other | Select-Object -First 10 | ForEach-Object { "  $($_.Name)" }) -join "`n"
@@ -261,6 +272,9 @@ if ($Target) {
         }
     }
     foreach ($name in 'README.md', 'LICENSE') { Remove-Item -LiteralPath (Join-Path $Target $name) -Force -ErrorAction SilentlyContinue }
+    # A share filled from a release zip carries the GitHub marker; a share is updated by publishing, never from GitHub.
+    $marker = Join-Path $Target $markerName
+    if (Test-Path -LiteralPath $marker) { Remove-Item -LiteralPath $marker -Force; Write-Host "Removed ${markerName}: a share updates by publishing, not from GitHub." }
 
     # Keep the newest three builds on the share, and always the one that was live until now (a rollback target). A
     # PC's first session after a publish runs the build straight from the share, so a build whose exe is still open is
