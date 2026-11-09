@@ -162,6 +162,32 @@ public class ClaudeRegistrationTests
         Assert.Equal(System.IO.Path.Combine(dir, "claude.cmd"), ClaudeRegistration.Find(dir, null));
     }
 
+    [Fact]
+    public void FindInClaudeDesktop_takes_the_highest_version_in_either_layout()
+    {
+        using var t = new TempDir();
+        var store = t.Sub(@"Claude-Data\claude_abc");
+        var classic = t.Sub(@"Roaming\Claude");
+        File.WriteAllText(System.IO.Path.Combine(t.Sub(@"Claude-Data\claude_abc\claude-code\2.1.309\9078b9"), "claude.exe"), "");
+        File.WriteAllText(System.IO.Path.Combine(t.Sub(@"Claude-Data\claude_abc\claude-code\2.1.317\a33aa5"), "claude.exe"), "");
+        File.WriteAllText(System.IO.Path.Combine(t.Sub(@"Roaming\Claude\claude-code\2.1.40"), "claude.exe"), ""); // 40 < 309
+        t.Sub(@"Claude-Data\claude_abc\claude-code\2.2.0\empty");                                                    // no exe
+        File.WriteAllText(System.IO.Path.Combine(t.Sub(@"Claude-Data\claude_abc\claude-code\latest"), "claude.exe"), "");
+
+        Assert.Equal(System.IO.Path.Combine(store, @"claude-code\2.1.317\a33aa5\claude.exe"),
+            ClaudeRegistration.FindInClaudeDesktop([classic, store]));
+        Assert.Equal(System.IO.Path.Combine(classic, @"claude-code\2.1.40\claude.exe"),
+            ClaudeRegistration.FindInClaudeDesktop([classic]));
+    }
+
+    [Fact]
+    public void FindInClaudeDesktop_null_without_a_bundled_copy()
+    {
+        using var t = new TempDir();
+        Assert.Null(ClaudeRegistration.FindInClaudeDesktop([t.Sub("Claude"), System.IO.Path.Combine(t.Path, "missing")]));
+        Assert.Null(ClaudeRegistration.FindInClaudeDesktop([]));
+    }
+
     // ------------------------------------------------------------------ status parsing
 
     [Fact]

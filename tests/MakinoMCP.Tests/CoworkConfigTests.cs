@@ -250,6 +250,22 @@ public class CoworkConfigTests
     }
 
     [Fact]
+    public void Folders_finds_the_data_folder_a_store_install_moved_out_of_its_package()
+    {
+        using var dir = new TempDir();
+        var local = Path.Combine(dir.Path, "Local");
+        Directory.CreateDirectory(Path.Combine(local, "Packages", "Claude_abc123", "LocalCache", "Roaming", "Claude"));
+        Directory.CreateDirectory(Path.Combine(local, "Claude-Data", "claude_abc123"));
+        Directory.CreateDirectory(Path.Combine(local, "Claude-Data", "Other_abc"));
+
+        var folders = CoworkConfig.Folders(Path.Combine(dir.Path, "Roaming"), local);
+
+        Assert.Equal(
+            [Path.Combine(local, "Packages", "Claude_abc123", "LocalCache", "Roaming", "Claude"), Path.Combine(local, "Claude-Data", "claude_abc123")],
+            folders);
+    }
+
+    [Fact]
     public void Folders_empty_when_nothing_is_installed()
     {
         using var dir = new TempDir();

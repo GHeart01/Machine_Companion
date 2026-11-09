@@ -66,12 +66,14 @@ a newer one. Settings are saved in `MakinoMCP.settings.json` beside it. A PC's c
 ## Connect Claude
 
 **The easy way, on each PC:** open `MakinoMCP.exe` on the PC and use the **Use MakinoMCP in Claude on this PC** switch.
-On adds MakinoMCP to Claude Code and to Claude desktop (Cowork, not yet tested) for your Windows account; restart Claude
-to see the tools. Off removes it from Claude on this PC and stops it. Other PCs aren't affected.
+On adds MakinoMCP to Claude Code (including the Code tab of the Claude desktop app) and to Claude desktop's Cowork for your
+Windows account; quit Claude fully (from the tray icon) and reopen it to see the tools. It needs no terminal: on a PC with
+only the Claude desktop app, it uses the Claude Code that comes with the app. Off removes it from Claude on this PC and
+stops it. Other PCs aren't affected.
 
 To connect by hand instead, the setup window shows both snippets with your path filled in.
 
-**Claude Code** (tested; once per PC, for your user):
+**Claude Code** (once per PC, for your user; needs the `claude` command line):
 
 In PowerShell:
 
@@ -82,14 +84,15 @@ claude mcp add --scope user makino -- "$env:LOCALAPPDATA\Programs\MakinoMCP\Maki
 In Command Prompt, use `"%LOCALAPPDATA%\Programs\MakinoMCP\MakinoMCP.exe"` instead. The setup window shows the command with your
 own folder filled in.
 
-**Claude Cowork / Claude Desktop** (not yet tested): add this entry to `mcpServers` in the app's configuration, then
-restart the app (with your own folder in place of the example).
+**Claude Cowork / Claude Desktop**: add this entry to `mcpServers` in the app's configuration (in the app's settings,
+search for "developer", then Edit Config), with your own folder in place of the example. If the file already has an
+`mcpServers` section, add the entry inside it. Then quit Claude from the tray icon and reopen it.
 
 ```json
 "makino": { "command": "C:\\Users\\you\\AppData\\Local\\Programs\\MakinoMCP\\MakinoMCP.exe", "args": ["serve"] }
 ```
 
-The Cowork route is not yet tested. If Cowork doesn't list the MakinoMCP tools after a restart, use Claude Code or
+If Cowork doesn't list the MakinoMCP tools after a restart,
 [open an issue](https://github.com/GHeart01/Machine_Companion/issues).
 
 ## Updating

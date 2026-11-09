@@ -30,7 +30,7 @@ public sealed class ClaudeSwitch(
         if (f.Claude is null)
         {
             if (!f.CoworkFolder) return new SwitchView(false, false, new StatusLine(StatusKind.Info, OffText), NotInstalledNote);
-            var note = NotInstalledNote + " The switch sets up Cowork (Claude desktop, not yet tested) only.";
+            var note = NotInstalledNote + " The switch sets up Cowork (Claude desktop) only.";
             return f.CoworkEntry
                 ? new SwitchView(true, true, new StatusLine(StatusKind.Success, "On — Cowork will start MakinoMCP."), note)
                 : Off(f, note);

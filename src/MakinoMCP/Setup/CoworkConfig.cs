@@ -117,28 +117,38 @@ public static class CoworkConfig
 
     // ------------------------------------------------------------------ the files
 
-    /// <summary>The Claude desktop config folders on this PC: the classic install's <c>%APPDATA%\Claude</c> and each
-    /// Microsoft Store install's <c>%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude</c>. Only folders that
-    /// exist: a file is created only where Claude desktop is installed.</summary>
+    /// <summary>The Claude desktop config folders on this PC: the classic install's <c>%APPDATA%\Claude</c>, each
+    /// Microsoft Store install's <c>%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude</c>, and the
+    /// <c>%LOCALAPPDATA%\Claude-Data\Claude_*</c> folder a Store install moves its data to (it then reads its config
+    /// there and no longer in the other two). Only folders that exist: a file is created only where Claude desktop is
+    /// installed. Writing the folders it no longer reads does no harm.</summary>
     public static IReadOnlyList<string> Folders(string? appData, string? localAppData)
     {
         var found = new List<string>();
         if (!string.IsNullOrEmpty(appData) && Directory.Exists(Path.Combine(appData, "Claude")))
             found.Add(Path.Combine(appData, "Claude"));
+        if (string.IsNullOrEmpty(localAppData)) return found;
 
-        var packages = string.IsNullOrEmpty(localAppData) ? null : Path.Combine(localAppData, "Packages");
-        if (packages is not null && Directory.Exists(packages))
+        found.AddRange(Matching(Path.Combine(localAppData, "Packages"), p => Path.Combine(p, "LocalCache", "Roaming", "Claude")));
+        found.AddRange(Matching(Path.Combine(localAppData, "Claude-Data"), p => p));
+        return found;
+    }
+
+    /// <summary>For each <c>Claude_*</c> folder in <paramref name="parent"/>, the folder <paramref name="inside"/> it
+    /// names, when that exists.</summary>
+    private static List<string> Matching(string parent, Func<string, string> inside)
+    {
+        var found = new List<string>();
+        try
         {
-            try
+            if (!Directory.Exists(parent)) return found;
+            foreach (var package in Directory.EnumerateDirectories(parent, "Claude_*").Order(StringComparer.OrdinalIgnoreCase))
             {
-                foreach (var package in Directory.EnumerateDirectories(packages, "Claude_*").Order(StringComparer.OrdinalIgnoreCase))
-                {
-                    var folder = Path.Combine(package, "LocalCache", "Roaming", "Claude");
-                    if (Directory.Exists(folder)) found.Add(folder);
-                }
+                var folder = inside(package);
+                if (Directory.Exists(folder)) found.Add(folder);
             }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* no Store installs readable */ }
         }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* not readable: nothing there for us */ }
         return found;
     }
 

@@ -248,12 +248,12 @@ footer a { color: var(--muted); }
       <p class="note prose">Windows SmartScreen may warn about an unknown publisher, because the program is not code-signed. Choose <strong>More info</strong>, then <strong>Run anyway</strong>, only if you downloaded it from the release above.</p>
 
       <h3>Connect Claude</h3>
-      <p class="prose">The easy way, on each PC: open <code>MakinoMCP.exe</code> and use the <strong>Use MakinoMCP in Claude on this PC</strong> switch. On adds MakinoMCP to Claude Code and to Claude desktop (Cowork, not yet tested) for your Windows account; restart Claude to see the tools. Off removes it from Claude on this PC and stops it. Other PCs aren't affected. To connect by hand instead:</p>
-      <p class="label">Claude Code, once per PC, in PowerShell (tested; the setup window shows it with your folder filled in)</p>
+      <p class="prose">The easy way, on each PC: open <code>MakinoMCP.exe</code> and use the <strong>Use MakinoMCP in Claude on this PC</strong> switch. On adds MakinoMCP to Claude Code (including the Code tab of the Claude desktop app) and to Claude desktop's Cowork for your Windows account; quit Claude fully (from the tray icon) and reopen it to see the tools. It needs no terminal: on a PC with only the Claude desktop app, it uses the Claude Code that comes with the app. Off removes it from Claude on this PC and stops it. Other PCs aren't affected. To connect by hand instead:</p>
+      <p class="label">Claude Code, once per PC, in PowerShell (needs the <code>claude</code> command line; the setup window shows it with your folder filled in)</p>
       <pre tabindex="0"><code>claude mcp add --scope user makino -- "$env:LOCALAPPDATA\Programs\MakinoMCP\MakinoMCP.exe" serve</code></pre>
-      <p class="label">Claude Cowork or Claude Desktop (not yet tested): add to <code>mcpServers</code>, then restart the app</p>
+      <p class="label">Claude Cowork or Claude Desktop: add to <code>mcpServers</code> (in the app's settings, search for "developer", then Edit Config), then quit Claude from the tray icon and reopen it</p>
       <pre tabindex="0"><code>"makino": { "command": "C:\\Users\\you\\AppData\\Local\\Programs\\MakinoMCP\\MakinoMCP.exe", "args": ["serve"] }</code></pre>
-      <p class="note prose">The Cowork route is not yet tested. If Cowork doesn't list the MakinoMCP tools after a restart, use Claude Code or <a href="https://github.com/GHeart01/Machine_Companion/issues">open an issue</a>.</p>
+      <p class="note prose">If the file already has an <code>mcpServers</code> section, add the entry inside it. If Cowork doesn't list the MakinoMCP tools after a restart, <a href="https://github.com/GHeart01/Machine_Companion/issues">open an issue</a>.</p>
     </section>
 
     <section class="block" aria-labelledby="ask">

@@ -117,7 +117,10 @@ $env:MAKINOMCP_LIVE_SETTINGS = '<path to a settings file>'; dotnet test MakinoMC
 
 ## Open items
 
-- The Cowork route (Claude desktop `mcpServers`) is untested; README, site and setup window say so. If it doesn't work,
-  ship a `.mcpb` Desktop Extension instead.
+- The Cowork route (Claude desktop `mcpServers`) works when the entry is in the config file the app reads. A Store
+  install that moved its data out of its package reads `%LOCALAPPDATA%\Claude-Data\Claude_*\claude_desktop_config.json`
+  (`CoworkConfig.Folders` writes there too). With no `claude` on PATH, the switch uses the app's own
+  `claude-code\<version>\…\claude.exe` (`ClaudeRegistration.FindInClaudeDesktop`). A `.mcpb` Desktop Extension is
+  still the fallback if Cowork ever stops reading `mcpServers`.
 - Not code-signed yet (SmartScreen warns on first run); SignPath Foundation is the planned route.
 - Later: SQL Server in CI against a freshly written sample schema, issue templates, `.mcpb` packaging.

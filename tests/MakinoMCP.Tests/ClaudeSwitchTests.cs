@@ -89,7 +89,7 @@ public class ClaudeSwitchTests
         Assert.True(off.Enabled);
         Assert.False(off.Checked);
         Assert.Equal("Claude Code isn't installed on this PC — use the install lines below. " +
-                     "The switch sets up Cowork (Claude desktop, not yet tested) only.", off.Note);
+                     "The switch sets up Cowork (Claude desktop) only.", off.Note);
 
         var on = ClaudeSwitch.Describe(Facts(null, coworkFolder: true, coworkEntry: true));
         Assert.True(on.Checked);

@@ -71,9 +71,39 @@ public sealed partial class ClaudeRegistration(ICommandRunner runner, string cla
         return null;
     }
 
-    /// <summary><see cref="Find"/> with this process's PATH and PATHEXT.</summary>
+    /// <summary>The Claude Code that Claude desktop carries for its Code tab, for a PC with Claude desktop only (no
+    /// <c>claude</c> on PATH, and often no right to install one). It reads and writes the same user settings as the
+    /// command line, so any of its versions can add the entry: the highest version wins. Each desktop folder keeps
+    /// them as <c>claude-code\&lt;version&gt;\[&lt;build&gt;\]claude.exe</c>.</summary>
+    public static string? FindInClaudeDesktop(IEnumerable<string> desktopFolders)
+    {
+        (Version Version, string Path)? best = null;
+        foreach (var folder in desktopFolders)
+        {
+            var root = Path.Combine(folder, "claude-code");
+            try
+            {
+                if (!Directory.Exists(root)) continue;
+                foreach (var versionDir in Directory.EnumerateDirectories(root))
+                {
+                    if (!Version.TryParse(Path.GetFileName(versionDir), out var version)) continue;
+                    var exe = new[] { versionDir }.Concat(Directory.EnumerateDirectories(versionDir).Order(StringComparer.OrdinalIgnoreCase))
+                        .Select(d => Path.Combine(d, "claude.exe"))
+                        .FirstOrDefault(File.Exists);
+                    if (exe is not null && (best is null || version > best.Value.Version)) best = (version, exe);
+                }
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { /* a folder we can't read */ }
+        }
+        return best?.Path;
+    }
+
+    /// <summary>The <c>claude</c> on this process's PATH (with PATHEXT), else Claude desktop's own copy.</summary>
     public static string? FindForThisUser() =>
-        Find(Environment.GetEnvironmentVariable("PATH"), Environment.GetEnvironmentVariable("PATHEXT"));
+        Find(Environment.GetEnvironmentVariable("PATH"), Environment.GetEnvironmentVariable("PATHEXT"))
+        ?? FindInClaudeDesktop(CoworkConfig.Folders(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)));
 
     // ------------------------------------------------------------------ reading the state
 
